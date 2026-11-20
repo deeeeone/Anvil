@@ -114,9 +114,10 @@ struct Composer: View {
                     Text("·").foregroundStyle(.tertiary)
                     Text(controller.session.usage.line)
                 }
-                Spacer()
-                Text("⏎ send · ⇧⏎ newline · ⇧⌘M mode").foregroundStyle(.tertiary)
+                Spacer(minLength: 4)
+                Text("⏎ send · ⇧⏎ newline").foregroundStyle(.tertiary).layoutPriority(-1)
             }
+            .lineLimit(1)
             .font(.caption).foregroundStyle(.secondary)
             .padding(.horizontal, 4)
         }

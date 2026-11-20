@@ -68,6 +68,8 @@ final class PermissionTests: XCTestCase {
         XCTAssertEqual(Permissions.commandKey("npm run build"), "npm run build")
         XCTAssertEqual(Permissions.commandKey("swift test --filter X"), "swift test")
         XCTAssertEqual(Permissions.commandKey("make -j8"), "make")
+        XCTAssertEqual(Permissions.commandKey("python3 -m unittest test_stats.py -v"), "python3 -m unittest")
+        XCTAssertEqual(Permissions.commandKey("python3 -c 'print(1)'"), "python3 -c 'print(1)'")
         XCTAssertEqual(Permissions.commandKey("CI=1 pytest -q && echo ok"), "pytest")
     }
 

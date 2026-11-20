@@ -1,9 +1,11 @@
 import SwiftUI
 
-/// Unified diff with line numbers and add/remove colouring.
+/// Unified diff with line numbers and add/remove colouring. Rows take their natural width (long lines scroll
+/// horizontally) and are at least as wide as the view, so the colour bands span it.
 struct DiffView: View {
     let unified: String
     var compact = false
+    @State private var viewWidth: CGFloat = 300
 
     var body: some View {
         let lines = DiffEngine.parseUnified(unified)
@@ -14,7 +16,9 @@ struct DiffView: View {
                 }
             }
             .padding(.vertical, 4)
+            .frame(minWidth: viewWidth, alignment: .leading)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { viewWidth = $0 }
         .font(.system(size: compact ? 11 : 12, design: .monospaced))
         .background(Color(nsColor: .textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
@@ -24,17 +28,20 @@ struct DiffView: View {
         let isHeader = l.oldNo == nil && l.newNo == nil && l.kind == .context
         HStack(spacing: 0) {
             if !isHeader {
-                Text(l.oldNo.map(String.init) ?? "").frame(width: 38, alignment: .trailing).foregroundStyle(.tertiary)
-                Text(l.newNo.map(String.init) ?? "").frame(width: 38, alignment: .trailing).foregroundStyle(.tertiary)
+                Text(l.oldNo.map(String.init) ?? "").frame(width: 34, alignment: .trailing).foregroundStyle(.tertiary)
+                Text(l.newNo.map(String.init) ?? "").frame(width: 34, alignment: .trailing).foregroundStyle(.tertiary)
                 Text(l.kind == .add ? " + " : l.kind == .remove ? " - " : "   ").foregroundStyle(color(l.kind))
+            } else {
+                Text(" ")
             }
             Text(l.text.isEmpty ? " " : l.text)
                 .foregroundStyle(isHeader ? Color.secondary : Color.primary)
-                .fixedSize(horizontal: true, vertical: false)
-            Spacer(minLength: 0)
+                .lineLimit(1)
         }
-        .padding(.trailing, 8)
+        .fixedSize(horizontal: true, vertical: false)
+        .padding(.trailing, 12)
         .padding(.vertical, isHeader ? 3 : 0)
+        .frame(minWidth: viewWidth, alignment: .leading)
         .background(bg(l.kind, header: isHeader))
     }
 

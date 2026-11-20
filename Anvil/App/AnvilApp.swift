@@ -16,8 +16,9 @@ struct AnvilApp: App {
         WindowGroup(AppInfo.name) {
             ContentView()
                 .environment(app)
-                .frame(minWidth: 980, minHeight: 620)
+                .frame(minWidth: 960, minHeight: 600)
         }
+        .defaultSize(width: 1320, height: 820)
         .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(replacing: .newItem) {

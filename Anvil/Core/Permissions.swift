@@ -146,10 +146,14 @@ nonisolated enum Permissions {
         guard let tool = words.first else { return command }
         let twoWord: Set<String> = ["npm", "npx", "yarn", "pnpm", "bun", "git", "swift", "cargo", "go", "make", "python", "python3", "uv", "pip", "pip3",
                                     "docker", "xcodebuild", "dotnet", "mvn", "gradle", "./gradlew", "bundle", "rails", "mix", "deno", "node", "pytest"]
+        // `python3 -m pytest`, `node --test`: the module or mode is what matters.
+        if ["python", "python3", "node", "deno", "uv"].contains(tool), words.count > 2, words[1] == "-m" { return "\(tool) -m \(words[2])" }
         if twoWord.contains(tool), words.count > 1, !words[1].hasPrefix("-") {
             if ["npm", "yarn", "pnpm", "bun"].contains(tool) && words[1] == "run" && words.count > 2 { return "\(tool) run \(words[2])" }
             return "\(tool) \(words[1])"
         }
+        // Interpreters with only flags (python3 -c ..., node -e ...) are allowed per exact command, never wholesale.
+        if ["python", "python3", "node", "ruby", "perl", "bash", "sh", "zsh", "deno", "bun"].contains(tool) { return Fmt.line(first, 80) }
         return tool
     }
 }

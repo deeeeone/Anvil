@@ -214,6 +214,7 @@ struct ToolRow: View {
                     HStack(spacing: 7) {
                         Image(systemName: icon).frame(width: 16).foregroundStyle(.secondary)
                         Text(t.summary).font(.system(.callout, design: t.name == "shell" ? .monospaced : .default)).lineLimit(1).truncationMode(.middle)
+                            .layoutPriority(-1)
                         ForEach(t.diffs) { d in
                             Text(d.statLabel).font(.caption.monospacedDigit())
                                 .foregroundStyle(d.isDeleted ? .red : .green)
@@ -292,9 +293,9 @@ struct PlanCardView: View {
                         Button("Revise plan") { p.resume(.revise(revision)) }.keyboardShortcut(.return)
                     } else {
                         Button("Approve") { p.resume(.approve) }.keyboardShortcut(.return).buttonStyle(.borderedProminent)
-                        Button("Approve and auto-accept edits") { p.resume(.approveAutoEdits) }
+                        Button("Approve, auto-edit") { p.resume(.approveAutoEdits) }.help("Approve and auto-accept edits for this session")
                     }
-                    Spacer()
+                    Spacer(minLength: 4)
                     Button("Cancel", role: .cancel) { p.resume(.cancel) }
                 }
             }
@@ -315,14 +316,14 @@ struct PermissionCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: r.command != nil ? "terminal" : "pencil").foregroundStyle(Color.accentColor)
-                Text(title(r)).font(.headline)
+                Text(title(r)).font(.headline).lineLimit(2)
                 Spacer()
                 if r.reason != "edit" && r.reason != "run command" {
                     Text(r.reason).font(.caption).foregroundStyle(.orange).lineLimit(2)
                 }
             }
             if let cmd = r.command {
-                Text(cmd).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                Text(cmd).font(.system(.callout, design: .monospaced)).textSelection(.enabled).lineLimit(8)
                     .padding(8).frame(maxWidth: .infinity, alignment: .leading)
                     .background(.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
             }
@@ -338,23 +339,31 @@ struct PermissionCard: View {
                 .frame(maxHeight: 280)
             }
             TextField("Tell the agent what to do instead (optional, used if you decline)", text: $note).textFieldStyle(.roundedBorder)
-            HStack {
-                Button("Allow") { pending.resume(.allow) }.keyboardShortcut(.return).buttonStyle(.borderedProminent)
-                if r.command != nil {
-                    if let key = r.commandKey, Permissions.dangerReason(r.command ?? "") == nil {
-                        Button("Always allow \u{201C}\(key)\u{201D} this session") { pending.resume(.allowSession) }
-                    }
-                } else {
-                    Button("Allow all edits this session") { pending.resume(.allowSession) }
-                }
-                Spacer()
-                Button("Decline") { pending.resume(.deny(note.isEmpty ? nil : note)) }.keyboardShortcut(.escape, modifiers: [])
+            ViewThatFits(in: .horizontal) {
+                HStack { buttons(r); Spacer(minLength: 8); decline }
+                VStack(alignment: .leading, spacing: 6) { HStack { buttons(r) }; decline }
             }
         }
         .padding(14)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.accentColor.opacity(0.5), lineWidth: 1))
         .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+    }
+
+    @ViewBuilder func buttons(_ r: PermissionRequest) -> some View {
+        Button("Allow") { pending.resume(.allow) }.keyboardShortcut(.return).buttonStyle(.borderedProminent)
+        if r.command != nil {
+            if let key = r.commandKey, Permissions.dangerReason(r.command ?? "") == nil {
+                Button("Always allow \u{201C}\(Fmt.line(key, 30))\u{201D}") { pending.resume(.allowSession) }
+                    .help("Allow this command for the rest of the session")
+            }
+        } else {
+            Button("Allow all edits") { pending.resume(.allowSession) }.help("Switch this session to auto-accept edits")
+        }
+    }
+
+    var decline: some View {
+        Button("Decline") { pending.resume(.deny(note.isEmpty ? nil : note)) }.keyboardShortcut(.escape, modifiers: [])
     }
 
     func title(_ r: PermissionRequest) -> String {

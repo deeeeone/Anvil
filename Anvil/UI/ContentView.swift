@@ -9,16 +9,19 @@ struct ContentView: View {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 360)
         } detail: {
-            Group {
-                if let c = app.current {
-                    ConversationView(controller: c).id(c.session.id)
-                } else {
-                    WelcomeView()
+            HSplitView {
+                Group {
+                    if let c = app.current {
+                        ConversationView(controller: c).id(c.session.id)
+                    } else {
+                        WelcomeView()
+                    }
                 }
-            }
-            .inspector(isPresented: $app.showInspector) {
-                InspectorView()
-                    .inspectorColumnWidth(min: 280, ideal: 380, max: 600)
+                .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+                if app.showInspector {
+                    InspectorView()
+                        .frame(minWidth: 280, idealWidth: 380, maxWidth: 700, maxHeight: .infinity)
+                }
             }
         }
         .navigationTitle(app.project?.lastPathComponent ?? AppInfo.name)
