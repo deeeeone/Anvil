@@ -1,0 +1,63 @@
+# Anvil: an agentic coding harness for macOS. The product name lives here and in Anvil/App/AppInfo.swift.
+name: Anvil
+options:
+  bundleIdPrefix: com.diwan
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    SWIFT_STRICT_CONCURRENCY: minimal
+    DEVELOPMENT_TEAM: 7PF4475R4Y
+    CODE_SIGN_STYLE: Manual
+    PROVISIONING_PROFILE_SPECIFIER: ""
+    CODE_SIGN_IDENTITY: "B010B06F96A49C0C7EDCD550E6B0F19276AEABF4"
+    "CODE_SIGN_IDENTITY[sdk=macosx*]": "B010B06F96A49C0C7EDCD550E6B0F19276AEABF4"
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  Anvil:
+    type: application
+    platform: macOS
+    sources: [Anvil]
+    info:
+      path: Anvil/Info.plist
+      properties:
+        CFBundleDisplayName: Anvil
+        CFBundleName: Anvil
+        LSApplicationCategoryType: public.app-category.developer-tools
+        NSHumanReadableCopyright: Anvil
+    entitlements:
+      path: Anvil/Anvil.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.diwan.anvil
+        ENABLE_HARDENED_RUNTIME: YES
+  AnvilTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [AnvilTests]
+    dependencies:
+      - target: Anvil
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.diwan.anvil.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Anvil.app/Contents/MacOS/Anvil"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  Anvil:
+    build:
+      targets:
+        Anvil: all
+        AnvilTests: [test]
+    test:
+      targets: [AnvilTests]
+    run:
+      config: Debug
