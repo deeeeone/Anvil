@@ -392,15 +392,15 @@ final class SessionController: AgentHost {
             t.duration = duration
             item.tool = t
         }
-        if let d = diffs.first {
+        if let d = diffs.first, status == .ok {
             app?.selectedDiff = d
-            if app?.inspectorTab == .terminal || app?.inspectorTab == nil { app?.inspectorTab = .changes }
+            app?.previewFile = nil
+            app?.revealChanges()
         }
         scheduleSave()
     }
 
     func agentPermission(_ req: PermissionRequest) async -> PermissionAnswer {
-        if let d = req.diffs.first { app?.selectedDiff = d; app?.inspectorTab = .changes }
         NSApp?.requestUserAttention(.criticalRequest)
         return await withCheckedContinuation { cont in
             var done = false
@@ -419,7 +419,7 @@ final class SessionController: AgentHost {
         append(item)
         session.plan = card
         session.todos = []
-        app?.inspectorTab = .todo
+        if app?.showInspector == true { app?.inspectorTab = .todo }
         return await withCheckedContinuation { cont in
             var done = false
             pendingPlan = PendingPlan(itemID: item.id) { [weak self] decision in

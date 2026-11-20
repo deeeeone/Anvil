@@ -27,15 +27,16 @@ struct MarkdownText: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             ForEach(Self.blocks(text)) { b in
                 if b.code {
                     ScrollView(.horizontal) {
-                        Text(b.body).font(.system(size: 12, design: .monospaced)).padding(10).textSelection(.enabled)
+                        Text(b.body).font(.system(size: 12.5, design: .monospaced)).foregroundStyle(Theme.text).padding(14).textSelection(.enabled)
                     }
-                    .background(.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .card(12, fill: Theme.code)
                 } else {
-                    Text(Self.inline(b.body)).lineSpacing(2)
+                    Text(Self.inline(b.body)).font(.system(size: 14.5)).foregroundStyle(Theme.text).lineSpacing(3.5)
                 }
             }
         }

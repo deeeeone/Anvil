@@ -3,10 +3,13 @@ import Observation
 import AppKit
 
 enum InspectorTab: String, CaseIterable, Identifiable {
-    case changes = "Changes", todo = "Todo", terminal = "Terminal", git = "Git"
+    case changes = "Changes", files = "Files", todo = "Plan", terminal = "Terminal", git = "Git"
     var id: String { rawValue }
     var symbol: String {
-        switch self { case .changes: return "plusminus"; case .todo: return "checklist"; case .terminal: return "terminal"; case .git: return "arrow.triangle.branch" }
+        switch self {
+        case .changes: return "plusminus"; case .files: return "folder"; case .todo: return "checklist"
+        case .terminal: return "terminal"; case .git: return "arrow.triangle.branch"
+        }
     }
 }
 
@@ -18,7 +21,14 @@ final class AppState {
     private(set) var current: SessionController?
     let processes = ProcessManager()
     var inspectorTab: InspectorTab? = .changes
-    var showInspector = true
+    var showInspector = false
+    var showSidebar = true
+    /// The window is wide enough to show the inspector beside the conversation.
+    var isWide = true
+    /// The sidebar floats over the conversation (narrow window): close it after picking something.
+    var sidebarFloating = false
+    /// The owner closed the inspector this session: don't pop it open again on every edit.
+    var inspectorDismissed = false
     var showModelPicker = false
     var selectedDiff: FileDiff?
     var previewFile: URL?
@@ -26,6 +36,7 @@ final class AppState {
     @ObservationIgnored private var controllers: [UUID: SessionController] = [:]
 
     init() {
+        NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.processes.stopAll()
@@ -34,6 +45,16 @@ final class AppState {
             }
         }
         if !AppInfo.isTesting, let last = RecentProjects.list().first { open(last) }
+        // Debug: ANVIL_WINDOW=900x700 sizes the window at launch (for checking the responsive layout).
+        if let spec = ProcessInfo.processInfo.environment["ANVIL_WINDOW"] {
+            let n = spec.split(separator: "x").compactMap { Double($0) }
+            if n.count == 2 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    guard let w = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) else { return }
+                    w.setFrame(NSRect(x: w.frame.minX, y: w.frame.maxY - n[1], width: n[0], height: n[1]), display: true, animate: false)
+                }
+            }
+        }
     }
 
     func chooseProject() {
@@ -109,6 +130,12 @@ final class AppState {
     func refreshGit() {
         guard let project else { return }
         Task { git = await Git.status(project) }
+    }
+
+    /// The agent changed files: show the diff beside the chat when there's room for it.
+    func revealChanges() {
+        inspectorTab = .changes
+        if isWide && !inspectorDismissed { showInspector = true }
     }
 
     func resetAgents() { controllers.values.forEach { $0.resetAgent() } }

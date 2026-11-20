@@ -16,10 +16,11 @@ struct AnvilApp: App {
         WindowGroup(AppInfo.name) {
             ContentView()
                 .environment(app)
-                .frame(minWidth: 960, minHeight: 600)
+                .frame(minWidth: 640, minHeight: 480)
         }
+        .windowStyle(.hiddenTitleBar)
+        .windowBackgroundDragBehavior(.enabled)
         .defaultSize(width: 1320, height: 820)
-        .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Session") { app.newSession() }.keyboardShortcut("n")
@@ -30,11 +31,12 @@ struct AnvilApp: App {
                 Button("Cycle Permission Mode") { if let c = app.current { c.mode = c.mode.next } }.keyboardShortcut("m", modifiers: [.command, .shift])
                 Button("Undo Last Task's Changes") { app.current?.undoLast() }.keyboardShortcut("z", modifiers: [.command, .option])
                 Divider()
+                Button("Toggle Sidebar") { app.showSidebar.toggle() }.keyboardShortcut("s", modifiers: [.command, .option])
                 Button("Toggle Inspector") { app.showInspector.toggle() }.keyboardShortcut("i", modifiers: [.command, .option])
             }
         }
         Settings {
-            SettingsView().environment(app)
+            SettingsView().environment(app).preferredColorScheme(.dark)
         }
     }
 }

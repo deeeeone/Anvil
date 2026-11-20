@@ -2,103 +2,129 @@ import SwiftUI
 
 struct SidebarView: View {
     @Environment(AppState.self) private var app
-    @State private var showFiles = true
-    @State private var renaming: UUID?
 
     var body: some View {
-        List(selection: Binding(get: { app.current?.session.id }, set: { if let id = $0 { app.select(id) } })) {
-            Section {
-                ForEach(app.sessions) { s in
-                    SessionRow(summary: s, running: app.current?.session.id == s.id && (app.current?.running ?? false))
-                        .tag(s.id)
-                        .contextMenu {
-                            Button("Delete Session", role: .destructive) { app.delete(s.id) }
+        VStack(alignment: .leading, spacing: 0) {
+            // Traffic lights sit on the left of this row.
+            HStack {
+                Spacer()
+                IconButton(symbol: "sidebar.left", help: "Hide sidebar (⌥⌘S)") { app.showSidebar = false }
+            }
+            .padding(.horizontal, 10)
+            .frame(height: Theme.topBar)
+
+            VStack(alignment: .leading, spacing: 4) {
+                ProjectSwitcher()
+                Button { app.newSession(); if app.sidebarFloating { app.showSidebar = false } } label: {
+                    HoverRow {
+                        HStack(spacing: 9) {
+                            Image(systemName: "plus").font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(.white).frame(width: 20, height: 20)
+                                .background(Theme.accent, in: Circle())
+                            Text("New session").font(.system(size: 13, weight: .medium))
+                            Spacer()
+                            Text("⌘N").font(.system(size: 11)).foregroundStyle(Theme.text3)
                         }
+                    }
                 }
-            } header: {
-                HStack {
-                    Text("Sessions")
-                    Spacer()
-                    Button { app.newSession() } label: { Image(systemName: "square.and.pencil") }.buttonStyle(.borderless).help("New session (⌘N)")
-                }
+                .buttonStyle(.plain)
             }
-            if let root = app.project {
-                Section(isExpanded: $showFiles) {
-                    FileTree(url: root, root: root)
-                } header: {
-                    Text("Files")
+            .padding(.horizontal, 8)
+
+            Text("Recents")
+                .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.text3)
+                .padding(.horizontal, 18).padding(.top, 18).padding(.bottom, 6)
+
+            ScrollView {
+                LazyVStack(spacing: 1) {
+                    ForEach(app.sessions) { s in
+                        SessionRow(summary: s, selected: app.current?.session.id == s.id,
+                                   running: app.current?.session.id == s.id && (app.current?.running ?? false))
+                    }
                 }
+                .padding(.horizontal, 8)
             }
-        }
-        .listStyle(.sidebar)
-        .safeAreaInset(edge: .top) {
-            Button { app.chooseProject() } label: {
-                HStack {
-                    Image(systemName: "folder")
-                    Text(app.project?.lastPathComponent ?? "Open Folder…").fontWeight(.medium).lineLimit(1)
-                    Spacer()
-                    Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(.secondary)
+            .scrollIndicators(.never)
+
+            Hairline()
+            SettingsLink {
+                HoverRow {
+                    HStack(spacing: 9) {
+                        Image(systemName: "gearshape").foregroundStyle(Theme.text2)
+                        Text("Settings").font(.system(size: 13)).foregroundStyle(Theme.text2)
+                        Spacer()
+                        if !AppSettings.shared.hasKey { Circle().fill(Theme.amber).frame(width: 7, height: 7).help("No API key yet") }
+                    }
                 }
-                .padding(.horizontal, 10).padding(.vertical, 7)
-                .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 7))
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 10).padding(.top, 6)
-            .help(app.project?.path ?? "Open a project folder")
+            .padding(8)
         }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Theme.sidebar)
+    }
+}
+
+struct ProjectSwitcher: View {
+    @Environment(AppState.self) private var app
+    var body: some View {
+        Menu {
+            ForEach(RecentProjects.list(), id: \.path) { u in
+                Button(u.lastPathComponent) { app.open(u) }
+            }
+            Divider()
+            Button("Open Folder…") { app.chooseProject() }
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "folder.fill").foregroundStyle(Theme.accent)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(app.project?.lastPathComponent ?? "Open a folder").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.text).lineLimit(1)
+                    if let p = app.project {
+                        Text(Paths.display(p.deletingLastPathComponent(), root: nil)).font(.system(size: 10.5)).foregroundStyle(Theme.text3).lineLimit(1).truncationMode(.head)
+                    }
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.text3)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .card(11, fill: Theme.surface)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
     }
 }
 
 struct SessionRow: View {
-    let summary: SessionSummary
-    let running: Bool
-    var body: some View {
-        HStack(spacing: 6) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(summary.title).lineLimit(1)
-                Text(summary.updated, format: .relative(presentation: .named)).font(.caption2).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if running { ProgressView().controlSize(.mini) }
-        }
-    }
-}
-
-struct FileTree: View {
     @Environment(AppState.self) private var app
-    let url: URL
-    let root: URL
+    let summary: SessionSummary
+    let selected: Bool
+    let running: Bool
 
     var body: some View {
-        ForEach(children, id: \.path) { child in
-            if isDir(child) {
-                DisclosureGroup {
-                    FileTree(url: child, root: root)
-                } label: {
-                    Label(child.lastPathComponent, systemImage: "folder").lineLimit(1)
+        Button {
+            app.select(summary.id)
+            if app.sidebarFloating { app.showSidebar = false }
+        } label: {
+            HoverRow(selected: selected) {
+                HStack(spacing: 8) {
+                    Text(summary.title).font(.system(size: 13)).foregroundStyle(selected ? Theme.text : Theme.text2).lineLimit(1)
+                    Spacer(minLength: 4)
+                    if running { Spinner().scaleEffect(0.8) }
+                    else { Text(Self.age(summary.updated)).font(.system(size: 10.5)).foregroundStyle(Theme.text3).lineLimit(1) }
                 }
-            } else {
-                Button {
-                    app.previewFile = child
-                    app.inspectorTab = .changes
-                    app.showInspector = true
-                } label: {
-                    Label(child.lastPathComponent, systemImage: "doc.text").lineLimit(1)
-                }
-                .buttonStyle(.plain)
             }
         }
+        .buttonStyle(.plain)
+        .contextMenu { Button("Delete Session", role: .destructive) { app.delete(summary.id) } }
     }
 
-    private var children: [URL] {
-        let items = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
-        return items.filter { !ProjectContext.skipDirs.contains($0.lastPathComponent) }
-            .sorted { a, b in
-                let da = isDir(a), db = isDir(b)
-                return da != db ? da : a.lastPathComponent.localizedStandardCompare(b.lastPathComponent) == .orderedAscending
-            }
-            .prefix(300).map { $0 }
+    /// "now", "5m", "3h", "2d", then a date.
+    static func age(_ d: Date) -> String {
+        let s = Date().timeIntervalSince(d)
+        if s < 60 { return "now" }
+        if s < 3600 { return "\(Int(s / 60))m" }
+        if s < 86400 { return "\(Int(s / 3600))h" }
+        if s < 7 * 86400 { return "\(Int(s / 86400))d" }
+        return d.formatted(.dateTime.month(.abbreviated).day())
     }
-
-    private func isDir(_ u: URL) -> Bool { (try? u.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false }
 }

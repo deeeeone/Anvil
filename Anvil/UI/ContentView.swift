@@ -1,45 +1,161 @@
 import SwiftUI
 
+/// One custom layout instead of split views: it adapts to the window width.
+/// - wide (≥ 1100): sidebar | conversation | inspector side by side
+/// - medium: sidebar | conversation, the inspector slides over as a rounded panel
+/// - narrow (< 820): conversation only, the sidebar slides over too
 struct ContentView: View {
     @Environment(AppState.self) private var app
 
     var body: some View {
         @Bindable var app = app
-        NavigationSplitView {
-            SidebarView()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 360)
-        } detail: {
-            HSplitView {
-                Group {
-                    if let c = app.current {
-                        ConversationView(controller: c).id(c.session.id)
-                    } else {
-                        WelcomeView()
+        GeometryReader { geo in
+            let w = geo.size.width
+            let wide = w >= 1100
+            let sidebarInline = w >= 820
+            ZStack(alignment: .topLeading) {
+                HStack(spacing: 0) {
+                    if app.showSidebar && sidebarInline {
+                        SidebarView().frame(width: 248)
+                        Hairline(vertical: true)
+                    }
+                    MainColumn(leadingInset: app.showSidebar && sidebarInline ? 0 : 76)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if app.showInspector && wide {
+                        Hairline(vertical: true)
+                        InspectorView().frame(width: min(max(w * 0.36, 360), 620))
                     }
                 }
-                .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
-                if app.showInspector {
-                    InspectorView()
-                        .frame(minWidth: 280, idealWidth: 380, maxWidth: 700, maxHeight: .infinity)
+                if app.showInspector && !wide {
+                    overlayScrim { app.showInspector = false }
+                    HStack {
+                        Spacer(minLength: 0)
+                        InspectorView()
+                            .frame(width: min(460, w - 32))
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Theme.borderStrong))
+                            .shadow(color: .black.opacity(0.6), radius: 30, x: -6)
+                            .padding(10)
+                    }
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+                if app.showSidebar && !sidebarInline {
+                    overlayScrim { app.showSidebar = false }
+                    SidebarView()
+                        .frame(width: 264)
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Theme.borderStrong))
+                        .shadow(color: .black.opacity(0.6), radius: 30, x: 6)
+                        .padding(8)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
                 }
             }
-        }
-        .navigationTitle(app.project?.lastPathComponent ?? AppInfo.name)
-        .navigationSubtitle(app.git.isRepo ? app.git.summary : "")
-        .toolbar {
-            if let c = app.current {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    ModeMenu(controller: c)
-                    ModelButton(controller: c)
-                    Text(c.session.usage.calls > 0 ? Fmt.dollars(c.session.usage.cost) : "")
-                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-                        .help(c.session.usage.line)
-                    Button { app.showInspector.toggle() } label: { Image(systemName: "sidebar.right") }.help("Toggle inspector")
-                }
+            .animation(.snappy(duration: 0.22), value: app.showInspector)
+            .animation(.snappy(duration: 0.22), value: app.showSidebar)
+            .onAppear {
+                app.isWide = wide
+                app.sidebarFloating = !sidebarInline
+                if !sidebarInline { app.showSidebar = false }
             }
+            .onChange(of: wide) { _, v in app.isWide = v }
+            // Crossing the breakpoint: the sidebar follows the room available (still toggleable either way).
+            .onChange(of: sidebarInline) { _, v in app.showSidebar = v; app.sidebarFloating = !v }
         }
+        .background(Theme.window)
+        .ignoresSafeArea()
+        .foregroundStyle(Theme.text)
+        .tint(Theme.accent)
+        .preferredColorScheme(.dark)
         .sheet(isPresented: $app.showModelPicker) {
             if let c = app.current { ModelPickerSheet(controller: c) }
+        }
+    }
+
+    func overlayScrim(_ close: @escaping () -> Void) -> some View {
+        Color.black.opacity(0.45).ignoresSafeArea().onTapGesture(perform: close).transition(.opacity)
+    }
+}
+
+struct MainColumn: View {
+    @Environment(AppState.self) private var app
+    /// Room for the window's traffic lights when the sidebar isn't showing.
+    let leadingInset: CGFloat
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TopBar(leadingInset: leadingInset)
+            if let c = app.current {
+                ConversationView(controller: c).id(c.session.id)
+            } else {
+                WelcomeView()
+            }
+        }
+    }
+}
+
+struct TopBar: View {
+    @Environment(AppState.self) private var app
+    let leadingInset: CGFloat
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if leadingInset > 0 {
+                Color.clear.frame(width: leadingInset - 10, height: 1)
+                IconButton(symbol: "sidebar.left", help: "Show sidebar (⌥⌘S)") { app.showSidebar = true }
+            }
+            if let project = app.project {
+                HStack(spacing: 8) {
+                    Text(app.current?.session.title ?? project.lastPathComponent)
+                        .font(.system(size: 13.5, weight: .semibold)).lineLimit(1).truncationMode(.tail)
+                    if app.git.isRepo {
+                        Label(app.git.branch ?? "detached", systemImage: "arrow.triangle.branch")
+                            .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.text3).lineLimit(1)
+                            .fixedSize()
+                    }
+                }
+            }
+            Spacer(minLength: 8)
+            if let c = app.current {
+                if c.session.usage.calls > 0 {
+                    Text(Fmt.dollars(c.session.usage.cost)).font(.system(size: 12, weight: .medium).monospacedDigit())
+                        .foregroundStyle(Theme.text3).help(c.session.usage.line)
+                }
+                ChangesPill(controller: c)
+            }
+            IconButton(symbol: "sidebar.right", help: "Inspector (⌥⌘I)") {
+                app.showInspector.toggle()
+                if !app.showInspector { app.inspectorDismissed = true }
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(height: Theme.topBar)
+    }
+}
+
+/// "+12 −3 · 2 files": opens the diff review.
+struct ChangesPill: View {
+    @Environment(AppState.self) private var app
+    let controller: SessionController
+
+    var body: some View {
+        let diffs = controller.changedDiffs
+        if !diffs.isEmpty {
+            let files = Set(diffs.map(\.path)).count
+            Button {
+                app.inspectorTab = .changes
+                app.showInspector = true
+            } label: {
+                HStack(spacing: 6) {
+                    Text("+\(diffs.reduce(0) { $0 + $1.added })").foregroundStyle(Theme.green)
+                    Text("−\(diffs.reduce(0) { $0 + $1.removed })").foregroundStyle(Theme.red)
+                    Text("\(files) file\(files == 1 ? "" : "s")").foregroundStyle(Theme.text2)
+                }
+                .font(.system(size: 11.5, weight: .semibold).monospacedDigit())
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(Theme.surface2, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .help("Review changes")
         }
     }
 }
@@ -47,51 +163,39 @@ struct ContentView: View {
 struct WelcomeView: View {
     @Environment(AppState.self) private var app
     var body: some View {
-        VStack(spacing: 18) {
-            Image(systemName: "hammer").font(.system(size: 44, weight: .light)).foregroundStyle(.secondary)
-            Text(AppInfo.name).font(.largeTitle.weight(.semibold))
-            Text("Open a project folder to start a coding session.").foregroundStyle(.secondary)
-            Button("Open Folder…") { app.chooseProject() }.buttonStyle(.borderedProminent).controlSize(.large)
+        VStack(spacing: 20) {
+            Spacer()
+            Text("✻").font(.system(size: 40, weight: .bold)).foregroundStyle(Theme.accent)
+            Text("Welcome to \(AppInfo.name)").font(.system(size: 26, weight: .semibold))
+            Text("Open a project folder to start coding with the agent.").foregroundStyle(Theme.text2)
+            Button { app.chooseProject() } label: { Label("Open Folder", systemImage: "folder") }
+                .buttonStyle(Pill(kind: .primary)).keyboardShortcut("o")
             let recent = RecentProjects.list()
             if !recent.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Recent").font(.caption).foregroundStyle(.secondary)
-                    ForEach(recent.prefix(6), id: \.path) { u in
-                        Button { app.open(u) } label: { Label(Paths.display(u, root: nil), systemImage: "folder") }.buttonStyle(.link)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("RECENT").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Theme.text3).padding(.leading, 10).padding(.bottom, 4)
+                    ForEach(recent.prefix(5), id: \.path) { u in
+                        Button { app.open(u) } label: {
+                            HoverRow {
+                                HStack {
+                                    Image(systemName: "folder").foregroundStyle(Theme.text3)
+                                    Text(u.lastPathComponent).foregroundStyle(Theme.text)
+                                    Spacer()
+                                    Text(Paths.display(u.deletingLastPathComponent(), root: nil)).font(.caption).foregroundStyle(Theme.text3).lineLimit(1)
+                                }
+                            }
+                        }.buttonStyle(.plain)
                     }
-                }.padding(.top, 8)
+                }
+                .frame(maxWidth: 420)
+                .padding(.top, 10)
             }
             if !AppSettings.shared.hasKey {
-                Text("No API key yet. Add one in Settings (⌘,).").font(.callout).foregroundStyle(.orange)
+                Text("No API key yet. Add one in Settings (⌘,).").font(.callout).foregroundStyle(Theme.amber)
             }
+            Spacer()
         }
+        .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-struct ModeMenu: View {
-    let controller: SessionController
-    var body: some View {
-        Menu {
-            ForEach(PermissionMode.allCases) { m in
-                Button { controller.mode = m } label: { Label(m.label, systemImage: m.symbol) }
-            }
-        } label: {
-            Label(controller.mode.short, systemImage: controller.mode.symbol)
-                .labelStyle(.titleAndIcon)
-        }
-        .help("Permission mode (⇧⌘M cycles). Dangerous commands always ask.")
-        .tint(controller.mode == .bypass ? .red : controller.mode == .plan ? .blue : nil)
-    }
-}
-
-struct ModelButton: View {
-    @Environment(AppState.self) private var app
-    let controller: SessionController
-    var body: some View {
-        Button { app.showModelPicker = true } label: {
-            Label(controller.model, systemImage: "cpu").labelStyle(.titleAndIcon).lineLimit(1)
-        }
-        .help("Model for this session (effort: \(AppSettings.shared.effort))")
     }
 }

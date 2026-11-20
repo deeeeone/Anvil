@@ -22,42 +22,51 @@ enum Segment: Identifiable {
 }
 
 struct ConversationView: View {
-    @Environment(AppState.self) private var app
     let controller: SessionController
+    static let column: CGFloat = 760
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 14) {
-                        if controller.session.items.isEmpty { EmptySessionView(controller: controller) }
-                        let segments = Segment.build(controller.session.items)
-                        ForEach(Array(segments.enumerated()), id: \.element.id) { idx, seg in
-                            switch seg {
-                            case .item(let item): ItemView(item: item, controller: controller)
-                            case .work(let items): WorkGroup(items: items, live: controller.running && idx == segments.count - 1)
+        if controller.session.items.isEmpty && !controller.running {
+            EmptySessionView(controller: controller)
+        } else {
+            VStack(spacing: 0) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 20) {
+                            let segments = Segment.build(controller.session.items)
+                            ForEach(Array(segments.enumerated()), id: \.element.id) { idx, seg in
+                                switch seg {
+                                case .item(let item): ItemView(item: item, controller: controller)
+                                case .work(let items): WorkGroup(items: items, live: controller.running && idx == segments.count - 1)
+                                }
                             }
+                            Color.clear.frame(height: 8).id("bottom")
                         }
-                        Color.clear.frame(height: 1).id("bottom")
+                        .padding(.horizontal, 28).padding(.top, 8).padding(.bottom, 12)
+                        .frame(maxWidth: Self.column + 56)
+                        .frame(maxWidth: .infinity)
                     }
-                    .padding(.horizontal, 22).padding(.vertical, 16)
-                    .frame(maxWidth: 920, alignment: .leading)
-                    .frame(maxWidth: .infinity)
+                    .scrollIndicators(.automatic)
+                    .onChange(of: controller.session.items.count) { _, _ in
+                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
+                    }
+                    .onChange(of: controller.pendingPermission?.id) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+                    .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
-                .onChange(of: controller.session.items.count) { _, _ in
-                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("bottom", anchor: .bottom) }
+                VStack(spacing: 10) {
+                    if let p = controller.pendingPermission { PermissionCard(pending: p) }
+                    if let q = controller.pendingQuestion { QuestionCard(pending: q) }
+                    StatusLine(controller: controller)
+                    Composer(controller: controller)
                 }
-                .onChange(of: controller.pendingPermission?.id) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
-                .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
+                .padding(.horizontal, 20).padding(.bottom, 16)
+                .frame(maxWidth: Self.column + 80)
+                .frame(maxWidth: .infinity)
+                .background(alignment: .top) {
+                    LinearGradient(colors: [Theme.window.opacity(0), Theme.window], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 28).offset(y: -28).allowsHitTesting(false)
+                }
             }
-            if let p = controller.pendingPermission {
-                PermissionCard(pending: p, controller: controller).padding(.horizontal, 16).padding(.bottom, 8)
-            }
-            if let q = controller.pendingQuestion {
-                QuestionCard(pending: q).padding(.horizontal, 16).padding(.bottom, 8)
-            }
-            StatusBar(controller: controller)
-            Composer(controller: controller)
         }
     }
 }
@@ -65,21 +74,43 @@ struct ConversationView: View {
 struct EmptySessionView: View {
     let controller: SessionController
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("What should we build?").font(.title2.weight(.semibold))
-            Text("Describe a feature, a bug or a question about \(controller.root.lastPathComponent). Big tasks start with a plan you approve. Type / for commands.")
-                .foregroundStyle(.secondary)
-            HStack(spacing: 8) {
-                ForEach(["/init", "Explain this codebase", "Find and fix failing tests"], id: \.self) { s in
-                    Button(s) { controller.send(s) }.buttonStyle(.bordered)
+        ScrollView {
+            VStack(spacing: 22) {
+                Spacer(minLength: 40)
+                Text("✻").font(.system(size: 34, weight: .bold)).foregroundStyle(Theme.accent)
+                Text("What are we building in \(controller.root.lastPathComponent)?")
+                    .font(.system(size: 26, weight: .semibold)).multilineTextAlignment(.center)
+                Composer(controller: controller, prominent: true)
+                FlowChips(items: ["Explain this codebase", "Find and fix failing tests", "/init"]) { controller.send($0) }
+                if ProjectContext.memory(controller.root).isEmpty {
+                    Text("Tip: /init writes an AGENTS.md so every session starts with the project's commands and conventions.")
+                        .font(.system(size: 12)).foregroundStyle(Theme.text3).multilineTextAlignment(.center)
                 }
+                Spacer(minLength: 40)
             }
-            if ProjectContext.memory(controller.root).isEmpty {
-                Text("Tip: /init writes an AGENTS.md so every session starts with the project's commands and conventions.")
-                    .font(.callout).foregroundStyle(.secondary).padding(.top, 4)
-            }
+            .padding(.horizontal, 24)
+            .frame(maxWidth: 720)
+            .frame(maxWidth: .infinity)
         }
-        .padding(.top, 40)
+        .scrollIndicators(.never)
+        .defaultScrollAnchor(.center)
+    }
+}
+
+/// Suggestion chips that wrap onto new lines when the window is narrow.
+struct FlowChips: View {
+    let items: [String]
+    let tap: (String) -> Void
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) { chips }
+            VStack(spacing: 8) { chips }
+        }
+    }
+    @ViewBuilder var chips: some View {
+        ForEach(items, id: \.self) { s in
+            Button(s) { tap(s) }.buttonStyle(Pill(kind: .ghost))
+        }
     }
 }
 
@@ -91,174 +122,199 @@ struct ItemView: View {
         switch item.kind {
         case .user:
             HStack {
-                Spacer(minLength: 60)
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text(item.text).textSelection(.enabled)
-                    if item.images > 0 { Label("\(item.images) image(s)", systemImage: "photo").font(.caption).foregroundStyle(.secondary) }
+                Spacer(minLength: 48)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(item.text).font(.system(size: 14)).textSelection(.enabled).lineSpacing(2)
+                    if item.images > 0 { Label("\(item.images) image\(item.images == 1 ? "" : "s")", systemImage: "photo").font(.caption).foregroundStyle(Theme.text3) }
                 }
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal, 15).padding(.vertical, 11)
+                .background(Theme.surface2, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
         case .assistant:
             MarkdownText(text: item.text).textSelection(.enabled)
         case .plan:
             if let plan = item.plan { PlanCardView(plan: plan, itemID: item.id, controller: controller) }
         case .system:
-            Text(item.text).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "info.circle").foregroundStyle(Theme.text3)
+                Text(item.text).font(.system(size: 12.5)).foregroundStyle(Theme.text2).textSelection(.enabled)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card(12, fill: Theme.surface.opacity(0.6))
         case .error:
-            Label { Text(item.text).textSelection(.enabled) } icon: { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
-                .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.amber)
+                Text(item.text).font(.system(size: 13)).textSelection(.enabled)
+            }
+            .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+            .card(12, fill: Theme.amber.opacity(0.08), stroke: Theme.amber.opacity(0.25))
         case .thought, .tool:
             WorkGroup(items: [item], live: false)
         }
     }
 }
 
-/// Folded, readable tool steps.
+/// The agent's work, in the spirit of Claude Code's transcript: a dot per action, a one-line result under it.
 struct WorkGroup: View {
     let items: [ChatItem]
     let live: Bool
     @State private var expanded: Bool?
 
-    private var isExpanded: Bool { expanded ?? (live || items.count <= 6) }
+    private var tools: [ToolStep] { items.compactMap(\.tool) }
+    private var collapsible: Bool { tools.count > 3 && !live }
+    private var isExpanded: Bool { expanded ?? !collapsible }
 
     var summary: String {
-        let tools = items.compactMap(\.tool)
-        var reads = 0, edits = 0, cmds = 0, searches = 0, other = 0
+        var reads = 0, edits = 0, cmds = 0, searches = 0
         for t in tools {
             switch t.name {
             case "read_file", "list_dir": reads += 1
             case "edit_file", "multi_edit", "write_file", "delete_file": edits += 1
             case "shell", "start_process": cmds += 1
             case "grep", "glob", "web_search", "fetch_url": searches += 1
-            default: other += 1
+            default: break
             }
         }
         var parts: [String] = []
-        if reads > 0 { parts.append("read \(reads)") }
-        if searches > 0 { parts.append("searched \(searches)") }
+        if reads > 0 { parts.append("read \(reads) file\(reads == 1 ? "" : "s")") }
+        if searches > 0 { parts.append("searched \(searches)×") }
         if edits > 0 { parts.append("edited \(edits)") }
         if cmds > 0 { parts.append("ran \(cmds) command\(cmds == 1 ? "" : "s")") }
-        if other > 0 { parts.append("\(other) other") }
-        let failed = tools.filter { $0.status == .failed || $0.status == .denied }.count
-        return (parts.isEmpty ? "Thinking" : parts.joined(separator: ", ").capitalizedFirst) + (failed > 0 ? " · \(failed) failed" : "")
+        let text = parts.isEmpty ? "\(tools.count) steps" : parts.joined(separator: ", ")
+        return text.prefix(1).uppercased() + text.dropFirst()
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if items.count > 1 {
+        VStack(alignment: .leading, spacing: 8) {
+            if collapsible {
                 Button { withAnimation(.snappy(duration: 0.2)) { expanded = !isExpanded } } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chevron.right").rotationEffect(.degrees(isExpanded ? 90 : 0)).font(.caption2.weight(.bold))
-                        Text(summary).font(.callout.weight(.medium))
-                        if live { ProgressView().controlSize(.mini) }
+                    HStack(spacing: 7) {
+                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        Text(summary).font(.system(size: 12.5, weight: .medium))
+                        let failed = tools.filter { $0.status == .failed || $0.status == .denied }.count
+                        if failed > 0 { Text("\(failed) failed").font(.system(size: 11.5)).foregroundStyle(Theme.red.opacity(0.8)) }
                     }
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.text3)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
-            if isExpanded || items.count == 1 {
-                VStack(alignment: .leading, spacing: 3) {
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 9) {
                     ForEach(items) { i in
                         switch i.kind {
-                        case .tool: ToolRow(item: i)
+                        case .tool: ToolLine(item: i)
                         case .thought:
-                            Text(i.text).font(.callout).foregroundStyle(.tertiary).italic().lineLimit(4).textSelection(.enabled)
-                                .padding(.leading, 2)
+                            Text(i.text).font(.system(size: 12.5)).italic().foregroundStyle(Theme.text3).lineLimit(3).textSelection(.enabled)
                         default:
-                            Text(i.text).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                            Text(i.text).font(.system(size: 13.5)).foregroundStyle(Theme.text2).textSelection(.enabled)
                         }
                     }
-                }
-                .padding(.leading, items.count > 1 ? 14 : 0)
-                .overlay(alignment: .leading) {
-                    if items.count > 1 { Rectangle().fill(.quaternary).frame(width: 1).padding(.leading, 4) }
                 }
             }
         }
     }
 }
 
-struct ToolRow: View {
+struct ToolLine: View {
     @Environment(AppState.self) private var app
     let item: ChatItem
     @State private var open = false
 
-    var icon: String {
-        switch item.tool?.name ?? "" {
-        case "read_file": return "doc.text"
-        case "edit_file", "multi_edit": return "pencil"
-        case "write_file": return "doc.badge.plus"
-        case "delete_file": return "trash"
-        case "shell": return "terminal"
-        case "start_process", "read_process", "stop_process", "list_processes": return "play.rectangle"
-        case "grep", "glob": return "magnifyingglass"
-        case "list_dir": return "folder"
-        case "web_search", "fetch_url": return "globe"
-        case "todo_write": return "checklist"
-        case "wait_until", "wait": return "hourglass"
-        case "ask_user": return "questionmark.bubble"
-        default: return "wrench.and.screwdriver"
+    /// "Read", "src/a.swift" from the step summary ("$ npm test" becomes "Run", "npm test").
+    var parts: (verb: String, target: String) {
+        let s = item.tool?.summary ?? item.text
+        if s.hasPrefix("$ ") { return ("Run", String(s.dropFirst(2))) }
+        guard let sp = s.firstIndex(of: " ") else { return (s, "") }
+        return (String(s[..<sp]), String(s[s.index(after: sp)...]))
+    }
+
+    var preview: String? {
+        guard let t = item.tool else { return nil }
+        switch t.status {
+        case .running: return nil
+        case .denied: return "Declined"
+        case .failed: return t.output.split(separator: "\n").first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.map { Fmt.line(String($0), 160) }
+        case .ok:
+            if !t.diffs.isEmpty {
+                return t.diffs.map { d in d.isNew ? "Created \(d.path), \(d.added) lines" : d.isDeleted ? "Deleted \(d.path)" : "\(d.path): added \(d.added), removed \(d.removed)" }.joined(separator: " · ")
+            }
+            if t.name == "shell" {
+                let lines = t.output.split(separator: "\n").map(String.init).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                let first = lines.first ?? ""
+                let last = lines.dropFirst().last.map { Fmt.line($0, 120) } ?? ""
+                return last.isEmpty ? first : "\(first) · \(last)"
+            }
+            if t.name == "read_file" { return nil }
+            let first = t.output.split(separator: "\n").first.map(String.init) ?? ""
+            return first.isEmpty ? nil : Fmt.line(first, 140)
+        }
+    }
+
+    var dot: Color {
+        switch item.tool?.status ?? .ok {
+        case .running: return Theme.accent
+        case .ok: return Theme.green
+        case .failed: return Theme.red
+        case .denied: return Theme.amber
         }
     }
 
     var body: some View {
         if let t = item.tool {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 5) {
                 Button { withAnimation(.snappy(duration: 0.18)) { open.toggle() } } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: icon).frame(width: 16).foregroundStyle(.secondary)
-                        Text(t.summary).font(.system(.callout, design: t.name == "shell" ? .monospaced : .default)).lineLimit(1).truncationMode(.middle)
-                            .layoutPriority(-1)
-                        ForEach(t.diffs) { d in
-                            Text(d.statLabel).font(.caption.monospacedDigit())
-                                .foregroundStyle(d.isDeleted ? .red : .green)
+                    HStack(alignment: .firstTextBaseline, spacing: 9) {
+                        Group {
+                            if t.status == .running { Spinner().scaleEffect(0.75) }
+                            else { Circle().fill(dot).frame(width: 7, height: 7) }
                         }
-                        Spacer(minLength: 4)
-                        if let dur = t.duration, dur >= 1 { Text(String(format: "%.0fs", dur)).font(.caption2).foregroundStyle(.tertiary) }
-                        statusIcon(t.status)
+                        .frame(width: 12)
+                        (Text(parts.verb).fontWeight(.semibold).foregroundColor(Theme.text)
+                         + Text(parts.target.isEmpty ? "" : "  " + parts.target).font(.system(size: 12.5, design: .monospaced)).foregroundColor(Theme.text2))
+                            .font(.system(size: 13))
+                            .lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 6)
+                        if let d = t.duration, d >= 2 { Text(String(format: "%.0fs", d)).font(.system(size: 11)).foregroundStyle(Theme.text3) }
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                if let p = preview {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("⎿").foregroundStyle(Theme.text3)
+                        Text(p).foregroundStyle(t.status == .failed ? Theme.red.opacity(0.85) : Theme.text3).lineLimit(2)
+                    }
+                    .font(.system(size: 12, design: .monospaced))
+                    .padding(.leading, 21)
+                }
                 if open {
-                    if !t.diffs.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
                         ForEach(t.diffs) { d in
-                            VStack(alignment: .leading, spacing: 4) {
+                            VStack(alignment: .leading, spacing: 6) {
                                 HStack {
-                                    Text(d.path).font(.caption.monospaced()).foregroundStyle(.secondary)
+                                    Text(d.path).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.text2)
                                     Spacer()
-                                    Button("Open in Inspector") { app.selectedDiff = d; app.previewFile = nil; app.inspectorTab = .changes; app.showInspector = true }
-                                        .buttonStyle(.link).font(.caption)
+                                    Button("Open") { app.selectedDiff = d; app.previewFile = nil; app.inspectorTab = .changes; app.showInspector = true }
+                                        .buttonStyle(Pill(kind: .ghost, compact: true))
                                 }
-                                DiffView(unified: d.unified, compact: true).frame(maxHeight: 320)
+                                DiffView(unified: d.unified, compact: true).frame(height: DiffView.height(d.unified, max: 320))
                             }
                         }
-                    }
-                    if !t.output.isEmpty && (t.diffs.isEmpty || t.status != .ok) {
-                        ScrollView {
-                            Text(t.output).font(.system(size: 11.5, design: .monospaced)).textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                        if !t.output.isEmpty && (t.diffs.isEmpty || t.status != .ok) {
+                            ScrollView {
+                                Text(t.output).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.text2).textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                            }
+                            .frame(maxHeight: 280)
+                            .card(12, fill: Theme.code)
                         }
-                        .frame(maxHeight: 260)
-                        .background(.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
                     }
+                    .padding(.leading, 21)
                 }
             }
-        }
-    }
-
-    @ViewBuilder func statusIcon(_ s: ToolStep.Status) -> some View {
-        switch s {
-        case .running: ProgressView().controlSize(.mini)
-        case .ok: Image(systemName: "checkmark").font(.caption.weight(.semibold)).foregroundStyle(.green)
-        case .failed: Image(systemName: "xmark").font(.caption.weight(.semibold)).foregroundStyle(.red)
-        case .denied: Image(systemName: "hand.raised.fill").font(.caption).foregroundStyle(.orange)
         }
     }
 }
@@ -272,98 +328,126 @@ struct PlanCardView: View {
     var pending: Bool { controller.pendingPlan?.itemID == itemID }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("Plan", systemImage: "list.bullet.clipboard").font(.headline)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "list.bullet.clipboard").foregroundStyle(Theme.accent)
+                Text("Plan").font(.system(size: 14, weight: .semibold))
                 Spacer()
-                Text(plan.state == .pending ? (pending ? "waiting for you" : "not approved") : plan.state.rawValue)
-                    .font(.caption).foregroundStyle(.secondary)
+                Text(statusLabel).font(.system(size: 11.5, weight: .medium)).foregroundStyle(pending ? Theme.accent : Theme.text3)
             }
-            ForEach(Array(plan.steps.enumerated()), id: \.offset) { i, s in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Image(systemName: plan.done.contains(i + 1) ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(plan.done.contains(i + 1) ? .green : .secondary)
-                    Text("\(s)").strikethrough(plan.done.contains(i + 1), color: .secondary)
+            VStack(alignment: .leading, spacing: 9) {
+                ForEach(Array(plan.steps.enumerated()), id: \.offset) { i, s in
+                    let done = plan.done.contains(i + 1)
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        ZStack {
+                            Circle().stroke(done ? Theme.green : Theme.borderStrong, lineWidth: 1.5).frame(width: 18, height: 18)
+                            if done { Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.green) }
+                            else { Text("\(i + 1)").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.text3) }
+                        }
+                        Text(s).font(.system(size: 13.5)).foregroundStyle(done ? Theme.text3 : Theme.text).strikethrough(done, color: Theme.text3)
+                    }
                 }
             }
             if pending, let p = controller.pendingPlan {
-                TextField("Ask for changes (optional)", text: $revision, axis: .vertical).textFieldStyle(.roundedBorder).lineLimit(1...4)
-                HStack {
-                    if !revision.trimmingCharacters(in: .whitespaces).isEmpty {
-                        Button("Revise plan") { p.resume(.revise(revision)) }.keyboardShortcut(.return)
-                    } else {
-                        Button("Approve") { p.resume(.approve) }.keyboardShortcut(.return).buttonStyle(.borderedProminent)
-                        Button("Approve, auto-edit") { p.resume(.approveAutoEdits) }.help("Approve and auto-accept edits for this session")
-                    }
-                    Spacer(minLength: 4)
-                    Button("Cancel", role: .cancel) { p.resume(.cancel) }
+                TextField("Ask for changes (optional)", text: $revision, axis: .vertical)
+                    .textFieldStyle(.plain).font(.system(size: 13)).lineLimit(1...4)
+                    .padding(.horizontal, 12).padding(.vertical, 9)
+                    .card(11, fill: Theme.surface2)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) { planButtons(p); Spacer(minLength: 6); cancel(p) }
+                    VStack(alignment: .leading, spacing: 8) { HStack(spacing: 8) { planButtons(p) }; cancel(p) }
                 }
             }
         }
-        .padding(14)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(pending ? Color.accentColor.opacity(0.6) : .clear, lineWidth: 1))
+        .padding(18)
+        .card(18, fill: Theme.surface, stroke: pending ? Theme.accent.opacity(0.5) : Theme.border)
+    }
+
+    var statusLabel: String {
+        switch plan.state {
+        case .pending: return pending ? "Waiting for you" : "Not approved"
+        case .approved: return "\(plan.done.count) of \(plan.steps.count) done"
+        case .revised: return "Revised"
+        case .cancelled: return "Cancelled"
+        }
+    }
+
+    @ViewBuilder func planButtons(_ p: PendingPlan) -> some View {
+        if !revision.trimmingCharacters(in: .whitespaces).isEmpty {
+            Button("Revise plan") { p.resume(.revise(revision)) }.buttonStyle(Pill(kind: .primary)).keyboardShortcut(.return)
+        } else {
+            Button("Approve") { p.resume(.approve) }.buttonStyle(Pill(kind: .primary)).keyboardShortcut(.return)
+            Button("Approve, auto-accept edits") { p.resume(.approveAutoEdits) }.buttonStyle(Pill(kind: .secondary))
+        }
+    }
+
+    func cancel(_ p: PendingPlan) -> some View {
+        Button("Cancel") { p.resume(.cancel) }.buttonStyle(Pill(kind: .ghost))
     }
 }
 
 struct PermissionCard: View {
     let pending: PendingPermission
-    let controller: SessionController
     @State private var note = ""
 
     var body: some View {
         let r = pending.request
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: r.command != nil ? "terminal" : "pencil").foregroundStyle(Color.accentColor)
-                Text(title(r)).font(.headline).lineLimit(2)
-                Spacer()
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: r.command != nil ? "terminal" : "pencil")
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.accent)
+                    .frame(width: 26, height: 26)
+                    .background(Theme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                Text(title(r)).font(.system(size: 14, weight: .semibold)).lineLimit(2)
+                Spacer(minLength: 6)
                 if r.reason != "edit" && r.reason != "run command" {
-                    Text(r.reason).font(.caption).foregroundStyle(.orange).lineLimit(2)
+                    Label(r.reason, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.amber).lineLimit(2)
                 }
             }
             if let cmd = r.command {
-                Text(cmd).font(.system(.callout, design: .monospaced)).textSelection(.enabled).lineLimit(8)
-                    .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                Text(cmd).font(.system(size: 12.5, design: .monospaced)).foregroundStyle(Theme.text).textSelection(.enabled).lineLimit(8)
+                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    .card(11, fill: Theme.code)
             }
-            if !r.diffs.isEmpty {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(r.diffs) { d in
-                            Text("\(d.path)  \(d.statLabel)").font(.caption.monospaced()).foregroundStyle(.secondary)
-                            DiffView(unified: d.unified, compact: true)
-                        }
-                    }
-                }
-                .frame(maxHeight: 280)
+            ForEach(r.diffs.prefix(4)) { d in
+                if r.diffs.count > 1 { Text("\(d.path)  \(d.statLabel)").font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.text3) }
+                DiffView(unified: d.unified, compact: true)
+                    .frame(height: DiffView.height(d.unified, max: r.diffs.count > 1 ? 140 : 260))
             }
-            TextField("Tell the agent what to do instead (optional, used if you decline)", text: $note).textFieldStyle(.roundedBorder)
+            if r.diffs.count > 4 { Text("and \(r.diffs.count - 4) more files").font(.system(size: 11.5)).foregroundStyle(Theme.text3) }
+            TextField("Or tell the agent what to do instead", text: $note)
+                .textFieldStyle(.plain).font(.system(size: 13))
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .card(10, fill: Theme.surface2)
+                .onSubmit { if !note.isEmpty { pending.resume(.deny(note)) } }
             ViewThatFits(in: .horizontal) {
-                HStack { buttons(r); Spacer(minLength: 8); decline }
-                VStack(alignment: .leading, spacing: 6) { HStack { buttons(r) }; decline }
+                HStack(spacing: 8) { allow(r); Spacer(minLength: 6); decline }
+                VStack(alignment: .leading, spacing: 8) { HStack(spacing: 8) { allow(r) }; decline }
             }
         }
-        .padding(14)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.accentColor.opacity(0.5), lineWidth: 1))
-        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+        .padding(16)
+        .card(18, fill: Theme.surface, stroke: Theme.accent.opacity(0.45))
+        .shadow(color: .black.opacity(0.5), radius: 24, y: 10)
     }
 
-    @ViewBuilder func buttons(_ r: PermissionRequest) -> some View {
-        Button("Allow") { pending.resume(.allow) }.keyboardShortcut(.return).buttonStyle(.borderedProminent)
+    @ViewBuilder func allow(_ r: PermissionRequest) -> some View {
+        Button { pending.resume(.allow) } label: { Text("Allow") + Text("  ⏎").foregroundColor(.white.opacity(0.6)) }
+            .buttonStyle(Pill(kind: .primary)).keyboardShortcut(.return, modifiers: [])
         if r.command != nil {
             if let key = r.commandKey, Permissions.dangerReason(r.command ?? "") == nil {
-                Button("Always allow \u{201C}\(Fmt.line(key, 30))\u{201D}") { pending.resume(.allowSession) }
-                    .help("Allow this command for the rest of the session")
+                Button("Always allow \u{201C}\(Fmt.line(key, 28))\u{201D}") { pending.resume(.allowSession) }
+                    .buttonStyle(Pill(kind: .secondary)).help("Allow this command for the rest of the session")
             }
         } else {
-            Button("Allow all edits") { pending.resume(.allowSession) }.help("Switch this session to auto-accept edits")
+            Button("Allow all edits") { pending.resume(.allowSession) }
+                .buttonStyle(Pill(kind: .secondary)).help("Switch this session to auto-accept edits")
         }
     }
 
     var decline: some View {
-        Button("Decline") { pending.resume(.deny(note.isEmpty ? nil : note)) }.keyboardShortcut(.escape, modifiers: [])
+        Button { pending.resume(.deny(note.isEmpty ? nil : note)) } label: { Text("Decline") + Text("  esc").foregroundColor(Theme.text3) }
+            .buttonStyle(Pill(kind: .ghost)).keyboardShortcut(.escape, modifiers: [])
     }
 
     func title(_ r: PermissionRequest) -> String {
@@ -377,39 +461,40 @@ struct QuestionCard: View {
     let pending: PendingQuestion
     @State private var answer = ""
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(pending.question, systemImage: "questionmark.bubble").font(.headline)
-            HStack {
-                TextField("Your answer", text: $answer).textFieldStyle(.roundedBorder).onSubmit { pending.resume(answer) }
-                Button("Reply") { pending.resume(answer) }.buttonStyle(.borderedProminent).disabled(answer.isEmpty)
-                Button("Skip") { pending.resume(nil) }
+        VStack(alignment: .leading, spacing: 10) {
+            Label(pending.question, systemImage: "questionmark.bubble").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.text)
+            HStack(spacing: 8) {
+                TextField("Your answer", text: $answer).textFieldStyle(.plain).font(.system(size: 13))
+                    .padding(.horizontal, 12).padding(.vertical, 8).card(10, fill: Theme.surface2)
+                    .onSubmit { pending.resume(answer) }
+                Button("Reply") { pending.resume(answer) }.buttonStyle(Pill(kind: .primary)).disabled(answer.isEmpty)
+                Button("Skip") { pending.resume(nil) }.buttonStyle(Pill(kind: .ghost))
             }
         }
-        .padding(14)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
+        .padding(16)
+        .card(18, fill: Theme.surface, stroke: Theme.accent.opacity(0.45))
     }
 }
 
-struct StatusBar: View {
+/// "✻ Running npm test… 12s · esc to interrupt"
+struct StatusLine: View {
     let controller: SessionController
     var body: some View {
-        if controller.running || !controller.status.isEmpty {
+        if controller.running {
             HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text(controller.status.isEmpty ? "Working" : controller.status).font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                Spinner()
+                Text((controller.status.isEmpty ? "Working" : controller.status) + "…")
+                    .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.accent.opacity(0.95))
+                    .lineLimit(1).truncationMode(.middle)
                 if let s = controller.startedAt {
                     TimelineView(.periodic(from: s, by: 1)) { ctx in
-                        Text("\(Int(ctx.date.timeIntervalSince(s)))s").font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
+                        Text("\(Int(ctx.date.timeIntervalSince(s)))s").font(.system(size: 12).monospacedDigit()).foregroundStyle(Theme.text3)
                     }
                 }
-                Spacer()
-                Button("Stop") { controller.stop() }.keyboardShortcut(".", modifiers: .command).controlSize(.small)
+                Text("· esc to interrupt").font(.system(size: 12)).foregroundStyle(Theme.text3).lineLimit(1).layoutPriority(-1)
+                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 18).padding(.vertical, 6)
+            .padding(.horizontal, 6)
         }
     }
-}
-
-extension String {
-    var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
 }
