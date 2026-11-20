@@ -51,50 +51,92 @@ nonisolated struct ModelInfo: Identifiable, Hashable, Sendable {
     }
 }
 
-/// The provider's model list (from /v1/models, cached on disk so the picker works offline).
+/// The models Anvil offers: four from Experiential Labs (with prices), everything the Luna API lists,
+/// and the Gemini proxy's models. Lists are cached on disk so the picker works offline.
 @Observable
 final class ModelCatalog {
     static let shared = ModelCatalog()
+    /// Experiential Labs pricing info for the offered models.
     private(set) var models: [ModelInfo] = []
+    private(set) var lunaModels: [String] = Providers.defaultLunaModels
+    private(set) var geminiModels: [String] = Providers.defaultGeminiModels
     private(set) var error: String?
     private(set) var loading = false
     private var cacheURL: URL { Paths.support.appendingPathComponent("models-cache.json") }
 
     private init() {
         if let data = try? Data(contentsOf: cacheURL), let j = JSON.parse(String(decoding: data, as: UTF8.self)) {
-            models = Self.parseList(j)
+            models = Self.parseList(j["experiential"] ?? j)
+            if let l = j["luna"]?.array?.compactMap(\.string), !l.isEmpty { lunaModels = l }
+            if let g = j["gemini"]?.array?.compactMap(\.string), !g.isEmpty { geminiModels = g }
         }
     }
 
     func info(_ id: String) -> ModelInfo? { models.first { $0.id == id } }
-    var chatModels: [ModelInfo] { models.filter(\.chat) }
+
+    /// Everything the picker shows, grouped by provider in a fixed order.
+    var choices: [ModelChoice] {
+        let exp = Providers.experientialModels.map { id in
+            ModelChoice(id: id, provider: .experiential, detail: [info(id)?.priceLabel ?? "", info(id)?.contextLabel ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
+        }
+        let luna = lunaModels.map { ModelChoice(id: $0, provider: .luna, detail: "free") }
+        let gem = geminiModels.map { ModelChoice(id: $0, provider: .gemini, detail: "free, via your proxy") }
+        return exp + luna + gem
+    }
+
+    /// Kept for older call sites: the offered Experiential models.
+    var chatModels: [ModelInfo] { Providers.experientialModels.map { info($0) ?? ModelInfo(id: $0) } }
 
     nonisolated static func parseList(_ j: JSON) -> [ModelInfo] {
         (j["data"]?.array ?? j.array ?? []).compactMap(ModelInfo.parse).sorted { $0.id < $1.id }
     }
 
+    /// Luna's list, with gpt-6-luna first.
+    nonisolated static func lunaList(_ j: JSON) -> [String] {
+        let ids = (j["data"]?.array ?? j.array ?? []).compactMap { $0["id"]?.string ?? $0.string }
+        return ids.sorted { a, b in a == "gpt-6-luna" ? true : b == "gpt-6-luna" ? false : a < b }
+    }
+
     func refresh() async {
         let s = AppSettings.shared
-        guard let base = URL(string: s.baseURL) else { error = "Set the provider base URL first."; return }
         loading = true
         defer { loading = false }
-        var req = URLRequest(url: base.appendingPathComponent("v1/models"))
-        req.timeoutInterval = 30
-        if !s.apiKey.isEmpty { req.setValue("Bearer \(s.apiKey)", forHTTPHeaderField: "Authorization") }
-        do {
-            let (data, resp) = try await URLSession.shared.data(for: req)
-            let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            guard (200..<300).contains(status), let j = JSON.parse(String(decoding: data, as: UTF8.self)) else {
-                error = JSON.parse(String(decoding: data, as: UTF8.self))?["error"]?["message"]?.string ?? "The provider returned \(status)."
-                return
-            }
-            let list = Self.parseList(j)
-            guard !list.isEmpty else { error = "No models in the response."; return }
-            models = list
-            error = nil
-            try? data.write(to: cacheURL)
-        } catch {
-            self.error = error.localizedDescription
+        var problems: [String] = []
+        var cache: [String: Any] = [:]
+        if s.hasKey, let base = URL(string: s.baseURL) {
+            var req = URLRequest(url: base.appendingPathComponent("v1/models"))
+            req.timeoutInterval = 30
+            req.setValue("Bearer \(s.apiKey)", forHTTPHeaderField: "Authorization")
+            if let (data, resp) = try? await URLSession.shared.data(for: req), (resp as? HTTPURLResponse)?.statusCode == 200,
+               let j = JSON.parse(String(decoding: data, as: UTF8.self)) {
+                models = Self.parseList(j).filter { Providers.experientialModels.contains($0.id) }
+            } else { problems.append("Experiential Labs") }
         }
+        if let base = URL(string: s.lunaURL) {
+            var req = URLRequest(url: base.appendingPathComponent("v1/models"))
+            req.timeoutInterval = 30
+            if let (data, _) = try? await URLSession.shared.data(for: req), let j = JSON.parse(String(decoding: data, as: UTF8.self)) {
+                let l = Self.lunaList(j)
+                if !l.isEmpty { lunaModels = l }
+            } else { problems.append("Luna API") }
+        }
+        if !s.geminiKey.isEmpty, let base = URL(string: s.geminiURL) {
+            if let l = try? await GeminiWebClient(baseURL: base, apiKey: s.geminiKey).models(), !l.isEmpty { geminiModels = l }
+            else { problems.append("Gemini proxy") }
+        }
+        error = problems.isEmpty ? nil : "Couldn't reach: " + problems.joined(separator: ", ")
+        cache["experiential"] = ["data": models.map { m -> [String: Any] in
+            var o: [String: Any] = ["id": m.id]
+            if let c = m.contextTokens { o["context_window_tokens"] = c }
+            var p: [String: Any] = [:]
+            if let v = m.inputPerMillion { p["input_nano_usd_per_million_tokens"] = v * 1_000_000_000 }
+            if let v = m.outputPerMillion { p["output_nano_usd_per_million_tokens"] = v * 1_000_000_000 }
+            if let v = m.cachedInputPerMillion { p["cached_input_nano_usd_per_million_tokens"] = v * 1_000_000_000 }
+            o["pricing"] = p
+            return o
+        }]
+        cache["luna"] = lunaModels
+        cache["gemini"] = geminiModels
+        if let data = try? JSONSerialization.data(withJSONObject: cache) { try? data.write(to: cacheURL) }
     }
 }

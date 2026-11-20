@@ -245,22 +245,41 @@ struct ModePill: View {
 }
 
 struct ModelPill: View {
-    @Environment(AppState.self) private var app
     let controller: SessionController
     var body: some View {
-        Button { app.showModelPicker = true } label: {
+        let catalog = ModelCatalog.shared
+        Menu {
+            ForEach(Provider.allCases) { p in
+                let ready = AppSettings.shared.ready(p)
+                Section(p.label + (ready ? "" : " (not set up)")) {
+                    ForEach(catalog.choices.filter { $0.provider == p }) { c in
+                        Button {
+                            controller.model = c.id
+                        } label: {
+                            if c.id == controller.model { Label(c.id, systemImage: "checkmark") } else { Text(c.id) }
+                        }
+                        .disabled(!ready)
+                    }
+                }
+            }
+            Divider()
+            SettingsLink { Text("Set up providers…") }
+        } label: {
             HStack(spacing: 5) {
-                Image(systemName: "cpu").font(.system(size: 11, weight: .semibold))
+                Image(systemName: Providers.provider(for: controller.model).symbol).font(.system(size: 11, weight: .semibold))
                 Text(controller.model).font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.text3)
             }
             .foregroundStyle(Theme.text2)
             .padding(.horizontal, 9).padding(.vertical, 5)
             .overlay(Capsule().stroke(Theme.border))
             .contentShape(Capsule())
-            .frame(maxWidth: 200, alignment: .leading)
         }
-        .buttonStyle(.plain)
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+        .frame(maxWidth: 230, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
         .layoutPriority(-0.5)
-        .help("Model (effort: \(AppSettings.shared.effort))")
+        .help("\(Providers.provider(for: controller.model).label), effort \(AppSettings.shared.effort)")
+        .task { if catalog.models.isEmpty { await catalog.refresh() } }
     }
 }

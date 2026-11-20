@@ -190,8 +190,8 @@ struct WelcomeView: View {
                 .frame(maxWidth: 420)
                 .padding(.top, 10)
             }
-            if !AppSettings.shared.hasKey {
-                Text("No API key yet. Add one in Settings (⌘,).").font(.callout).foregroundStyle(Theme.amber)
+            if !AppSettings.shared.ready(Providers.provider(for: AppSettings.shared.model)) {
+                Text("The selected model's provider isn't set up yet. Open Settings (⌘,).").font(.callout).foregroundStyle(Theme.amber)
             }
             Spacer()
         }

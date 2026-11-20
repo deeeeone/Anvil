@@ -63,7 +63,7 @@ enum Headless {
             if let i = checkpoints.firstIndex(where: { $0.id == cp.id }) { checkpoints[i] = cp } else { checkpoints.append(cp) }
         }
         host.items.append(ChatItem(kind: .user, text: prompt))
-        print("▶︎ \(prompt)\n  project: \(root.path), mode: \(mode.label), model: \(brain.model), effort: \(brain.effort)")
+        print("▶︎ \(prompt)\n  project: \(root.path), mode: \(mode.label), model: \(brain.model) (\(Providers.provider(for: brain.model).label)), effort: \(brain.effort)")
         let start = Date()
         let outcome = await agent.run(goal: prompt)
         processes.stopAll()

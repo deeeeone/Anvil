@@ -49,7 +49,7 @@ nonisolated enum ProcessRunner {
         env["PAGER"] = "cat"
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["CI"] = env["CI"] ?? "1"
-        env.removeValue(forKey: "ANVIL_API_KEY")   // never leak the provider key into project commands
+        env.removeValue(forKey: "ANVIL_API_KEY"); env.removeValue(forKey: "ANVIL_GEMINI_KEY")   // never leak the provider key into project commands
         return env
     }
 

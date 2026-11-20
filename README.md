@@ -17,7 +17,11 @@ Anvil reuses the brain of [Peep](../peep) (same provider, same text protocol, sa
 - **Slash commands.** `/init`, `/clear`, `/compact [focus]`, `/model [id]`, `/cost`, `/mode`, `/effort`, `/undo`, `/commit`, `/diff`, `/skills`, `/mcp`, `/help`, plus custom commands: markdown files in `.anvil/commands` or `.claude/commands` (project), `~/Library/Application Support/Anvil/commands` or `~/.claude/commands`. `$ARGUMENTS` is replaced with whatever follows the command, and subfolders become `/folder:name`.
 - **Skills.** `SKILL.md` folders from the project (`.anvil/skills`, `.claude/skills`), Anvil's own folder and `~/.claude/skills`. Matching skills are mentioned in the briefing and loaded with `use_skill`.
 - **Context management.** Old images are dropped and long outputs clipped in batches of 10 messages, so earlier history stays byte-identical and the provider's prompt cache keeps hitting (cached input is about half price). Past a threshold (160k tokens by default) the session is compacted automatically by summarising, and `/compact` does it on demand.
-- **Models and cost.** The model picker reads the provider's `/v1/models` with prices and context sizes. The usage and cost meter shows per-session totals, and the context size is shown under the composer. Thinking effort defaults to **high** (the provider default, max, is about twice as slow per step). An optional vision model handles pasted screenshots (⌘V, drag and drop, or the paperclip).
+- **Models and providers.** Three providers, chosen from a menu on the composer:
+  - **Experiential Labs** (API key): `glm-5.3-flash-uncensored` (default), `glm-5.3-flash` (also the vision model for pasted screenshots), `deepseek-v4.1-flash-uncensored`, `deepseek-v4.1-flash`, with prices.
+  - **Luna API** (your keyless OpenAI-compatible endpoint): `gpt-6-luna` and whatever else it lists at `/v1/models`.
+  - **Gemini (web proxy)**: your self-hosted Gemini web API (`gemini-auto`), the same one Peep uses. Its server-side sessions are reused, so only the newest turn is sent.
+  Settings has one section per provider and **Import keys from Peep** copies both keys. There's a per-session usage and cost meter (Luna and Gemini are free), and thinking effort defaults to **high**.
 - **MCP.** Stdio servers from `~/Library/Application Support/Anvil/mcp.json` and the project's `.mcp.json` (Claude's format) become `server.tool` actions.
 - **Design.** Deep blacks, rounded surfaces, one warm coral accent, and a transcript modelled on Claude Code: a dot for each action, a one-line `⎿` result under it, and a cycling ✻ spinner with "esc to interrupt". The layout adapts to the window: wide windows show sidebar, conversation and inspector side by side; medium windows slide the inspector over the chat as a rounded panel; narrow windows hide the sidebar and slide it in on demand. The inspector has Changes (diffs, checkpoints), Files (tree and preview), Plan, Terminal (live output and background processes) and Git.
 
@@ -31,7 +35,7 @@ xcodebuild -project Anvil.xcodeproj -scheme Anvil -derivedDataPath build build
 open build/Build/Products/Debug/Anvil.app
 ```
 
-On first launch, open Settings (⌘,) and either paste an API key or click **Import key from Peep**. The key lives in Anvil's own Keychain entry (service `com.diwan.anvil`); macOS may ask once to let Anvil read Peep's entry. The default provider is the Experiential Labs gateway (`https://api.experientiallabs.ai`), with `glm-5.3-flash-uncensored` as the model and `glm-5.3-flash` for images.
+On first launch, open Settings (⌘,) and click **Import keys from Peep** (or paste the Experiential Labs and Gemini proxy keys). Keys live in Anvil's own Keychain entries (service `com.diwan.anvil`); macOS may ask once to let Anvil read Peep's. The Luna API needs no key.
 
 Tests:
 
@@ -54,7 +58,7 @@ ANVIL_API_KEY=... build/Build/Products/Debug/Anvil.app/Contents/MacOS/Anvil --he
 - `--model ID`, `--max-steps N`: override the model and the step limit.
 - `--parse FILE`: runs the reply parser on a saved model reply, for debugging protocol drift.
 
-`ANVIL_API_KEY` is used in memory only and is removed from the environment of every command the agent runs.
+`ANVIL_API_KEY` (Experiential Labs) and `ANVIL_GEMINI_KEY` (Gemini proxy) are used in memory only. Neither is passed to the commands the agent runs.
 
 ## Architecture
 
@@ -92,6 +96,7 @@ Hardening that came out of live runs:
 - **Useful parse errors.** When a reply still can't be parsed, the model is shown where its JSON broke.
 - **No blind overwrites.** `write_file` refuses to overwrite a file the agent hasn't read in this session.
 - **Servers go to the background.** Server commands sent to `shell` are redirected to `start_process`.
+- **Re-anchoring.** A model that answers "I can't access your files" before doing anything (`gpt-6-luna` did) is reminded that the app runs its actions, up to twice.
 - **Tests stay honest.** The prompt forbids weakening tests to get them passing.
 
 ## Sandbox evaluation (glm-5.3-flash-uncensored, effort high)

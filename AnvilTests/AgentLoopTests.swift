@@ -244,6 +244,27 @@ final class AgentLoopTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: dir.appendingPathComponent("calc.py"), encoding: .utf8), "x = 1\n")
     }
 
+    func testReanchorsAModelThatSaysItCantAct() async {
+        let agent = makeAgent([
+            "I can’t access the project files or run commands here. Please provide wc.py.",
+            fence(#"{"say": "Looked.", "actions": [{"tool": "list_dir", "args": {}}], "done": false}"#),
+            fence(#"{"say": "done", "done": true}"#),
+        ])
+        let out = await agent.run(goal: "fix it")
+        XCTAssertEqual(out.text, "done")
+        XCTAssertTrue(sent[1].last!.text.contains("You do have access"))
+    }
+
+    func testReanchorsAJSONRefusal() async {
+        let agent = makeAgent([
+            fence(#"{"say": "I can't access the project files here. Please paste wc.py.", "actions": [], "done": true}"#),
+            fence(#"{"say": "ok", "done": true}"#),
+        ])
+        let out = await agent.run(goal: "fix it")
+        XCTAssertEqual(out.text, "ok")
+        XCTAssertTrue(sent[1].last!.text.contains("You do have access"))
+    }
+
     func testTodoWrite() async {
         let agent = makeAgent([fence(#"{"actions": [{"tool": "todo_write", "args": {"todos": [{"content": "a", "status": "completed"}, {"content": "b", "status": "in_progress"}]}}]}"#), fence(#"{"say": "ok", "done": true}"#)])
         _ = await agent.run(goal: "x")

@@ -180,7 +180,7 @@ nonisolated final class MCPStdioClient: @unchecked Sendable {
         process.arguments = [command] + config.args.map { ($0 as NSString).expandingTildeInPath }
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = ProcessRunner.basePath + ":" + (env["PATH"] ?? "")
-        env.removeValue(forKey: "ANVIL_API_KEY")
+        env.removeValue(forKey: "ANVIL_API_KEY"); env.removeValue(forKey: "ANVIL_GEMINI_KEY")
         for (k, v) in config.env { env[k] = v }
         process.environment = env
         process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser

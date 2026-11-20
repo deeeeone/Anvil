@@ -53,7 +53,7 @@ struct SidebarView: View {
                         Image(systemName: "gearshape").foregroundStyle(Theme.text2)
                         Text("Settings").font(.system(size: 13)).foregroundStyle(Theme.text2)
                         Spacer()
-                        if !AppSettings.shared.hasKey { Circle().fill(Theme.amber).frame(width: 7, height: 7).help("No API key yet") }
+                        if !AppSettings.shared.ready(Providers.provider(for: app.current?.model ?? AppSettings.shared.model)) { Circle().fill(Theme.amber).frame(width: 7, height: 7).help("No API key yet") }
                     }
                 }
             }

@@ -83,6 +83,8 @@ final class Agent {
         unsent = nil
         var pendingImages = images
         var parseFailures = 0
+        var reanchors = 0
+        var actedThisRequest = false
         var planApproved = false
         var planShown = false
         var lastMode = mode
@@ -128,6 +130,12 @@ final class Agent {
                 parseFailures = 0
             } catch {
                 parseFailures += 1
+                // Chat-tuned models sometimes say they "can't access files". They can: re-anchor them (twice at most).
+                if Self.looksLikeCantAct(raw) && reanchors < 2 {
+                    reanchors += 1
+                    userText = "<observation step=\(step)>You do have access. This app executes the actions you list in the json block, on the owner's project, with their permission, and sends you the results. You never need the owner to paste files or run commands. Continue with the request: \"\(Fmt.line(goal, 300))\". Start by reading or searching the relevant files. \(PromptBuilder.formatReminder)</observation>"
+                    continue
+                }
                 // Plain-text answer with no JSON at all: treat it as the final reply.
                 if !raw.contains("```") && !raw.contains("{") && !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     return finish(raw.trimmingCharacters(in: .whitespacesAndNewlines), ok: true, steps: step)
@@ -165,6 +173,12 @@ final class Agent {
             }
 
             if reply.actions.isEmpty {
+                // A "final answer" that says it can't touch the project, before doing anything: re-anchor instead.
+                if !actedThisRequest && reanchors < 2 && Self.looksLikeCantAct((reply.say ?? "") + " " + reply.thought) {
+                    reanchors += 1
+                    userText = "<observation step=\(step)>You do have access. This app executes the actions you list in the json block, on the owner's project, with their permission, and sends you the results. You never need the owner to paste files or run commands. Continue with the request: \"\(Fmt.line(goal, 300))\". Start with an action such as read_file or list_dir. \(PromptBuilder.formatReminder)</observation>"
+                    continue
+                }
                 if reply.done || reply.say != nil {
                     return finish(reply.say ?? reply.thought, ok: true, steps: step)
                 }
@@ -177,6 +191,7 @@ final class Agent {
             var results: [String] = []
             var images: [(Data, String)] = []
             var anyFailed = false
+            actedThisRequest = true
             for (i, action) in reply.actions.enumerated() {
                 if Task.isCancelled { break }
                 let r = await execute(action)
@@ -373,6 +388,14 @@ final class Agent {
         case "ask_user": return "Ask: \(Fmt.line(args["question"]?.string ?? "", 100))"
         default: return "\(a.tool) \(Fmt.line(args.compact, 100))"
         }
+    }
+
+    /// "I can't access your files / run commands here": the model thinks it's a plain chat.
+    static func looksLikeCantAct(_ raw: String) -> Bool {
+        let t = raw.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+        let cant = ["can't", "cannot", "can not", "unable to", "don't have", "do not have", "no access", "not able to"]
+        let what = ["access", "run commands", "execute", "read files", "the files", "your files", "file system", "filesystem", "the project", "browse"]
+        return t.count < 1200 && cant.contains { t.contains($0) } && what.contains { t.contains($0) }
     }
 
     static func timeNote(since start: Date) -> String {

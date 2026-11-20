@@ -13,65 +13,87 @@ struct SettingsView: View {
 
 struct ProviderSettings: View {
     @Environment(AppState.self) private var app
-    @State private var keyDraft = ""
+    @State private var expDraft = ""
+    @State private var gemDraft = ""
     @State private var note = ""
-    private var s: AppSettings { AppSettings.shared }
 
     var body: some View {
         @Bindable var s = AppSettings.shared
         let catalog = ModelCatalog.shared
         Form {
-            Section("OpenAI-compatible provider") {
-                TextField("Base URL", text: $s.baseURL)
-                HStack {
-                    SecureField(s.hasKey ? "Key saved in the Keychain (enter a new one to replace it)" : "API key", text: $keyDraft)
-                    Button("Save") { s.apiKey = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines); keyDraft = ""; note = "Saved."; app.resetAgents(); Task { await catalog.refresh() } }
-                        .disabled(keyDraft.isEmpty)
-                }
-                HStack {
-                    Button("Import key from Peep") {
-                        note = s.importKeyFromPeep() ? "Imported Peep's key into Anvil's Keychain entry." : "Couldn't read Peep's key (not found, or access was denied)."
-                        app.resetAgents()
-                        Task { await catalog.refresh() }
+            Section {
+                Picker("Model", selection: $s.model) {
+                    ForEach(Provider.allCases) { p in
+                        Section(p.label) {
+                            ForEach(catalog.choices.filter { $0.provider == p }) { c in Text(c.id).tag(c.id) }
+                        }
                     }
-                    .disabled(!s.peepKeyAvailable)
-                    if s.hasKey { Button("Remove key", role: .destructive) { s.apiKey = ""; app.resetAgents() } }
+                }
+                Picker("Vision model (pasted images)", selection: $s.visionModel) {
+                    Text("None").tag("")
+                    Text("glm-5.3-flash").tag("glm-5.3-flash")
+                    ForEach(catalog.geminiModels, id: \.self) { Text($0).tag($0) }
+                }
+                Picker("Thinking effort", selection: $s.effort) { ForEach(AppSettings.efforts, id: \.self) { Text($0).tag($0) } }
+                HStack {
+                    Button(catalog.loading ? "Refreshing…" : "Refresh model lists") { Task { await catalog.refresh() } }.disabled(catalog.loading)
+                    Spacer()
+                    if let e = catalog.error { Text(e).font(.caption).foregroundStyle(.orange) }
+                }
+            } header: { Text("Models") } footer: {
+                Text("Effort is high by default: max is about twice as slow per step. Gemini ignores it.").font(.caption)
+            }
+
+            Section {
+                HStack {
+                    SecureField(s.hasKey ? "Key saved (enter a new one to replace it)" : "API key", text: $expDraft)
+                    Button("Save") { s.apiKey = expDraft.trimmingCharacters(in: .whitespacesAndNewlines); expDraft = ""; changed() }.disabled(expDraft.isEmpty)
+                }
+                status(s.ready(.experiential), ok: "Key saved", missing: "No key")
+            } header: { Label("Experiential Labs", systemImage: Provider.experiential.symbol) } footer: {
+                Text("glm-5.3-flash-uncensored, glm-5.3-flash, deepseek-v4.1-flash-uncensored, deepseek-v4.1-flash.").font(.caption)
+            }
+
+            Section {
+                TextField("URL", text: $s.lunaURL)
+                status(s.ready(.luna), ok: "No key needed, \(catalog.lunaModels.count) models", missing: "Set a URL")
+            } header: { Label("Luna API", systemImage: Provider.luna.symbol) }
+
+            Section {
+                TextField("URL", text: $s.geminiURL)
+                HStack {
+                    SecureField(s.geminiKey.isEmpty ? "Proxy key" : "Key saved (enter a new one to replace it)", text: $gemDraft)
+                    Button("Save") { s.geminiKey = gemDraft.trimmingCharacters(in: .whitespacesAndNewlines); gemDraft = ""; changed() }.disabled(gemDraft.isEmpty)
+                }
+                status(s.ready(.gemini), ok: "Key saved", missing: "No key")
+            } header: { Label("Gemini (web proxy)", systemImage: Provider.gemini.symbol) }
+
+            Section {
+                HStack {
+                    Button("Import keys from Peep") {
+                        let got = s.importKeyFromPeep()
+                        note = got.isEmpty ? "Couldn't read Peep's keys (not found, or access was denied)." : "Imported: " + got.joined(separator: ", ") + "."
+                        changed()
+                    }
                     Spacer()
                     Text(note).font(.caption).foregroundStyle(.secondary)
                 }
-            }
-            Section {
-                ModelPickerRow(title: "Model", selection: $s.model, models: catalog.chatModels)
-                ModelPickerRow(title: "Vision model (pasted images)", selection: $s.visionModel, models: catalog.chatModels, allowNone: true)
-                Picker("Thinking effort", selection: $s.effort) { ForEach(AppSettings.efforts, id: \.self) { Text($0).tag($0) } }
-                Picker("Vision effort", selection: $s.visionEffort) { ForEach(AppSettings.efforts, id: \.self) { Text($0).tag($0) } }
-                HStack {
-                    Button(catalog.loading ? "Refreshing…" : "Refresh models") { Task { await catalog.refresh() } }.disabled(catalog.loading)
-                    if let e = catalog.error { Text(e).font(.caption).foregroundStyle(.red) }
-                    else { Text("\(catalog.models.count) models").font(.caption).foregroundStyle(.secondary) }
-                }
-            } header: { Text("Models") } footer: {
-                Text("High effort is the default: the provider's max is about twice as slow per step for little gain on coding tasks.").font(.caption)
-            }
+            } footer: { Text("Copies the Experiential Labs and Gemini proxy keys into Anvil's own Keychain entries. macOS may ask once.").font(.caption) }
         }
         .formStyle(.grouped)
         .onChange(of: s.model) { _, _ in app.resetAgents() }
         .onChange(of: s.effort) { _, _ in app.resetAgents() }
-        .task { if catalog.models.isEmpty && s.hasKey { await catalog.refresh() } }
+        .task { await catalog.refresh() }
     }
-}
 
-struct ModelPickerRow: View {
-    let title: String
-    @Binding var selection: String
-    let models: [ModelInfo]
-    var allowNone = false
-    var body: some View {
-        Picker(title, selection: $selection) {
-            if allowNone { Text("None").tag("") }
-            if !models.contains(where: { $0.id == selection }) && !selection.isEmpty { Text(selection).tag(selection) }
-            ForEach(models) { m in Text("\(m.id)  ·  \(m.priceLabel)").tag(m.id) }
-        }
+    func status(_ ok: Bool, ok okText: String, missing: String) -> some View {
+        Label(ok ? okText : missing, systemImage: ok ? "checkmark.circle.fill" : "exclamationmark.circle")
+            .font(.caption).foregroundStyle(ok ? .green : .orange)
+    }
+
+    func changed() {
+        app.resetAgents()
+        Task { await ModelCatalog.shared.refresh() }
     }
 }
 
@@ -129,42 +151,63 @@ struct ToolsSettings: View {
 struct ModelPickerSheet: View {
     @Environment(\.dismiss) private var dismiss
     let controller: SessionController
-    @State private var query = ""
 
     var body: some View {
         let catalog = ModelCatalog.shared
-        let list = catalog.chatModels.filter { query.isEmpty || $0.id.localizedCaseInsensitiveContains(query) }
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Model for this session").font(.headline)
+                Text("Model").font(.system(size: 16, weight: .semibold))
                 Spacer()
-                Button(catalog.loading ? "Refreshing…" : "Refresh") { Task { await catalog.refresh() } }
+                IconButton(symbol: "arrow.clockwise", help: "Refresh model lists") { Task { await catalog.refresh() } }
+                IconButton(symbol: "xmark", help: "Close") { dismiss() }
             }
-            TextField("Filter", text: $query).textFieldStyle(.roundedBorder)
-            List(list) { m in
-                Button {
-                    controller.model = m.id
-                    dismiss()
-                } label: {
-                    HStack {
-                        Image(systemName: m.id == controller.model ? "checkmark.circle.fill" : "circle").foregroundStyle(m.id == controller.model ? Color.accentColor : .secondary)
-                        VStack(alignment: .leading) {
-                            Text(m.id).fontWeight(.medium)
-                            Text([m.priceLabel, m.contextLabel, m.reasoning ? "reasoning" : ""].filter { !$0.isEmpty }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(Provider.allCases) { p in
+                        let list = catalog.choices.filter { $0.provider == p }
+                        let ready = AppSettings.shared.ready(p)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                Image(systemName: p.symbol)
+                                Text(p.label.uppercased())
+                                if !ready { Text("· not set up").foregroundStyle(Theme.amber) }
+                            }
+                            .font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Theme.text3).padding(.leading, 10)
+                            ForEach(list) { c in
+                                Button {
+                                    controller.model = c.id
+                                    dismiss()
+                                } label: {
+                                    HoverRow(selected: c.id == controller.model) {
+                                        HStack(spacing: 10) {
+                                            Image(systemName: c.id == controller.model ? "checkmark.circle.fill" : "circle")
+                                                .foregroundStyle(c.id == controller.model ? Theme.accent : Theme.text3)
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(c.id).font(.system(size: 13, weight: .medium)).foregroundStyle(ready ? Theme.text : Theme.text3)
+                                                if !c.detail.isEmpty { Text(c.detail).font(.system(size: 11)).foregroundStyle(Theme.text3) }
+                                            }
+                                            Spacer()
+                                        }
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(!ready)
+                            }
                         }
-                        Spacer()
-                    }.contentShape(Rectangle())
-                }.buttonStyle(.plain)
+                    }
+                }
             }
-            if let e = catalog.error { Text(e).font(.caption).foregroundStyle(.red) }
+            if let e = catalog.error { Text(e).font(.caption).foregroundStyle(Theme.amber) }
             HStack {
-                Text("Effort: \(AppSettings.shared.effort) (change in Settings or with /effort)").font(.caption).foregroundStyle(.secondary)
+                Text("Effort: \(AppSettings.shared.effort). Set up providers in Settings (⌘,).").font(.system(size: 11.5)).foregroundStyle(Theme.text3)
                 Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+                Button("Done") { dismiss() }.buttonStyle(Pill(kind: .primary)).keyboardShortcut(.defaultAction)
             }
         }
-        .padding(16)
-        .frame(width: 520, height: 520)
-        .task { if catalog.models.isEmpty { await catalog.refresh() } }
+        .padding(18)
+        .frame(width: 460, height: 560)
+        .background(Theme.panel)
+        .preferredColorScheme(.dark)
+        .task { await catalog.refresh() }
     }
 }
