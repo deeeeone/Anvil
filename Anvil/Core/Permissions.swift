@@ -71,8 +71,9 @@ nonisolated enum Permissions {
         let c = " " + command.lowercased().replacingOccurrences(of: "\n", with: " ") + " "
         let rules: [(String, String)] = [
             (#"(^|[;&|\s])sudo\s"#, "uses sudo"),
-            (#"(^|[;&|\s])rm\s+(-[a-z]*[rf][a-z]*\s+)+"#, "deletes files recursively or forcibly"),
-            (#"(^|[;&|\s])rm\s+.*(\s/|\s~|\s\*|\s\.\.)(\s|$)"#, "deletes broad paths"),
+            (#"(^|[;&|\s])rm\s+(-[a-z]*\s+)*-[a-z]*r"#, "deletes files recursively"),
+            (#"(^|[;&|\s])rm\s+.*(\s/|\s~|\s\*|\s\.\.?/?)(\s|$)"#, "deletes broad paths"),
+            (#"(^|[;&|\s])rm\s+.*\*"#, "deletes files by wildcard"),
             (#"git\s+push\b.*(\s--force\b|\s-f\b|\s--force-with-lease\b)"#, "force-pushes"),
             (#"git\s+push\b"#, "pushes to a remote"),
             (#"git\s+reset\s+--hard"#, "discards uncommitted work (git reset --hard)"),

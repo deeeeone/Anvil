@@ -4,6 +4,7 @@ import SwiftUI
 struct AnvilMain {
     static func main() {
         if CommandLine.arguments.contains("--headless") { Headless.main() }
+        if let path = Headless.value("--parse") { Headless.parseFile(path) }
         AnvilApp.main()
     }
 }

@@ -45,7 +45,7 @@ enum FileTools {
             return r
         }
         let text = try readText(url)
-        ctx.readFiles.insert(url.path)
+        ctx.readFiles.insert(url.standardizedFileURL.path)
         if text.isEmpty { return .ok("\(ctx.rel(url)) is empty") }
         let limit = max(1, min(2000, a["limit"]?.int ?? 400))
         let (body, s, e, total) = numbered(text, offset: a["offset"]?.int ?? a["start_line"]?.int ?? 1, limit: limit)
@@ -270,6 +270,10 @@ enum FileTools {
         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue { throw ToolFailure("\(ctx.rel(url)) is a folder") }
         let old = try currentText(url)
         if old == content { throw ToolFailure("\(ctx.rel(url)) already has exactly this content") }
+        // Never overwrite a file blind: its real content may differ from what the model assumes.
+        if let old, !old.isEmpty, !ctx.readFiles.contains(url.standardizedFileURL.path) {
+            throw ToolFailure("\(ctx.rel(url)) already exists and you haven't read it in this session. read_file it first, then use edit_file for changes (or write_file to replace it on purpose).")
+        }
         return [FileChange(url: url, old: old, new: content)]
     }
 

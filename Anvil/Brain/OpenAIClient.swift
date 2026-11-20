@@ -30,14 +30,18 @@ nonisolated final class OpenAIClient: Sendable {
     }
 
     /// `effort`: "low"/"medium"/"high"/"max" for reasoning models (nil = provider default).
+    /// The model must stop after its JSON block; these catch it starting to write the app's observation itself.
+    static let agentStops = ["<observation", "**Observation", "\nObservation:", "</observation>"]
+
     func chat(_ messages: [ChatMessage], model: String, sendImages: Bool = false, effort: String? = nil,
-              attempts: Int = 3) async throws -> (text: String, usage: ChatUsage?) {
+              stop: [String]? = nil, attempts: Int = 3) async throws -> (text: String, usage: ChatUsage?) {
         var req = URLRequest(url: baseURL.appendingPathComponent("v1/chat/completions"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if !apiKey.isEmpty { req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
         var body: [String: Any] = ["model": model, "messages": Self.messagesJSON(messages, images: sendImages), "stream": false]
         if let effort, !effort.isEmpty { body["reasoning_effort"] = effort }
+        if let stop, !stop.isEmpty { body["stop"] = stop }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         var last: BrainError?

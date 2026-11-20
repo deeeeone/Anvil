@@ -10,6 +10,16 @@ enum Headless {
         return a[i + 1]
     }
 
+    /// `Anvil --parse FILE`: runs the reply parser on a saved model reply (debugging protocol drift).
+    static func parseFile(_ path: String) -> Never {
+        let raw = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        do {
+            let r = try ActionParser.parse(raw)
+            print("ok: say=\(r.say ?? "-") done=\(r.done) plan=\(r.plan.count) actions=\(r.actions.map(\.tool))")
+            exit(0)
+        } catch { print("error: \(error)"); exit(1) }
+    }
+
     static func main() {
         Task { @MainActor in
             let code = await run()

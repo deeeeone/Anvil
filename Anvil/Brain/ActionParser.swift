@@ -14,6 +14,8 @@ nonisolated struct AgentReply: Sendable {
     var plan: [String] = []
     /// 1-based milestone just finished.
     var milestone: Int?
+    /// More JSON blocks followed the first one (the model kept writing past its turn); they were ignored.
+    var ignoredBlocks = 0
 }
 
 nonisolated enum ParseError: Error, CustomStringConvertible {
@@ -21,7 +23,7 @@ nonisolated enum ParseError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .noJSON: return "no ```json block found"
-        case .invalid(let s): return "the json block could not be parsed (\(s))"
+        case .invalid(let s): return "the json block is not valid JSON: \(s)"
         }
     }
 }
@@ -34,9 +36,10 @@ nonisolated enum ActionParser {
     static let completionNames: Set<String> = ["done", "finish", "final_answer", "answer", "complete", "attempt_completion"]
 
     static func parse(_ raw: String) throws -> AgentReply {
-        let (jsonText, before) = try extractJSON(raw)
-        guard let json = parseLenient(jsonText) else { throw ParseError.invalid(String(jsonText.prefix(80))) }
+        let (jsonText, before, extra) = try extractJSON(raw)
+        guard let json = parseLenient(jsonText) else { throw ParseError.invalid(diagnose(escapeNewlinesInStrings(jsonText))) }
         var reply = AgentReply(thought: before, say: nil, actions: [], done: false)
+        reply.ignoredBlocks = extra
 
         switch json {
         case .array(let items):
@@ -107,52 +110,119 @@ nonisolated enum ActionParser {
         return aliases[n] ?? n
     }
 
-    /// Finds the JSON payload: the last fence holding an object or array, or the outermost {...}.
-    static func extractJSON(_ raw: String) throws -> (String, String) {
+    /// Finds the JSON payload: the FIRST fence holding valid JSON (anything after it is the model running ahead of
+    /// its turn, e.g. imagining the observation), else the last ```json fence, else the outermost {...}.
+    /// Returns the JSON text, the reasoning before it, and how many further JSON blocks were ignored.
+    static func extractJSON(_ raw: String) throws -> (String, String, Int) {
         let fence = try! NSRegularExpression(pattern: "```(?:json|JSON|javascript)?[ \\t]*\\n?([\\s\\S]*?)```")
         let ns = raw as NSString
         let matches = fence.matches(in: raw, range: NSRange(location: 0, length: ns.length))
-        for m in matches.reversed() {
+        var valid: [(String, Int)] = []
+        for m in matches {
             let body = ns.substring(with: m.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
-            if body.hasPrefix("{") || body.hasPrefix("[") {
-                // Only a fence that really is our JSON (code in other fences may also start with "{").
-                if parseLenient(body) != nil || matches.count == 1 {
-                    let before = ns.substring(to: m.range.location).trimmingCharacters(in: .whitespacesAndNewlines)
-                    return (body, before)
-                }
+            // Only a fence that really is our JSON (code in other fences may also start with "{").
+            if body.hasPrefix("{") || body.hasPrefix("["), let j = parseLenient(body, repair: false), isReply(j) {
+                valid.append((body, m.range.location))
             }
         }
-        // A fence that contains nested ``` (e.g. markdown in a write_file content) breaks the regex: use the last "```json" opener.
-        if let r = raw.range(of: "```json", options: .backwards) {
+        if let first = valid.first {
+            return (first.0, ns.substring(to: first.1).trimmingCharacters(in: .whitespacesAndNewlines), valid.count - 1)
+        }
+        // The JSON fence may contain nested ``` (markdown inside a write_file content) or be slightly broken:
+        // take everything from the first "```json" opener to the closing fence and let the repairs handle it.
+        if let r = raw.range(of: "```json") ?? raw.range(of: "```JSON") {
             var body = String(raw[r.upperBound...])
-            if let close = body.range(of: "```", options: .backwards) { body = String(body[..<close.lowerBound]) }
+            if let close = body.range(of: "\n```", options: .backwards) ?? body.range(of: "```", options: .backwards) { body = String(body[..<close.lowerBound]) }
             body = body.trimmingCharacters(in: .whitespacesAndNewlines)
-            if body.hasPrefix("{"), parseLenient(body) != nil {
-                return (body, String(raw[..<r.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines))
+            if body.hasPrefix("{") || body.hasPrefix("[") {
+                return (body, String(raw[..<r.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines), 0)
             }
         }
-        // No fence: take the outermost balanced object.
+        if matches.count == 1 {
+            let body = ns.substring(with: matches[0].range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+            if body.hasPrefix("{") { return (body, ns.substring(to: matches[0].range.location).trimmingCharacters(in: .whitespacesAndNewlines), 0) }
+        }
+        // No fence: take the outermost object.
         if let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"), start < end {
-            return (String(raw[start...end]), String(raw[..<start]).trimmingCharacters(in: .whitespacesAndNewlines))
+            return (String(raw[start...end]), String(raw[..<start]).trimmingCharacters(in: .whitespacesAndNewlines), 0)
+        }
+        if let start = raw.firstIndex(of: "{") {   // cut off before the closing brace
+            return (String(raw[start...]), String(raw[..<start]).trimmingCharacters(in: .whitespacesAndNewlines), 0)
         }
         throw ParseError.noJSON
     }
 
-    static func parseLenient(_ s: String) -> JSON? {
+    /// A JSON value shaped like a reply (not, say, a package.json the model quoted).
+    static func isReply(_ j: JSON) -> Bool {
+        if case .array(let a) = j { return a.contains { action(from: $0) != nil } }
+        guard let o = j.object else { return false }
+        let keys: Set<String> = ["say", "actions", "done", "plan", "action", "tool", "steps", "tool_calls", "milestone", "message", "answer"]
+        return !keys.isDisjoint(with: o.keys)
+    }
+
+    static func parseLenient(_ s: String, repair: Bool = true) -> JSON? {
         if let j = JSON.parse(s) { return j }
-        var t = s
-        t = t.replacingOccurrences(of: "\u{201C}", with: "\"").replacingOccurrences(of: "\u{201D}", with: "\"")
-        t = t.replacingOccurrences(of: ",\\s*([}\\]])", with: "$1", options: .regularExpression)
-        t = t.replacingOccurrences(of: "(?m)^\\s*//.*$", with: "", options: .regularExpression)
+        // All repairs are string-aware: file contents inside JSON strings (Python True, JS trailing commas,
+        // // comments) must never be rewritten.
+        let t = normalizeJSON(s)
         if let j = JSON.parse(t) { return j }
-        t = t.replacingOccurrences(of: "\\bTrue\\b", with: "true", options: .regularExpression)
-            .replacingOccurrences(of: "\\bFalse\\b", with: "false", options: .regularExpression)
-            .replacingOccurrences(of: "\\bNone\\b", with: "null", options: .regularExpression)
-        if let j = JSON.parse(t) { return j }
-        if let j = JSON.parse(escapeNewlinesInStrings(t)) { return j }
         // Some models end with an extra closing brace or text after the object.
-        if let j = JSON.parse(balancedPrefix(escapeNewlinesInStrings(t))) { return j }
+        if let j = JSON.parse(balancedPrefix(t)) { return j }
+        // Missing braces (a forgotten "}" after an action's args, or a reply cut off at the end).
+        if repair, let j = JSON.parse(repairStructure(t)) { return j }
         return nil
+    }
+
+    /// Outside strings: smart quotes become quotes, trailing commas and // comments go, Python literals become JSON.
+    /// Inside strings: raw newlines, carriage returns and tabs are escaped. String contents are otherwise untouched.
+    static func normalizeJSON(_ s: String) -> String {
+        var out = ""
+        out.reserveCapacity(s.count)
+        let chars = Array(s)
+        var i = 0
+        var inString = false, escaped = false, smart = false
+        while i < chars.count {
+            let c = chars[i]
+            if inString {
+                if escaped { escaped = false; out.append(c) }
+                else if c == "\\" { escaped = true; out.append(c) }
+                else if (!smart && c == "\"") || (smart && c == "\u{201D}") { inString = false; out.append("\"") }
+                else if smart && c == "\"" { out += "\\\"" }
+                else if c == "\n" { out += "\\n" }
+                else if c == "\r" { out += "\\r" }
+                else if c == "\t" { out += "\\t" }
+                else { out.append(c) }
+                i += 1
+                continue
+            }
+            switch c {
+            case "\"":
+                inString = true; smart = false; out.append(c)
+            case "\u{201C}", "\u{201D}":
+                inString = true; smart = true; out.append("\"")
+            case ",":
+                // Trailing comma: next non-space character closes the container.
+                var k = i + 1
+                while k < chars.count, chars[k].isWhitespace { k += 1 }
+                if k < chars.count, chars[k] == "}" || chars[k] == "]" { i += 1; continue }
+                out.append(c)
+            case "/" where i + 1 < chars.count && chars[i + 1] == "/":
+                while i < chars.count, chars[i] != "\n" { i += 1 }
+                continue
+            default:
+                if c.isLetter, i == 0 || !(chars[i - 1].isLetter || chars[i - 1].isNumber || chars[i - 1] == "_") {
+                    var k = i
+                    while k < chars.count, chars[k].isLetter || chars[k].isNumber || chars[k] == "_" { k += 1 }
+                    let word = String(chars[i..<k])
+                    out += ["True": "true", "False": "false", "None": "null"][word] ?? word
+                    i = k
+                    continue
+                }
+                out.append(c)
+            }
+            i += 1
+        }
+        return out
     }
 
     /// The first balanced {...} or [...] at the start of `s` (string-aware).
@@ -173,23 +243,79 @@ nonisolated enum ActionParser {
         return s
     }
 
-    static func escapeNewlinesInStrings(_ s: String) -> String {
+    static func escapeNewlinesInStrings(_ s: String) -> String { normalizeJSON(s) }
+
+    /// Fixes the structural slips models make in long replies: a "{" where an object key is expected means the
+    /// previous object was never closed, a closer of the wrong kind means one is missing, and unclosed containers
+    /// at the end are closed.
+    static func repairStructure(_ s: String) -> String {
         var out = ""
+        var stack: [Character] = []
+        var expectKey = false
         var inString = false, escaped = false
         for c in s {
             if inString {
-                if escaped { escaped = false; out.append(c); continue }
-                if c == "\\" { escaped = true; out.append(c); continue }
-                if c == "\"" { inString = false; out.append(c); continue }
-                if c == "\n" { out += "\\n"; continue }
-                if c == "\r" { out += "\\r"; continue }
-                if c == "\t" { out += "\\t"; continue }
                 out.append(c)
-            } else {
-                if c == "\"" { inString = true }
+                if escaped { escaped = false } else if c == "\\" { escaped = true } else if c == "\"" { inString = false }
+                continue
+            }
+            switch c {
+            case "\"":
+                inString = true
+                if stack.last == "{" && expectKey { expectKey = false }
+                out.append(c)
+            case "{":
+                if stack.last == "{" && expectKey, let comma = out.lastIndex(of: ",") {
+                    // `{"tool": "a", "args": {...}, {"tool": "b"...`: close the first object before the comma.
+                    out.insert("}", at: comma)
+                    stack.removeLast()
+                }
+                stack.append("{"); expectKey = true; out.append(c)
+            case "[":
+                stack.append("["); expectKey = false; out.append(c)
+            case "}":
+                while stack.last == "[" { out.append("]"); stack.removeLast() }
+                if !stack.isEmpty { stack.removeLast() }
+                expectKey = false; out.append(c)
+            case "]":
+                while stack.last == "{" { out.append("}"); stack.removeLast() }
+                if !stack.isEmpty { stack.removeLast() }
+                expectKey = false; out.append(c)
+            case ",":
+                expectKey = stack.last == "{"; out.append(c)
+            case ":":
+                expectKey = false; out.append(c)
+            default:
                 out.append(c)
             }
         }
+        if inString { out.append("\"") }
+        for open in stack.reversed() { out.append(open == "{" ? "}" : "]") }
         return out
     }
+
+    /// Where the JSON broke, for the retry message (so the model can see its own mistake).
+    static func diagnose(_ s: String) -> String {
+        guard let data = s.data(using: .utf8) else { return "" }
+        do { _ = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]); return "" } catch {
+            let desc = (error as NSError).userInfo["NSDebugDescription"] as? String ?? error.localizedDescription
+            var snippet = ""
+            var offset: Int?
+            if let r = desc.range(of: #"character (\d+)"#, options: .regularExpression) { offset = Int(desc[r].filter(\.isNumber)) }
+            else if let r = desc.range(of: #"line (\d+), column (\d+)"#, options: .regularExpression) {
+                let nums = desc[r].split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
+                if nums.count == 2 {
+                    let lines = s.components(separatedBy: "\n")
+                    offset = lines.prefix(max(0, nums[0] - 1)).reduce(0) { $0 + $1.count + 1 } + max(0, nums[1] - 1)
+                }
+            }
+            if let n = offset, n < s.count {
+                let i = s.index(s.startIndex, offsetBy: n)
+                let lo = s.index(i, offsetBy: -min(80, n)), hi = s.index(i, offsetBy: min(40, s.distance(from: i, to: s.endIndex)))
+                snippet = " Near: …\(s[lo..<i])⟦HERE⟧\(s[i..<hi])…"
+            }
+            return desc + snippet
+        }
+    }
+
 }

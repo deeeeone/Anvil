@@ -178,7 +178,7 @@ final class AgentLoopTests: XCTestCase {
             fence(#"{"say": "ok", "done": true}"#),
         ], mode: .bypass)
         _ = await agent.run(goal: "x")
-        XCTAssertEqual(host.permissionRequests.first?.reason, "deletes files recursively or forcibly")
+        XCTAssertEqual(host.permissionRequests.first?.reason, "deletes files recursively")
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("calc.py").path))
     }
 
@@ -231,6 +231,17 @@ final class AgentLoopTests: XCTestCase {
         XCTAssertEqual(agent.messages.count, 2)
         XCTAssertTrue(agent.messages[0].text.contains("Summary: fixed calc.py"))
         XCTAssertTrue(agent.messages[0].text.hasPrefix("You are Anvil"))
+    }
+
+    func testWriteFileRefusesBlindOverwrite() async {
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "write_file", "args": {"path": "calc.py", "content": "x = 1\n"}}]}"#),
+            fence(#"{"actions": [{"tool": "read_file", "args": {"path": "calc.py"}}, {"tool": "write_file", "args": {"path": "calc.py", "content": "x = 1\n"}}]}"#),
+            fence(#"{"say": "ok", "done": true}"#),
+        ], mode: .bypass)
+        _ = await agent.run(goal: "x")
+        XCTAssertTrue(sent[1].last!.text.contains("haven't read it"))
+        XCTAssertEqual(try String(contentsOf: dir.appendingPathComponent("calc.py"), encoding: .utf8), "x = 1\n")
     }
 
     func testTodoWrite() async {

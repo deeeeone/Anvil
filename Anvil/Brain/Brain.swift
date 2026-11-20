@@ -39,7 +39,7 @@ final class Brain {
         let (m, images) = Self.route(history, model: model, vision: visionModel)
         if let override { return try await override(history, m) }
         let e = images ? visionEffort : effort
-        let (text, usage) = try await client.chat(history, model: m, sendImages: images, effort: e.isEmpty ? nil : e)
+        let (text, usage) = try await client.chat(history, model: m, sendImages: images, effort: e.isEmpty ? nil : e, stop: OpenAIClient.agentStops)
         record(usage, model: m, history: history, reply: text)
         return text
     }

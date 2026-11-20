@@ -27,6 +27,7 @@ nonisolated enum PromptBuilder {
         - Edit with edit_file or multi_edit. "find" must be copied exactly from the file, with its indentation, and WITHOUT read_file's line-number prefix (the number and tab). Include enough lines to be unique. Use write_file for new files or full rewrites of small files.
         - Keep changes focused and in the project's existing style, naming and patterns. Don't reformat unrelated code or add needless comments.
         - After changing code, verify: build, run the tests or the relevant command with shell, and fix what you broke. When adding a feature, add or update tests if the project has them.
+        - When a test fails, work out whether the code or the test is wrong. Never weaken, skip or delete a test just to make it pass; if a test's expectation really was wrong, say so in the final answer.
         - shell runs zsh in the project root, non-interactive: pass flags like -y or --yes, never open editors or pagers, use "git --no-pager". Each call is a fresh shell (cd does not persist; use "cwd").
         - Servers and watchers (npm run dev, python -m http.server...) never exit: start them with start_process, then wait_until url/port/output, then check read_process or fetch_url. Stop them when done.
         - Prefer grep/glob/read_file/list_dir over shell find/cat/grep. Use web_search and fetch_url for docs, error messages and package versions you're unsure of.

@@ -65,6 +65,55 @@ final class ParserTests: XCTestCase {
         XCTAssertTrue(r.actions.first?.args["content"]?.string?.contains("npm test") ?? false)
     }
 
+    func testRepairsMissingBraceBetweenActions() throws {
+        // Seen live: the model closed "args" but not the action object before starting the next action.
+        let raw = #"```json\n{"say": "x", "actions": [{"tool": "edit_file", "args": {"path": "a", "find": "b", "replace": "c"}, {"tool": "shell", "args": {"command": "pytest -q"}}], "done": false}\n```"#.replacingOccurrences(of: "\\n", with: "\n")
+        let r = try ActionParser.parse(raw)
+        XCTAssertEqual(r.actions.map(\.tool), ["edit_file", "shell"])
+        XCTAssertEqual(r.actions[1].args["command"]?.string, "pytest -q")
+    }
+
+    func testRepairsTruncatedReply() throws {
+        let r = try ActionParser.parse(#"{"say": "x", "actions": [{"tool": "read_file", "args": {"path": "a.py"}}"#)
+        XCTAssertEqual(r.actions.first?.args["path"]?.string, "a.py")
+    }
+
+    func testDiagnoseShowsWhere() {
+        let d = ActionParser.diagnose(#"{"a": 1, "b": }"#)
+        XCTAssertTrue(d.contains("HERE"), d)
+    }
+
+    func testFirstBlockWinsWhenModelRunsAhead() throws {
+        // Seen live: reads, then an imagined observation, then a blind rewrite. Only the reads may run.
+        let raw = "Let me look.\n```json\n{\"actions\": [{\"tool\": \"read_file\", \"args\": {\"path\": \"a.js\"}}], \"done\": false}\n```\n**Observation:** TOOL RESULT\n```\n1\tfoo\n```\nNow rewrite.\n```json\n{\"actions\": [{\"tool\": \"write_file\", \"args\": {\"path\": \"a.js\", \"content\": \"x\"}}]}\n```"
+        let r = try ActionParser.parse(raw)
+        XCTAssertEqual(r.actions.map(\.tool), ["read_file"])
+        XCTAssertEqual(r.ignoredBlocks, 1)
+        XCTAssertEqual(r.thought, "Let me look.")
+    }
+
+    func testQuotedPackageJSONIsNotTheReply() throws {
+        let raw = "The manifest is:\n```json\n{\"name\": \"x\", \"version\": \"1.0.0\"}\n```\n```json\n{\"say\": \"ok\", \"done\": true}\n```"
+        let r = try ActionParser.parse(raw)
+        XCTAssertEqual(r.say, "ok")
+        XCTAssertEqual(r.ignoredBlocks, 0)
+    }
+
+    func testRepairsNeverTouchFileContents() throws {
+        // Raw newlines force the repair path; Python literals, JS trailing commas and // comments inside the
+        // content string must survive byte for byte.
+        let content = "def t():\n    assert x is True and y is None\n// not a comment here\nconst a = {b: 1,}\nsmart \u{201C}quotes\u{201D}\n"
+        let raw = "```json\n{\"actions\": [{\"tool\": \"write_file\", \"args\": {\"path\": \"t.py\", \"content\": \"" + content.replacingOccurrences(of: "\"", with: "\\\"") + "\"}},], \"done\": False}\n```"
+        let r = try ActionParser.parse(raw)
+        XCTAssertEqual(r.actions.first?.args["content"]?.string, content)
+        XCTAssertFalse(r.done)
+    }
+
+    func testSmartQuoteDelimiters() throws {
+        let r = try ActionParser.parse("{\u{201C}say\u{201D}: \u{201C}hi\u{201D}, \u{201C}done\u{201D}: true}")
+        XCTAssertEqual(r.say, "hi")
+    }
+
     func testSayOnlyCountsAsDone() throws {
         let r = try ActionParser.parse(#"{"say": "The answer is 4."}"#)
         XCTAssertTrue(r.done)

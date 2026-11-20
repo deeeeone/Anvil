@@ -193,6 +193,9 @@ final class Agent {
             if reply.done && !anyFailed { results.append("(you marked this done; check these results, then reply with done:true and the final answer in say)") }
 
             var obs = "<observation step=\(step)>\nresults of your actions:\n" + results.joined(separator: "\n") + "\n"
+            if reply.ignoredBlocks > 0 {
+                obs += "\n(Your reply contained \(reply.ignoredBlocks + 1) json blocks; only the first ran. Write exactly one block per reply, then stop: the app sends the real results. Never write an observation yourself.)\n"
+            }
             let steering = host?.agentDrainSteering() ?? []
             if !steering.isEmpty {
                 obs += "\nMESSAGE FROM THE OWNER (sent while you were working; take it into account now):\n" + steering.map { "- \($0)" }.joined(separator: "\n") + "\n"
@@ -241,6 +244,7 @@ final class Agent {
                 for c in changes {
                     checkpoint.record(c.url, before: c.old)
                     try c.apply()
+                    ctx.readFiles.insert(c.url.standardizedFileURL.path)
                 }
             } catch {
                 host?.agentStepEnded(id, status: .failed, output: error.localizedDescription, diffs: diffs, duration: Date().timeIntervalSince(start))
