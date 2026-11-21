@@ -21,6 +21,8 @@ final class AppSettings {
     var shellTimeout: Double { didSet { d.set(shellTimeout, forKey: "shellTimeout") } }
     /// Stop a request once it has cost this much (USD; 0 = no limit). Free models never reach it.
     var maxTaskCost: Double { didSet { d.set(maxTaskCost, forKey: "maxTaskCost") } }
+    /// Keep the Mac from sleeping while a request or queue task runs.
+    var keepAwake: Bool { didSet { d.set(keepAwake, forKey: "keepAwake") } }
     /// Permission mode for background queue tasks.
     var queueMode: PermissionMode { didSet { d.set(queueMode.rawValue, forKey: "queueMode") } }
     /// Before accepting "done" after edits, run the project's test command (or ask the agent to verify).
@@ -73,6 +75,7 @@ final class AppSettings {
         defaultMode = PermissionMode(rawValue: d.string(forKey: "defaultMode") ?? "") ?? .ask
         shellTimeout = d.object(forKey: "shellTimeout") as? Double ?? 300
         maxTaskCost = d.object(forKey: "maxTaskCost") as? Double ?? 0
+        keepAwake = d.object(forKey: "keepAwake") as? Bool ?? true
         queueMode = PermissionMode(rawValue: d.string(forKey: "queueMode") ?? "") ?? .acceptEdits
         autoVerify = d.object(forKey: "autoVerify") as? Bool ?? true
         selfReview = d.object(forKey: "selfReview") as? Bool ?? true

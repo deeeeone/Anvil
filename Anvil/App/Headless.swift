@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 /// `Anvil --headless --project DIR --prompt "..." [--mode bypass|edits|ask|plan] [--model ID] [--resume SESSION-ID] [--max-steps N]`
 /// Runs one request without UI, prints the transcript, saves the session (it shows up in the app), exits 0 on success.
@@ -21,11 +21,15 @@ enum Headless {
     }
 
     static func main() {
+        // A real AppKit run loop (no Dock icon, no windows) so WebKit works: the agent gets the browser here too.
+        let app = NSApplication.shared
+        app.setActivationPolicy(.prohibited)
         Task { @MainActor in
             let code = await run()
             exit(code)
         }
-        dispatchMain()
+        app.run()
+        exit(0)
     }
 
     static func run() async -> Int32 {
@@ -53,6 +57,7 @@ enum Headless {
             print("   · \(model): \(u.prompt) in (\(u.cached) cached), \(u.completion) out, \(cost.map(Fmt.dollars) ?? "?")")
         }
         let ctx = ToolContext(root: root, processes: processes, host: host)
+        if !CommandLine.arguments.contains("--no-browser") { ctx.browser = BrowserController() }
         MCPManager.shared.start(project: root)
         if CommandLine.arguments.contains("--mcp-status") {
             await MCPManager.shared.waitUntilSettled()

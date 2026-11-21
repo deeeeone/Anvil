@@ -110,6 +110,7 @@ struct AgentSettings: View {
                 TextField("0", value: $s.maxTaskCost, format: .currency(code: "USD").precision(.fractionLength(2...4))).frame(width: 90)
                 Text(s.maxTaskCost > 0 ? "" : "(no limit)").foregroundStyle(.secondary)
             }
+            KeepAwakeSettings()
             Picker("Background queue tasks run in", selection: $s.queueMode) {
                 ForEach(PermissionMode.allCases) { Text($0.label).tag($0) }
             }
@@ -243,5 +244,30 @@ struct ModelPickerSheet: View {
         .background(Theme.panel)
         .preferredColorScheme(.dark)
         .task { await catalog.refresh() }
+    }
+}
+
+
+struct KeepAwakeSettings: View {
+    @State private var lidMode = false
+    @State private var busy = false
+    @State private var note = ""
+    var body: some View {
+        @Bindable var s = AppSettings.shared
+        Toggle("Keep the Mac awake while Anvil works", isOn: $s.keepAwake)
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("Keep working with the lid closed", isOn: Binding(get: { lidMode }, set: { on in
+                busy = true
+                Task {
+                    if let err = await KeepAwake.setLidClosedMode(on) { note = err } else { note = on ? "On: your Mac won't sleep when closed until you turn this off or quit Anvil. Keep it plugged in and out of a bag." : "" }
+                    lidMode = await KeepAwake.lidClosedModeOn()
+                    busy = false
+                }
+            }))
+            .disabled(busy)
+            Text(note.isEmpty ? "Uses pmset and asks for your password. Anvil turns it off again when it quits." : note)
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .task { lidMode = await KeepAwake.lidClosedModeOn() }
     }
 }

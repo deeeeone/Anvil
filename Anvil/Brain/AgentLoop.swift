@@ -68,6 +68,26 @@ final class Agent {
     /// read_file results recently shown to the model: path|offset|limit → (modification date, step).
     private var readCache: [String: (Date, Int)] = [:]
 
+    /// Tools the model has been told about in this conversation (nil = unknown: read them from the briefing).
+    var briefedTools: Set<String>?
+
+    /// Tool names listed in a briefing's catalog.
+    static func toolNames(inBriefing b: String) -> Set<String> {
+        guard let r = b.range(of: "ACTIONS\n") else { return [] }
+        let re = try! NSRegularExpression(pattern: #"(?m)^- ([a-z_][a-z0-9_.]*) "#)
+        let tail = String(b[r.upperBound...])
+        let ns = tail as NSString
+        return Set(re.matches(in: tail, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range(at: 1)) })
+    }
+
+    /// Catalog lines for tools this conversation hasn't been told about yet (it started before they existed).
+    func unannouncedTools() -> [String] {
+        let known = briefedTools ?? Self.toolNames(inBriefing: briefing.isEmpty ? (messages.first?.text ?? "") : briefing)
+        let fresh = ordered.filter { !known.contains($0.name) }
+        briefedTools = known.union(fresh.map(\.name))
+        return fresh.map(\.catalogLine)
+    }
+
     /// Supplies tools that can appear while the agent lives (MCP servers that finish connecting later).
     var toolProvider: (() -> [ToolSpec])?
     private var knownToolNames = Set<String>()
@@ -84,6 +104,7 @@ final class Agent {
         self.isSubagent = subagent
         self.memory = subagent ? ProjectMemory() : ProjectMemory.load(ctx.root)
         var specs = FileTools.all() + ShellTools.all() + WorkTools.all() + [Self.repoMapTool] + extraTools
+        if !subagent { specs += SimulatorTools.all() }
         if subagent { specs.removeAll { ["ask_user", "todo_write", "start_process", "stop_process"].contains($0.name) } }
         register(specs)
         if !subagent { register([exploreTool()] + mcpTools()) }
@@ -99,6 +120,7 @@ final class Agent {
         guard !fresh.isEmpty else { return [] }
         register(fresh)
         knownToolNames.formUnion(fresh.map(\.name))
+        briefedTools?.formUnion(fresh.map(\.name))
         return fresh.map(\.catalogLine)
     }
 
@@ -197,9 +219,13 @@ final class Agent {
         if messages.isEmpty {
             briefing = await buildBriefing()
             prepared = nil
+            briefedTools = Set(tools.keys)
             intro = briefing + skillNote + PromptBuilder.request(goal, attachments: attachmentsNote)
         } else {
-            intro = skillNote + PromptBuilder.followUp(goal, attachments: attachmentsNote)
+            // A resumed conversation may predate tools Anvil has gained since: list them before the request.
+            let fresh = unannouncedTools()
+            let note = fresh.isEmpty ? "" : "NEW TOOLS AVAILABLE NOW (added since this conversation started; same reply format):\n" + fresh.joined(separator: "\n") + "\n\n"
+            intro = note + skillNote + PromptBuilder.followUp(goal, attachments: attachmentsNote)
         }
         var userText = (unsent.map { $0 + "\n\n" } ?? "") + intro + (isSubagent ? "" : PromptBuilder.modeNote(mode)) + PromptBuilder.formatReminder
         unsent = nil
@@ -864,6 +890,21 @@ final class Agent {
         case "browser_type": return "Type into [\(args["id"]?.int ?? 0)]"
         case "browser_eval": return "Run JS in the page"
         case "browser_screenshot": return "Screenshot the page"
+        case "browser_find": return "Find \u{201C}\(Fmt.line(args["text"]?.string ?? "", 60))\u{201D} on the page"
+        case "browser_key": return "Press \(args["key"]?.string ?? "")"
+        case "browser_select": return "Select \(Fmt.line(args["value"]?.string ?? "", 40)) in [\(args["id"]?.int ?? 0)]"
+        case "browser_hover": return "Hover [\(args["id"]?.int ?? 0)]"
+        case "browser_scroll": return "Scroll the page"
+        case "browser_wait": return "Wait for \(Fmt.line(args["text"]?.string ?? args["selector"]?.string ?? "", 60))"
+        case "browser_nav": let act = args["action"]?.string ?? "reload"; return act.prefix(1).uppercased() + act.dropFirst() + " the page"
+        case "browser_console": return "Read the console"
+        case "browser_viewport": return "Viewport \(args["device"]?.string ?? "\(args["width"]?.int ?? 0)px")"
+        case "sim_describe": return "Read the simulator screen"
+        case "sim_tap": return args["id"] != nil ? "Tap [\(args["id"]?.int ?? 0)]" : "Tap \(args["x"]?.int ?? 0),\(args["y"]?.int ?? 0)"
+        case "sim_screenshot": return "Screenshot the simulator"
+        case "sim_type": return "Type in the simulator"
+        case "sim_run_app": return "Install and launch \(Fmt.line(args["app"]?.string ?? "", 60))"
+        case "sim_boot": return "Boot \(args["device"]?.string ?? "a simulator")"
         case "repo_map": return "Map " + (path.isEmpty ? "the repo" : path)
         case "explore": return "Explore: \(Fmt.line(args["question"]?.string ?? args["task"]?.string ?? "", 110))"
         case "use_skill": return "Use skill \(args["name"]?.string ?? "")"

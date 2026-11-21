@@ -126,7 +126,7 @@ final class FileWatcherTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(400))
         try "x".write(to: dir.appendingPathComponent(".git/index"), atomically: true, encoding: .utf8)
         try await Task.sleep(for: .milliseconds(900))
-        XCTAssertEqual(hits, 0, ".git churn is ignored")
+        XCTAssertEqual(hits, 0, ".git churn is ignored: \(w?.lastPaths ?? [])")
         try "x".write(to: dir.appendingPathComponent("new.txt"), atomically: true, encoding: .utf8)
         for _ in 0..<20 where hits == 0 { try await Task.sleep(for: .milliseconds(150)) }
         XCTAssertGreaterThan(hits, 0)

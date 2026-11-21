@@ -46,7 +46,7 @@ extension SessionUsage {
 extension Session {
     enum CodingKeys: String, CodingKey {
         case id, title, created, updated, projectPath, model, mode, items, messages, briefing, todos, plan, checkpoints, usage,
-             allowedCommands, workdir, branch, baseBranch, costLimit, stepLimit, compactedAt
+             allowedCommands, workdir, branch, baseBranch, costLimit, stepLimit, compactedAt, briefedTools
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -60,5 +60,6 @@ extension Session {
         allowedCommands = c.value(.allowedCommands, [String]())
         workdir = c.value(.workdir, nil as String?); branch = c.value(.branch, nil as String?); baseBranch = c.value(.baseBranch, nil as String?)
         costLimit = c.value(.costLimit, nil as Double?); stepLimit = c.value(.stepLimit, nil as Int?); compactedAt = c.value(.compactedAt, nil as Date?)
+        briefedTools = c.value(.briefedTools, nil as [String]?)
     }
 }

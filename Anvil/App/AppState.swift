@@ -3,11 +3,11 @@ import Observation
 import AppKit
 
 enum InspectorTab: String, CaseIterable, Identifiable {
-    case changes = "Changes", preview = "Preview", files = "Files", todo = "Plan", terminal = "Terminal", git = "Git"
+    case changes = "Changes", preview = "Preview", device = "Device", files = "Files", todo = "Plan", terminal = "Terminal", git = "Git"
     var id: String { rawValue }
     var symbol: String {
         switch self {
-        case .changes: return "plusminus"; case .preview: return "safari"; case .files: return "folder"; case .todo: return "checklist"
+        case .changes: return "plusminus"; case .preview: return "safari"; case .device: return "iphone"; case .files: return "folder"; case .todo: return "checklist"
         case .terminal: return "terminal"; case .git: return "arrow.triangle.branch"
         }
     }
@@ -42,6 +42,19 @@ final class AppState {
     var queue: [QueuedTask] = []
     /// The embedded browser (live preview, and the agent's browser tools).
     let browser = BrowserController()
+    /// The Device tab's live simulator view.
+    let simulator = SimulatorController()
+    /// Terminal tabs (agent output, background processes, shells).
+    let terminals = TerminalStore()
+    /// The Mac is being kept awake for running work.
+    private(set) var keepingAwake = false
+
+    /// A session started or stopped working: hold the Mac awake while anything runs.
+    func workingChanged() {
+        let busy = controllers.values.contains { $0.running }
+        KeepAwake.shared.update(working: busy)
+        keepingAwake = KeepAwake.shared.held
+    }
 
     func controller(for id: UUID) -> SessionController? { controllers[id] }
     func registerController(_ c: SessionController) { controllers[c.session.id] = c }
@@ -53,6 +66,13 @@ final class AppState {
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.processes.stopAll()
+                KeepAwake.shared.update(working: false)
+                // Undo lid-closed mode if Anvil turned it on.
+                if UserDefaults.standard.bool(forKey: "lidModeSetByAnvil") {
+                    let sem = DispatchSemaphore(value: 0)
+                    Task.detached { _ = await KeepAwake.setLidClosedMode(false); sem.signal() }
+                    _ = sem.wait(timeout: .now() + 60)
+                }
                 MCPManager.shared.stopAll()
                 self?.controllers.values.forEach { $0.saveNow() }
             }

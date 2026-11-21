@@ -115,6 +115,10 @@ struct TopBar: View {
                 }
             }
             Spacer(minLength: 8)
+            if app.keepingAwake {
+                Image(systemName: "cup.and.saucer.fill").font(.system(size: 11)).foregroundStyle(Theme.text3)
+                    .help("Keeping the Mac awake while Anvil works")
+            }
             if let c = app.current {
                 if c.session.usage.calls > 0 {
                     Text(Fmt.dollars(c.session.usage.cost)).font(.system(size: 12, weight: .medium).monospacedDigit())

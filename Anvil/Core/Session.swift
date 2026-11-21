@@ -94,6 +94,8 @@ nonisolated struct Session: Codable, Identifiable, Equatable, Sendable {
     /// Per-session limits for each request (nil = the app-wide settings).
     var costLimit: Double?
     var stepLimit: Int?
+    /// Tool names the model was told about (so tools added later, e.g. by an Anvil update, get announced).
+    var briefedTools: [String]?
     /// When the conversation was last compacted (rewinding to before this can restore files but not the conversation).
     var compactedAt: Date?
 

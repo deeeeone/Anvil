@@ -35,7 +35,7 @@ final class SessionController: AgentHost {
     let processes: ProcessManager
     weak var app: AppState?
 
-    private(set) var running = false
+    private(set) var running = false { didSet { if running != oldValue { app?.workingChanged() } } }
     private(set) var status = ""
     /// The reply as it streams in: the model's reasoning so far (shown under the spinner).
     private(set) var liveText = ""
@@ -93,6 +93,7 @@ final class SessionController: AgentHost {
         a.toolProvider = { MCPManager.shared.toolSpecs }
         a.messages = session.messages
         a.briefing = session.briefing
+        a.briefedTools = session.briefedTools.map(Set.init)
         a.mode = mode
         a.allowedCommands = Set(session.allowedCommands)
         applySettings(a)
@@ -101,6 +102,7 @@ final class SessionController: AgentHost {
             guard let self, let a else { return }
             self.session.messages = a.messages
             self.session.briefing = a.briefing
+            self.session.briefedTools = a.briefedTools.map { Array($0).sorted() }
             self.session.allowedCommands = Array(a.allowedCommands)
             self.scheduleSave()
         }
@@ -571,6 +573,7 @@ final class SessionController: AgentHost {
     func agentStepBegan(_ id: UUID, tool: String, summary: String) {
         append(ChatItem(id: id, kind: .tool, text: summary, tool: ToolStep(name: tool, summary: summary, status: .running)))
         if tool == "shell" || tool == "start_process" {
+            app?.terminals.agentCommand(summary.hasPrefix("$ ") ? String(summary.dropFirst(2)) : summary)
             terminal.append(TerminalChunk(stepID: id, title: summary, text: ""))
             if terminal.count > 60 { terminal.removeFirst(terminal.count - 60) }
         }
@@ -599,6 +602,7 @@ final class SessionController: AgentHost {
 
     func agentStepOutput(_ id: UUID, chunk: String) {
         noticeDevServer(chunk)
+        if terminal.contains(where: { $0.stepID == id }) { app?.terminals.agentOutput(chunk) }
         if let i = terminal.lastIndex(where: { $0.stepID == id }) {
             terminal[i].text += chunk
             if terminal[i].text.count > 200_000 { terminal[i].text = String(terminal[i].text.suffix(150_000)) }

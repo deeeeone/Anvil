@@ -21,7 +21,7 @@ struct ToolFailure: Error, LocalizedError {
 }
 
 enum ToolGroup: String, CaseIterable {
-    case files = "Files", search = "Search", shell = "Shell and processes", web = "Web", work = "Planning, skills and questions", mcp = "Connected tools (MCP servers)"
+    case files = "Files", search = "Search", shell = "Shell and processes", web = "Web", simulator = "iOS Simulator", work = "Planning, skills and questions", mcp = "Connected tools (MCP servers)"
 }
 
 struct ToolSpec {
@@ -110,6 +110,8 @@ final class ToolContext {
     var readFiles = Set<String>()
     /// The embedded browser, when the app provides one (Preview tab).
     var browser: AgentBrowser?
+    /// Element frames from the last sim_describe (sim_tap by number).
+    var simElements: [Int: CGRect] = [:]
     /// Modification date of each file when the agent last read or wrote it (line-range edits need it unchanged).
     var readStamps: [String: Date] = [:]
     /// Extra text for the next edit result (line shifts after replace_lines).

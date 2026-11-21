@@ -19,6 +19,7 @@ struct InspectorView: View {
                     switch app.inspectorTab ?? .changes {
                     case .changes: ChangesPane(controller: c)
                     case .preview: PreviewPane()
+                    case .device: DevicePane()
                     case .files: FilesPane(root: c.root).id(c.root.path)
                     case .todo: TodoPane(controller: c)
                     case .terminal: TerminalPane(controller: c)
@@ -294,58 +295,137 @@ struct TodoPane: View {
     }
 }
 
+struct TerminalHost: NSViewRepresentable {
+    let view: NSView
+    func makeNSView(context: Context) -> NSView {
+        let box = NSView()
+        box.addSubview(view)
+        view.frame = box.bounds
+        view.autoresizingMask = [.width, .height]
+        return box
+    }
+    func updateNSView(_ box: NSView, context: Context) {
+        if view.superview !== box {
+            box.subviews.forEach { $0.removeFromSuperview() }
+            box.addSubview(view)
+            view.frame = box.bounds
+            view.autoresizingMask = [.width, .height]
+        }
+    }
+}
+
+/// Terminal tabs: the agent's commands, one per background process, and your own shells (⌘T-style "+").
 struct TerminalPane: View {
+    @Environment(AppState.self) private var app
     let controller: SessionController
-    @State private var selectedProcess: String?
 
     var body: some View {
-        let procs = controller.processes.entries
+        let store = app.terminals
+        let selected = store.tabs.first { $0.id == store.selected } ?? store.agentTab
         VStack(spacing: 0) {
-            if !procs.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("BACKGROUND").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Theme.text3).padding(.leading, 4)
-                    ForEach(procs) { p in
-                        HoverRow(selected: selectedProcess == p.name) {
-                            HStack(spacing: 8) {
-                                Circle().fill(p.running ? Theme.green : Theme.text3).frame(width: 7, height: 7)
-                                Text(p.name).font(.system(size: 12.5, weight: .medium))
-                                Text(p.command).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.text3).lineLimit(1)
-                                Spacer(minLength: 4)
-                                if p.running { Button("Stop") { _ = controller.processes.stop(p.name) }.buttonStyle(Pill(kind: .danger, compact: true)) }
-                                else { Text("exit \(p.exitCode ?? 0)").font(.system(size: 11)).foregroundStyle(Theme.text3) }
+            ScrollView(.horizontal) {
+                HStack(spacing: 4) {
+                    ForEach(store.tabs) { t in
+                        let on = t.id == selected.id
+                        HStack(spacing: 6) {
+                            Image(systemName: t.kind == .agent ? "sparkles" : t.kind == .shell ? "terminal" : "play.rectangle")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text(t.title).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                            if case .process = t.kind { Circle().fill(t.running ? Theme.green : Theme.text3).frame(width: 6, height: 6) }
+                            if t.kind == .shell && !t.running { Text("exited").font(.system(size: 10)).foregroundStyle(Theme.text3) }
+                            if t.kind != .agent {
+                                Button { store.close(t.id) } label: { Image(systemName: "xmark").font(.system(size: 8, weight: .bold)) }
+                                    .buttonStyle(.plain).foregroundStyle(Theme.text3)
                             }
                         }
-                        .onTapGesture { selectedProcess = selectedProcess == p.name ? nil : p.name }
+                        .foregroundStyle(on ? Theme.text : Theme.text3)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(on ? Theme.surface2 : .clear, in: Capsule())
+                        .contentShape(Capsule())
+                        .onTapGesture { store.selected = t.id }
                     }
+                    IconButton(symbol: "plus", help: "New shell in the project folder") { store.newShell() }
                 }
-                .padding(10)
-                Hairline()
+                .padding(.horizontal, 8).padding(.vertical, 6)
             }
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        if let name = selectedProcess, let p = controller.processes.entry(name) {
-                            let _ = controller.processes.tick
-                            Text(String(p.output.value.suffix(60_000))).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.text2).textSelection(.enabled)
-                        } else if controller.terminal.isEmpty {
-                            Text("Output from the agent's commands streams here.").font(.system(size: 12.5)).foregroundStyle(Theme.text3).padding(.top, 20)
-                        } else {
-                            ForEach(controller.terminal) { t in
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(t.title).font(.system(size: 11.5, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.accent)
-                                    Text(t.text.isEmpty ? "…" : String(t.text.suffix(40_000))).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.text2).textSelection(.enabled)
-                                }
-                            }
-                        }
-                        Color.clear.frame(height: 1).id("end")
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
-                }
-                .onChange(of: controller.terminal.last?.text.count) { _, _ in proxy.scrollTo("end", anchor: .bottom) }
-            }
-            .background(Theme.code)
+            .scrollIndicators(.never)
+            Hairline()
+            TerminalHost(view: store.view(for: selected, cwd: controller.root))
+                .id(selected.id)
+                .background(Theme.code)
         }
+        .onAppear { store.syncProcesses(controller.processes.entries) }
+        .onChange(of: controller.processes.tick) { _, _ in store.syncProcesses(controller.processes.entries) }
+    }
+}
+
+/// A live view of the booted iOS simulator. Click the screen to tap it (with AXe installed).
+struct DevicePane: View {
+    @Environment(AppState.self) private var app
+    @State private var booting = false
+
+    var body: some View {
+        let sim = app.simulator
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "iphone").foregroundStyle(Theme.text3)
+                Text(sim.device.map { "\($0.name) · \($0.runtime)" } ?? "No simulator booted").font(.system(size: 12.5, weight: .medium)).lineLimit(1)
+                Spacer(minLength: 4)
+                if sim.device != nil {
+                    IconButton(symbol: "house", help: "Home button") { Task { await sim.home() } }
+                }
+                IconButton(symbol: "arrow.clockwise", help: "Refresh") { Task { await sim.refresh() } }
+            }
+            .padding(8)
+            Hairline()
+            if let img = sim.image {
+                GeometryReader { geo in
+                    let fit = fitted(img.size, in: geo.size)
+                    Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
+                        .frame(width: fit.width, height: fit.height)
+                        .clipShape(RoundedRectangle(cornerRadius: fit.width * 0.11, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: fit.width * 0.11, style: .continuous).stroke(Theme.borderStrong, lineWidth: 2))
+                        .onTapGesture { p in Task { await sim.tap(unit: CGPoint(x: p.x / fit.width, y: p.y / fit.height)) } }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .padding(16)
+                if !sim.axeAvailable {
+                    Text("Install AXe so you and the agent can tap, type and read the screen's elements: \(Sim.installAXe)")
+                        .font(.system(size: 11.5)).foregroundStyle(Theme.amber).padding(10).textSelection(.enabled)
+                }
+            } else {
+                VStack(spacing: 12) {
+                    EmptyPane(symbol: "iphone", title: "iOS Simulator",
+                              detail: sim.note.isEmpty ? "Ask the agent to build and run your iOS app, or boot a simulator here. You'll see it live, and the agent drives it." : sim.note)
+                    if sim.note.contains("no simulator is booted") {
+                        Button(booting ? "Booting…" : "Boot an iPhone") {
+                            booting = true
+                            Task {
+                                let ctx = ToolContext(root: Paths.home, processes: app.processes, host: nil)
+                                _ = try? await SimulatorTools.boot.run?(.object([:]), ctx)
+                                booting = false
+                                await sim.refresh()
+                            }
+                        }
+                        .buttonStyle(Pill(kind: .primary)).disabled(booting)
+                    }
+                    Spacer()
+                }
+            }
+        }
+        .task {
+            // Live view: refresh while the tab is open.
+            while !Task.isCancelled {
+                await sim.refresh()
+                try? await Task.sleep(for: .seconds(sim.device == nil ? 5 : 1.2))
+            }
+        }
+    }
+
+    func fitted(_ img: CGSize, in box: CGSize) -> CGSize {
+        guard img.width > 0, img.height > 0 else { return box }
+        let s = min(box.width / img.width, box.height / img.height)
+        return CGSize(width: img.width * s, height: img.height * s)
     }
 }
 
@@ -511,7 +591,20 @@ struct PreviewPane: View {
             .padding(8)
             Hairline()
             ZStack {
-                WebViewHost(webView: b.webView)
+                Group {
+                    if let w = b.viewportWidth {
+                        // Emulated device size, centred.
+                        WebViewHost(webView: b.webView)
+                            .frame(width: w, height: b.viewportHeight)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.borderStrong))
+                            .padding(12)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Theme.code)
+                    } else {
+                        WebViewHost(webView: b.webView)
+                    }
+                }
                 if b.url.isEmpty {
                     EmptyPane(symbol: "safari", title: "No page yet",
                               detail: "When the agent starts a dev server, it opens here and reloads after each edit. The agent can click, type and take screenshots in this browser. Or type a URL above.")
