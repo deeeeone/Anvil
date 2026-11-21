@@ -27,8 +27,10 @@ nonisolated struct ModelChoice: Identifiable, Hashable, Sendable {
 nonisolated enum Providers {
     /// The Experiential Labs models Anvil offers (the gateway has many more; these are the ones that matter).
     static let experientialModels = ["glm-5.3-flash-uncensored", "glm-5.3-flash", "deepseek-v4.1-flash-uncensored", "deepseek-v4.1-flash"]
-    static let defaultLunaURL = "https://overchat-completions-api.streamflix-one.workers.dev"
-    static let defaultGeminiURL = "https://gemini.13-140-169-159.sslip.io"
+    /// No public default: set your own OpenAI-compatible endpoint in Settings.
+    static let defaultLunaURL = ""
+    /// Only for a self-hosted Gemini proxy; signed-in Google accounts don't need it.
+    static let defaultGeminiURL = ""
     /// zhaees/chatgpt-proxy (toolcall-middleware) runs here by default.
     static let defaultChatGPTURL = "http://127.0.0.1:1435"
     static let defaultChatGPTModels = ["chatgpt/auto", "chatgpt/gpt-5.5", "chatgpt/gpt-5.5-thinking", "chatgpt/gpt-5.4-thinking", "chatgpt/gpt-5.3",

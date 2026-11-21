@@ -54,7 +54,7 @@ struct ProviderSettings: View {
             }
 
             Section {
-                TextField("URL", text: $s.lunaURL)
+                TextField("URL", text: $s.lunaURL, prompt: Text("https://your-endpoint.example.com"))
                 status(s.ready(.luna), ok: "No key needed, \(catalog.lunaModels.count) models", missing: "Set a URL")
             } header: { Label("Luna API", systemImage: Provider.luna.symbol) }
 
