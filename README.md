@@ -9,7 +9,7 @@ Anvil reuses the brain of [Peep](../peep) (same provider, same text protocol, sa
 - **Projects and sessions.** Open any folder. Sessions are saved per project and can be resumed later, model conversation included.
 - **Chat with a working agent.** A live status line with a timer, folded and readable tool steps (expand any step to see its output or diff), a Stop button (⌘. or Esc), and follow-ups you type mid-run, which reach the agent with its next step.
 - **Coding tools.** `read_file` (line numbers, ranges, images), `edit_file` (exact find/replace with a uniqueness check and recovery hints), `multi_edit` (several files, all or nothing), `write_file`, `delete_file`, `grep`, `glob`, `list_dir`, `shell` (streams live output, with timeouts), background processes (`start_process`, `read_process`, `stop_process`, `list_processes`) for dev servers, `wait_until` (url, port, file, output, process exit, command), `web_search`, `fetch_url`, `todo_write`, skills, `ask_user`, and any MCP server tools.
-- **Diff review and permission modes.** Every edit is computed first and shown as a diff. The four modes match Claude Code: *Ask before edits*, *Auto-accept edits*, *Plan only* and *Bypass*. Read-only commands (`ls`, `git status`, `grep`...) always run. Dangerous commands (`rm -r`, `sudo`, `git push`, `git reset --hard`, `curl | sh`...) and writes outside the project always ask, in every mode. "Always allow `npm test`" covers a command for the rest of the session.
+- **Diff review and permission modes.** Every edit is computed first and shown as a diff. The four modes match Claude Code: *Ask before edits*, *Auto-accept edits*, *Plan only* and *Bypass*. Read-only commands (`ls`, `git status`, `grep`...) always run. Dangerous commands (`rm -r`, `sudo`, `git push`, `git reset --hard`, `curl | sh`...) and writes outside the project ask in Ask and Auto-accept modes. Bypass never asks (edits still get checkpoints). "Always allow `npm test`" covers a command for the rest of the session.
 - **Plans and milestones.** Big tasks start with a plan you approve, revise or cancel. Milestones tick off in the chat and in the Todo inspector, along with the agent's todo list.
 - **Git.** Branch and status in the title bar, per-file diffs, stage all and commit with a generated message (`/commit` or the Git inspector).
 - **Checkpoints.** Each request records the original content of every file it touches. Undo the last task (⌥⌘Z, `/undo`) or rewind to any earlier checkpoint. Shell commands that change files aren't tracked; use git for those.
@@ -41,7 +41,18 @@ Each of these is measured by the eval suite (see below):
 - **Exploration model (optional).** Turns that have only read and searched so far, and explore helpers, can use a faster model (Settings, Agent).
 - **Worktree sessions.** "New worktree session" runs the agent on its own branch in its own folder (`../.anvil-worktrees/`), so your checkout stays untouched. Commit there, then **Merge into main** from the Git tab.
 
-All of these can be switched off in Settings or with headless flags (`--no-verify`, `--no-review`, `--no-escalate`, `--no-stream`, `--explore-model ID`).
+- **Adaptive effort.** Each turn's reasoning effort follows what it's likely to do: low for wrap-ups after passing tests and for simple requests, medium for checks, and your setting (high by default) for the first turn of real work, the turn after reading code, and anything after a failure. Wrap-up replies are capped, and redone without the cap if one gets cut off.
+- **Request sizing.** Before the first turn, each request is classed as simple (renames, typos: optional quick model, low effort), question, feature, or hard (flaky tests, crashes, performance: escalate after the first failure instead of the second).
+- **Prefetch.** A failing command's output is scanned for file and line references (Python tracebacks, Node stacks, compiler errors), and the code around those lines is attached in the same observation. A grep with three hits or fewer comes back with the code around each hit.
+- **Line-range edits.** `replace_lines` replaces lines by number in a file the agent read this session and that hasn't changed since. The model doesn't repeat the old text, which roughly halves the output tokens of an edit. Several ranges can go in one call, and the result says how later line numbers shifted.
+- **Terse replies.** Routine steps (reads, searches, test runs) skip the reasoning sentence.
+- **Project brief.** When a project opens, a cheap call writes a short brief (what the project is, its modules, entry points, how to test it). It's cached and only rewritten when the project's files or symbols change.
+- **Cache warming.** When you start typing, Anvil sends the next request's prefix with a 1-token reply so the provider caches it, and the real first turn skips re-reading it. The briefing contains no clock time and no request-specific parts, so the prefix stays identical. This applies to Experiential Labs models.
+- **File index.** `glob` and `grep` use an in-memory file list, kept fresh by the file watcher and by the agent's own edits, instead of walking the tree each time.
+- **Look-ahead while planning.** While a plan waits for your approval, a read-only helper finds the files and lines milestone 1 will change, and its report arrives with the approval.
+- **Fewer approvals.** In Ask mode, one card can approve every edit in a reply ("Allow all 3 in this reply"), and approving a plan approves the edits that carry it out (commands still follow the mode). Bypass never asks at all.
+
+All of these can be switched off in Settings or with headless flags (`--no-verify`, `--no-review`, `--no-escalate`, `--no-stream`, `--no-adaptive`, `--no-prefetch`, `--explore-model ID`, `--quick-model ID`, `--brief`).
 
 ## Evals
 
@@ -56,16 +67,17 @@ Latest results (16 tasks, Bypass mode, effort high, 21 November 2026):
 
 | Model | Pass | Avg steps | Avg time | Cost (16 tasks) |
 |---|---|---|---|---|
-| glm-5.3-flash-uncensored | 16/16 | 3.7 | 19 s | $0.015 |
+| glm-5.3-flash-uncensored | 16/16 | 4.2 | 13.9 s | $0.018 |
+| deepseek-v4.1-flash-uncensored | 16/16 | 4.6 | 14.3 s | $0.022 |
 | glm-5.3-flash | 16/16 | 3.4 | 48 s | $0.031 |
-| deepseek-v4.1-flash-uncensored | 16/16 | 5.4 | 23 s | $0.033 |
 | deepseek-v4.1-flash | 16/16 | 4.6 | 38 s | $0.067 |
 | gpt-6-luna | 13/16 | 3.4 | 105 s | free |
 | gemini-auto | not measured | | | free |
 
-- **Experiential models:** two tasks (the cross-file rename and the scaffold) were re-run after fixing a `grep` crash in Anvil and a bug in one check script.
-- **gpt-6-luna:** all three misses were provider errors (duck.ai's 418 challenge and 429 rate limits) before the agent could start. Its time includes rate-limit backoff at 2 runs in parallel.
-- **Gemini:** the proxy reported `ready: false` during the run, so it couldn't be measured.
+- **Speed features:** the first two rows are with adaptive effort, prefetch, line-range edits and terse replies on. A same-day run of glm-5.3-flash-uncensored with adaptive effort and prefetch off averaged 17.6 s, so those two account for about 21%. Against the day before, glm went from 18.8 s to 13.9 s and DeepSeek from 22.9 s to 14.3 s.
+- **Older rows:** the glm-5.3-flash, deepseek-v4.1-flash and gpt-6-luna rows are from the run before the speed features.
+- **gpt-6-luna:** all three misses were provider errors (duck.ai's 418 challenge and 429 rate limits) before the agent could start.
+- **Gemini:** the proxy reported `ready: false` during the runs, so it couldn't be measured.
 
 Each run happens in a fresh git repo under `/tmp/anvil-evals/`, with its own support folder, so evals never touch your sessions or project memory. Results go to `evals/results/*.jsonl`, and a summary table prints at the end.
 

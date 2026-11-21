@@ -133,7 +133,7 @@ struct AgentSettings: View {
                 Text("Every edit is syntax-checked. The exploration model handles explore helpers and turns that only read and search.").font(.caption)
             }
             Section("Permission modes") {
-                Text("Ask before edits: shows each diff and command for approval. Auto-accept edits: file changes apply without asking, commands still ask. Plan only: read-only until you approve a plan. Bypass: everything runs. Dangerous commands (rm -rf, sudo, git push, git reset --hard...) always ask, in every mode.")
+                Text("Ask before edits: shows each diff and command for approval (one card can cover every edit in a reply, and an approved plan covers its edits). Auto-accept edits: file changes apply without asking, commands still ask. Plan only: read-only until you approve a plan. Bypass: nothing asks, ever; edits still get checkpoints you can undo. Dangerous commands (rm -rf, sudo, git push, git reset --hard...) ask in every mode except Bypass.")
                     .font(.callout).foregroundStyle(.secondary)
             }
         }

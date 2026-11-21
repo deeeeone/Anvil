@@ -69,7 +69,7 @@ nonisolated enum Permissions {
         }
     }
 
-    /// Why a command is destructive or publishes something (always asks, whatever the mode).
+    /// Why a command is destructive or publishes something (asks in every mode except Bypass).
     static func dangerReason(_ command: String) -> String? {
         let c = " " + command.lowercased().replacingOccurrences(of: "\n", with: " ") + " "
         let rules: [(String, String)] = [

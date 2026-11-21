@@ -243,7 +243,7 @@ struct ModePill: View {
             .contentShape(Capsule())
         }
         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-        .help("\(controller.mode.label). ⇧⌘M cycles. Dangerous commands always ask.")
+        .help("\(controller.mode.label). ⇧⌘M cycles. Dangerous commands ask in every mode except Bypass.")
     }
 }
 
