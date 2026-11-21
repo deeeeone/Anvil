@@ -265,3 +265,62 @@ extension ProviderPluginTests {
         XCTAssertFalse(FileManager.default.fileExists(atPath: installed.folder.appendingPathComponent(".git").path))
     }
 }
+
+extension ProviderPluginTests {
+    /// A plugin that brings its own local server: setup runs once, the server starts on first use, stops on request.
+    func testLocalServerPluginStartsOnDemand() async throws {
+        let port = Int.random(in: 41000...49000)
+        let folder = tmp.appendingPathComponent("src/localsrv")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try "#!/bin/sh\necho installed >> setup-count.txt\n".write(to: folder.appendingPathComponent("setup.sh"), atomically: true, encoding: .utf8)
+        try """
+        import json, os
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def reply(self, obj):
+                b = json.dumps(obj).encode(); self.send_response(200); self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+            def do_GET(self): self.reply({"data": [{"id": "tiny"}]})
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                self.reply({"choices": [{"message": {"content": "pong " + json.dumps(body.get("enable_thinking"))}, "finish_reason": "stop"}]})
+        HTTPServer(("127.0.0.1", int(os.environ["PORT"])), H).serve_forever()
+        """.write(to: folder.appendingPathComponent("server.py"), atomically: true, encoding: .utf8)
+        try """
+        {"spec": 1, "id": "localsrv", "name": "Local server", "type": "openai", "baseURL": "http://127.0.0.1:\(port)/v1",
+         "server": {"setup": ["sh", "setup.sh"], "command": ["python3", "server.py"], "env": {"PORT": "\(port)"},
+                    "ready": "http://127.0.0.1:\(port)/v1/models", "startupTimeout": 20},
+         "auth": {"type": "none"}, "body": {"enable_thinking": false}, "models": [{"id": "tiny"}],
+         "capabilities": {"stop": false, "streaming": false}, "free": true}
+        """.write(to: folder.appendingPathComponent(ProviderSpec.fileName), atomically: true, encoding: .utf8)
+        let pending = try ProviderPlugins.shared.inspect(folder: folder)
+        XCTAssertTrue(pending.summary.joined().contains("Runs a local server"), "\(pending.summary)")
+        try ProviderPlugins.shared.confirm(pending)
+        let p = try XCTUnwrap(ProviderPlugins.shared.provider("localsrv"))
+        defer { ProviderServers.shared.stop("localsrv") }
+        XCTAssertEqual(ProviderServers.shared.state("localsrv"), .stopped)
+
+        let brain = try Brain.fromSettings(model: "localsrv/tiny")
+        let first = try await brain.oneShot("ping")
+        XCTAssertEqual(first, "pong false", "the spec's extra body field reached the server")
+        XCTAssertEqual(ProviderServers.shared.state("localsrv"), .running)
+        _ = try await brain.oneShot("ping again")
+        let setups = try String(contentsOf: folder.appendingPathComponent("setup-count.txt"), encoding: .utf8)
+        XCTAssertEqual(setups.split(separator: "\n").count, 1, "setup runs once")
+
+        ProviderServers.shared.stop("localsrv")
+        try await Task.sleep(for: .milliseconds(500))
+        let stillUp = await ProviderServers.answers("http://127.0.0.1:\(port)/v1/models")
+        XCTAssertFalse(stillUp, "stopped")
+        _ = try await ProviderClient(p).listModels()
+        XCTAssertEqual(ProviderServers.shared.state("localsrv"), .running, "starts again when needed")
+    }
+
+    func testServerSpecValidation() throws {
+        let remote = try JSONDecoder().decode(ProviderSpec.self, from: Data(#"{"spec":1,"id":"bad-srv","name":"x","type":"openai","baseURL":"https://api.example.com/v1","server":{"command":["sh","s.sh"],"ready":"https://example.com"},"auth":{"type":"none"}}"#.utf8))
+        let p = remote.problems().joined(separator: " ")
+        XCTAssertTrue(p.contains("localhost URL"), p)
+        XCTAssertTrue(p.contains("localhost baseURL"), p)
+    }
+}

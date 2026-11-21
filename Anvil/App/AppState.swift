@@ -79,6 +79,7 @@ final class AppState {
                 }
                 MCPManager.shared.stopAll()
                 LSP.stopAll()
+                ProviderServers.shared.stopAll()
                 self?.controllers.values.forEach { $0.saveNow() }
             }
         }

@@ -18,6 +18,8 @@ nonisolated final class OpenAIClient: Sendable {
         var sendsStop = true
         var sendsEffort = true
         var streamUsage = true
+        /// Extra body fields (from a provider plugin's spec).
+        var extraBody: [String: JSON] = [:]
         static let standard = Endpoint()
     }
 
@@ -62,6 +64,7 @@ nonisolated final class OpenAIClient: Sendable {
         if let effort, !effort.isEmpty, endpoint.sendsEffort { body["reasoning_effort"] = effort }
         if let stop, !stop.isEmpty, endpoint.sendsStop { body["stop"] = stop }
         if let maxTokens { body[endpoint.maxTokensField] = maxTokens }
+        for (k, v) in endpoint.extraBody where !["model", "messages", "stream"].contains(k) { body[k] = v.anyValue }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         return req
     }

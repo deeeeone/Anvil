@@ -43,6 +43,29 @@ This is the whole Z.ai provider ([examples/providers/zai](../examples/providers/
   - `reasoningEffort: true` if it accepts `reasoning_effort`.
   - `maxTokensField: "max_completion_tokens"` for APIs that renamed it.
 
+### Bringing a local server
+
+Many community projects turn a chat website into an OpenAI-style API that runs as a small server. A plugin can ship that server and have Anvil run it **on the user's Mac**, so there's nothing to deploy:
+
+```json
+"type": "openai",
+"baseURL": "http://127.0.0.1:39876/v1",
+"server": {
+  "setup": ["sh", "setup.sh"],
+  "command": ["sh", "start.sh"],
+  "env": { "PORT": "39876" },
+  "ready": "http://127.0.0.1:39876/",
+  "startupTimeout": 120
+}
+```
+
+- **`setup`** runs once from the plugin's folder (and again if the spec or the setup script changes): typically clone the upstream project at a pinned commit and `npm install`. Its output goes to `.anvil-server.log`.
+- **`command`** starts the server. Anvil runs it the first time one of the provider's models is used, waits until **`ready`** (a localhost URL) answers, and stops it when Anvil quits. Settings shows its state, with Start, Stop and the log.
+- `baseURL` and `ready` must be localhost. Make the server listen on `127.0.0.1` only, so nobody else on the network can use it.
+- `body` adds request fields the server understands (for example `{"enable_thinking": false}`), and `"editableBaseURL": true` lets people point the plugin at a copy they host elsewhere instead.
+
+[deeeeone/anvil-provider-qwen2api](https://github.com/deeeeone/anvil-provider-qwen2api) and [deeeeone/anvil-provider-zai-proxy](https://github.com/deeeeone/anvil-provider-zai-proxy) are complete examples. They download the upstream project during setup instead of copying it, which keeps the plugin small and respects the upstream's license.
+
 To try it, save the file in a folder and pick **Add provider → From a folder**. Edit, then click **Reload**.
 
 ## A provider that needs code
@@ -133,10 +156,14 @@ The [JSON Schema](anvil-provider.schema.json) validates the file in editors that
 | `baseURL` | string | openai: https, or http for localhost |
 | `chatPath`, `modelsPath` | string | relative to baseURL; defaults `chat/completions`, `models`; `""` turns listing off |
 | `headers` | object | extra headers on every request |
+| `body` | object | extra fields merged into every chat request body |
+| `server` | object | openai: a local server Anvil runs: `setup`, `command`, `env`, `ready` (localhost URL), `startupTimeout`, `setupTimeout` |
+| `editableBaseURL` | bool | Settings shows a server URL field (for self-hosted proxies people deploy themselves) |
 | `command` | [string] | process: run from the plugin folder, resolved on `PATH` |
 | `auth.type` | `"none"` \| `"apiKey"` \| `"web"` | |
 | `auth.header`, `auth.prefix` | string | apiKey: default `Authorization` and `Bearer ` |
 | `auth.label`, `auth.keyURL` | string | apiKey: field label, where to get a key |
+| `auth.optional` | bool | apiKey: the key may be left empty |
 | `auth.loginURL`, `auth.domain` | string | web: required |
 | `auth.cookies`, `auth.localStorage` | [string] | web: what "signed in" means (at least one of them) |
 | `auth.bearer` | string | web + openai: `localStorage:<key>` or `cookie:<name>` |

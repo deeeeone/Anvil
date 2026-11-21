@@ -48,6 +48,7 @@ private struct PluginRow: View {
     let provider: InstalledProvider
     @Environment(AppState.self) private var app
     @State private var keyDraft = ""
+    @State private var urlDraft = ""
     @State private var confirmRemove = false
     @State private var update: PendingProvider?
     @State private var note = ""
@@ -82,10 +83,24 @@ private struct PluginRow: View {
                 } label: { Image(systemName: "ellipsis.circle") }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().foregroundStyle(.secondary)
             }
+            if spec.server != nil, ProviderPlugins.shared.baseURL(provider) == (spec.baseURL ?? "") {
+                ServerStatusRow(provider: provider)
+            }
+            if spec.editableBaseURL == true {
+                HStack {
+                    TextField("Server URL", text: $urlDraft, prompt: Text(spec.baseURL ?? "https://…"))
+                        .onAppear { urlDraft = UserDefaults.standard.string(forKey: "provider.\(provider.id).baseURL") ?? "" }
+                    Button("Save") {
+                        if let problem = store.setBaseURL(provider.id, urlDraft) { note = problem }
+                        else { note = urlDraft.isEmpty ? "Using \(spec.baseURL ?? "the default URL")." : "Saved."; Task { await ModelCatalog.shared.refresh() } }
+                    }
+                }
+                .help("Where your copy of this server runs. Leave empty for \(spec.baseURL ?? "the default").")
+            }
             switch spec.auth.type {
             case .apiKey:
                 HStack {
-                    SecureField(store.apiKey(provider.id).isEmpty ? (spec.auth.label ?? "API key") : "Key saved (enter a new one to replace it)", text: $keyDraft)
+                    SecureField(store.apiKey(provider.id).isEmpty ? (spec.auth.label ?? "API key") + (spec.auth.optional == true ? " (optional)" : "") : "Key saved (enter a new one to replace it)", text: $keyDraft)
                     Button("Save") { store.setAPIKey(provider.id, keyDraft); keyDraft = ""; app.resetAgents(); Task { await ModelCatalog.shared.refresh() } }
                         .disabled(keyDraft.isEmpty)
                     if let k = spec.auth.keyURL, let u = URL(string: k) { Link("Get a key", destination: u).font(.caption) }
@@ -123,7 +138,7 @@ private struct PluginRow: View {
 
     private var subtitle: String {
         var parts = [provider.linked ? "linked: \(provider.source)" : provider.source]
-        if provider.spec.type == .openai, let host = URL(string: provider.spec.baseURL ?? "")?.host { parts.append(host) }
+        if provider.spec.type == .openai, let host = URL(string: ProviderPlugins.shared.baseURL(provider))?.host { parts.append(host) }
         if provider.spec.free == true { parts.append("free") }
         return parts.joined(separator: " · ")
     }
@@ -289,5 +304,42 @@ struct ConfirmProviderView: View {
                 .buttonStyle(.borderedProminent)
             }
         }
+    }
+}
+
+/// A plugin's local server: state, start/stop, and its log.
+private struct ServerStatusRow: View {
+    let provider: InstalledProvider
+
+    var body: some View {
+        let servers = ProviderServers.shared
+        let state = servers.state(provider.id)
+        HStack(spacing: 8) {
+            switch state {
+            case .stopped: Label("Runs on this Mac; starts when you use it", systemImage: "desktopcomputer").foregroundStyle(.secondary)
+            case .settingUp: ProgressView().controlSize(.small); Text("Setting up (first run downloads it)…").foregroundStyle(.secondary)
+            case .starting: ProgressView().controlSize(.small); Text("Starting…").foregroundStyle(.secondary)
+            case .running: Label("Running on this Mac", systemImage: "circle.fill").foregroundStyle(.green)
+            case .failed(let msg): Label(msg, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).lineLimit(2)
+            }
+            Spacer()
+            if state == .running {
+                Button("Stop") { servers.stop(provider.id) }
+            } else if state != .settingUp && state != .starting {
+                Button("Start") {
+                    Task {
+                        try? await servers.ensureRunning(provider)
+                        await ProviderPlugins.shared.refreshModels(provider.id)
+                        await ModelCatalog.shared.refresh()
+                    }
+                }
+            }
+            Menu {
+                Button("Open log") { NSWorkspace.shared.open(ProviderServers.logFile(provider)) }
+                Button("Reinstall on next start") { servers.resetSetup(provider) }
+            } label: { Image(systemName: "doc.text") }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        }
+        .font(.caption)
     }
 }

@@ -38,6 +38,12 @@ nonisolated struct ProviderSpec: Codable, Equatable, Sendable {
     var modelsPath: String?
     /// Extra headers sent with every request.
     var headers: [String: String]?
+    /// Extra fields merged into every chat request body (e.g. {"enable_thinking": false}).
+    var body: JSON?
+    /// Settings shows a URL field so users can point the plugin at their own deployment (self-hosted proxies).
+    var editableBaseURL: Bool?
+    /// A local server Anvil runs for this plugin (an "openai" plugin whose API is a program on this Mac).
+    var server: Server?
 
     // "process"
     /// Run from the plugin's folder, e.g. ["python3", "provider.py"] or ["node", "index.js"].
@@ -62,6 +68,8 @@ nonisolated struct ProviderSpec: Codable, Equatable, Sendable {
         var label: String?
         /// Where to get a key (shown as a link).
         var keyURL: String?
+        /// The key may be left empty (servers where a key is only needed when the owner set one).
+        var optional: Bool?
         // web
         /// The page to sign in on.
         var loginURL: String?
@@ -73,6 +81,24 @@ nonisolated struct ProviderSpec: Codable, Equatable, Sendable {
         var localStorage: [String]?
         /// For "openai" plugins with web sign-in: where the bearer token comes from, "localStorage:token" or "cookie:name".
         var bearer: String?
+    }
+
+    /// A program that serves the plugin's API on this Mac. Anvil runs `setup` once (and again when the
+    /// plugin changes), starts `command` the first time the provider is used, waits until `ready` answers,
+    /// and stops it when Anvil quits. Both run from the plugin's folder.
+    nonisolated struct Server: Codable, Equatable, Sendable {
+        /// Installs dependencies, e.g. ["sh", "setup.sh"]. Optional.
+        var setup: [String]?
+        /// Starts the server and keeps running, e.g. ["sh", "start.sh"].
+        var command: [String]
+        /// Extra environment variables for both.
+        var env: [String: String]?
+        /// A local URL that answers once the server is up (any HTTP response below 500 counts).
+        var ready: String
+        /// Seconds to wait for `ready` (default 90).
+        var startupTimeout: Double?
+        /// Seconds `setup` may take (default 900).
+        var setupTimeout: Double?
     }
 
     nonisolated struct Model: Codable, Equatable, Sendable {
@@ -118,6 +144,7 @@ nonisolated struct ProviderSpec: Codable, Equatable, Sendable {
         e.sendsStop = honorsStop
         e.sendsEffort = capabilities?.reasoningEffort ?? false
         e.streamUsage = capabilities?.streamUsage ?? true
+        if case .object(let o)? = body { e.extraBody = o }
         return e
     }
 
@@ -141,7 +168,18 @@ nonisolated struct ProviderSpec: Codable, Equatable, Sendable {
                 out.append("an \"openai\" provider needs a baseURL like https://api.example.com/v1")
             }
             if command != nil { out.append("\"command\" is only for \"process\" providers") }
+            if let b = body, b.object == nil { out.append("\"body\" must be an object of extra request fields") }
+            if let srv = server {
+                if srv.command.first?.trimmingCharacters(in: .whitespaces).isEmpty ?? true { out.append("server.command is empty") }
+                if let host = URL(string: srv.ready)?.host?.lowercased(), ["localhost", "127.0.0.1", "::1"].contains(host) {} else {
+                    out.append("server.ready must be a localhost URL, e.g. http://127.0.0.1:9876/v1/models")
+                }
+                if let b = baseURL, let host = URL(string: b)?.host?.lowercased(), !["localhost", "127.0.0.1", "::1"].contains(host) {
+                    out.append("a plugin with a local server needs a localhost baseURL")
+                }
+            }
         case .process:
+            if server != nil { out.append("\"server\" is only for \"openai\" providers (a process plugin is already a program)") }
             if (command ?? []).first?.trimmingCharacters(in: .whitespaces).isEmpty ?? true { out.append("a \"process\" provider needs a command, e.g. [\"python3\", \"provider.py\"]") }
         }
         switch auth.type {
@@ -160,6 +198,13 @@ nonisolated struct ProviderSpec: Codable, Equatable, Sendable {
         if type == .openai, (models ?? []).isEmpty, modelsPath == "" { out.append("list models statically (\"models\") or allow live listing (\"modelsPath\")") }
         for m in models ?? [] where m.id.isEmpty || m.id.contains(" ") { out.append("model id \"\(m.id)\" can't be empty or contain spaces") }
         return out
+    }
+
+    /// https anywhere, or http on this Mac (localhost) only.
+    static func isAllowedBaseURL(_ raw: String) -> Bool {
+        guard let u = URL(string: raw), let scheme = u.scheme?.lowercased(), let host = u.host?.lowercased() else { return false }
+        let local = ["localhost", "127.0.0.1", "::1"].contains(host) || host.hasSuffix(".local")
+        return scheme == "https" || (scheme == "http" && local)
     }
 
     static func load(_ url: URL) throws -> ProviderSpec {

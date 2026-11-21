@@ -30,7 +30,13 @@ nonisolated struct PendingProvider: Identifiable, Sendable {
         var out: [String] = []
         switch spec.type {
         case .openai:
-            out.append("Sends your prompts and code to \(URL(string: spec.baseURL ?? "")?.host ?? "?").")
+            if let srv = spec.server {
+                out.append("Runs a local server on your Mac for this provider: \(srv.command.joined(separator: " "))" +
+                           (srv.setup.map { ", after a one-time setup: \($0.joined(separator: " "))" } ?? ""))
+                out.append("Those scripts can do anything your user account can (the setup usually downloads code). Read them first, and only install if you trust the author.")
+            } else {
+                out.append("Sends your prompts and code to \(URL(string: spec.baseURL ?? "")?.host ?? "?").")
+            }
         case .process:
             out.append("Runs a program on your Mac for every request: \((spec.command ?? []).joined(separator: " "))")
             out.append("That program can do anything your user account can. Only install it if you trust the author.")
@@ -94,9 +100,29 @@ final class ProviderPlugins {
         guard let p = provider(id) else { return false }
         switch p.spec.auth.type {
         case .none: return true
-        case .apiKey: return !apiKey(id).isEmpty
+        case .apiKey: return p.spec.auth.optional == true || !apiKey(id).isEmpty
         case .web: return !session(id).isEmpty
         }
+    }
+
+    // MARK: Base URL
+
+    /// The URL requests go to: the owner's own deployment when the spec allows it, else the spec's.
+    func baseURL(_ p: InstalledProvider) -> String {
+        if p.spec.editableBaseURL == true, let u = UserDefaults.standard.string(forKey: "provider.\(p.id).baseURL"), !u.isEmpty { return u }
+        return p.spec.baseURL ?? ""
+    }
+
+    /// Saves (or with "" clears) the owner's base URL. Returns a problem, or nil.
+    @discardableResult
+    func setBaseURL(_ id: String, _ raw: String) -> String? {
+        let u = raw.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if !u.isEmpty && !ProviderSpec.isAllowedBaseURL(u) { return "Use an https URL, or http://localhost for a server on this Mac." }
+        UserDefaults.standard.set(u.isEmpty ? nil : u, forKey: "provider.\(id).baseURL")
+        liveModels[id] = nil
+        problems[id] = nil
+        Task { await refreshModels(id) }
+        return nil
     }
 
     // MARK: Secrets
@@ -279,6 +305,7 @@ final class ProviderPlugins {
 
     func remove(_ id: String, keepSecrets: Bool = false) {
         guard let p = provider(id) else { return }
+        ProviderServers.shared.stop(id)
         if p.linked { saveLinks(linkedFolders().filter { $0 != p.folder.path }) }
         else { try? FileManager.default.removeItem(at: p.folder) }
         if !keepSecrets { setSession(id, nil); _ = Keychain.set(nil, for: "provider.\(id).key") }
@@ -308,7 +335,10 @@ final class ProviderPlugins {
     // MARK: Models
 
     func refreshModels() async {
-        for p in installed where isReady(p.id) { await refreshModels(p.id) }
+        // Plugins with a local server are listed once their server runs, not started just to list models.
+        for p in installed where isReady(p.id) && (p.spec.server == nil || ProviderServers.shared.state(p.id) == .running) {
+            await refreshModels(p.id)
+        }
     }
 
     func refreshModels(_ id: String) async {

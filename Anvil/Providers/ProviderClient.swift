@@ -14,7 +14,7 @@ struct ProviderClient {
     private var spec: ProviderSpec { provider.spec }
 
     private func http() throws -> OpenAIClient {
-        guard let base = URL(string: spec.baseURL ?? "") else { throw BrainError(status: 0, code: "no_key", message: "\(spec.name) has no baseURL") }
+        guard let base = URL(string: ProviderPlugins.shared.baseURL(provider)) else { throw BrainError(status: 0, code: "no_key", message: "\(spec.name) has no baseURL") }
         return OpenAIClient(baseURL: base, apiKey: key, endpoint: spec.endpoint())
     }
 
@@ -25,6 +25,7 @@ struct ProviderClient {
               onText: ((String) -> Void)?, shouldStop: @escaping (String) -> Bool) async throws -> (text: String, usage: ChatUsage?) {
         switch spec.type {
         case .openai:
+            try await ProviderServers.shared.ensureRunning(provider)
             let client = try http()
             if let onText, spec.streams {
                 let r = try await client.chatStream(history, model: model, sendImages: images, effort: effort, stop: stop, maxTokens: maxTokens,
@@ -79,8 +80,9 @@ struct ProviderClient {
     func listModels() async throws -> [ProviderSpec.Model] {
         switch spec.type {
         case .openai:
+            try await ProviderServers.shared.ensureRunning(provider)
             let path = spec.modelsPath ?? "models"
-            guard !path.isEmpty, let base = URL(string: spec.baseURL ?? "") else { return [] }
+            guard !path.isEmpty, let base = URL(string: ProviderPlugins.shared.baseURL(provider)) else { return [] }
             let e = spec.endpoint()
             var req = URLRequest(url: base.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))))
             req.timeoutInterval = 30
