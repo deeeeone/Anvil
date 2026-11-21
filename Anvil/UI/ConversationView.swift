@@ -45,6 +45,7 @@ struct ConversationView: View {
                         .padding(.horizontal, 28).padding(.top, 8).padding(.bottom, 12)
                         .frame(maxWidth: Self.column + 56)
                         .frame(maxWidth: .infinity)
+                        .environment(\.anvilSend, controller.running ? nil : { controller.send($0) })
                     }
                     .scrollIndicators(.automatic)
                     .onChange(of: controller.session.items.count) { _, _ in

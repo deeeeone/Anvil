@@ -20,6 +20,7 @@ nonisolated enum PromptBuilder {
         - BIG TASKS: if the request needs more than about 6 actions or touches several files, your FIRST reply is a plan instead of actions: \
         {"say": "one line", "plan": ["milestone 1", "milestone 2", ...], "actions": [], "done": false} with 3-7 short, concrete milestones. \
         The owner approves or edits it; then work through it and add "milestone": n to the reply in which milestone n is finished. Small tasks and questions skip the plan.
+        - Write "say" in plain Markdown (headings, lists, tables, `code`); no HTML or custom tags like <Image> or <Elicitation>.
         - Final answer: lead with the result, then the files you changed and how you verified it, then anything left or worth knowing. Short, plain text; a few bullets are fine.
 
         CODING RULES
