@@ -28,6 +28,19 @@ struct SidebarView: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .contextMenu { Button("New Session in a Git Worktree") { app.newWorktreeSession() } }
+                Button { app.newWorktreeSession(); if app.sidebarFloating { app.showSidebar = false } } label: {
+                    HoverRow {
+                        HStack(spacing: 9) {
+                            Image(systemName: "arrow.triangle.branch").font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Theme.text2).frame(width: 20, height: 20)
+                            Text("New worktree session").font(.system(size: 12.5)).foregroundStyle(Theme.text2)
+                            Spacer()
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .help("Run a session on its own branch in its own folder; merge it back when you're happy")
             }
             .padding(.horizontal, 8)
 
@@ -107,6 +120,7 @@ struct SessionRow: View {
         } label: {
             HoverRow(selected: selected) {
                 HStack(spacing: 8) {
+                    if summary.branch != nil { Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.accent).help(summary.branch ?? "") }
                     Text(summary.title).font(.system(size: 13)).foregroundStyle(selected ? Theme.text : Theme.text2).lineLimit(1)
                     Spacer(minLength: 4)
                     if running { Spinner().scaleEffect(0.8) }

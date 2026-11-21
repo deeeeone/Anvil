@@ -1,0 +1,1 @@
+dedupe() in dedupe.py is far too slow on large inputs (hundreds of thousands of items). Make it fast while keeping the same behaviour.

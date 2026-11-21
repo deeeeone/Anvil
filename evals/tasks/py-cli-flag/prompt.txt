@@ -1,0 +1,1 @@
+Add --reverse (sort descending) and --unique (drop duplicate lines) flags to sortlines.py. Both can be combined.

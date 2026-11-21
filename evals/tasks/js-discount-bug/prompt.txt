@@ -1,0 +1,1 @@
+Users report order totals are sometimes wrong when a discount is applied. Find and fix the bug in pricing.js. Totals are in whole cents and the discount should be rounded down to whole cents.

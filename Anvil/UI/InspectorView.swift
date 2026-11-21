@@ -362,6 +362,14 @@ struct GitPane: View {
                     if st.ahead > 0 { Text("↑\(st.ahead)").font(.system(size: 11.5)).foregroundStyle(Theme.text3) }
                     if st.behind > 0 { Text("↓\(st.behind)").font(.system(size: 11.5)).foregroundStyle(Theme.text3) }
                     Spacer()
+                    if controller.session.branch != nil {
+                        Button("Merge into \(controller.session.baseBranch ?? "base")") {
+                            busy = true
+                            Task { note = await controller.mergeWorktree(); busy = false; loadLog() }
+                        }
+                        .buttonStyle(Pill(kind: .secondary, compact: true)).disabled(busy || !st.files.isEmpty)
+                        .help(st.files.isEmpty ? "Merge this session's branch into the project" : "Commit first")
+                    }
                     IconButton(symbol: "arrow.clockwise", help: "Refresh") { app.refreshGit(); loadDiff(); loadLog() }
                 }
                 .padding(.horizontal, 14).padding(.vertical, 8)

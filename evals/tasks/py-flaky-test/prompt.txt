@@ -1,0 +1,1 @@
+test_shuffle.py fails most of the time. Make the test reliable without deleting or skipping it: it should still check how cards are dealt. You may change deal() (keeping its default behaviour random) and the test.

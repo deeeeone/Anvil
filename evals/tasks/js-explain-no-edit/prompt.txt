@@ -1,0 +1,1 @@
+Question only, don't change any files: how many requests per minute does src/rate.js allow per user, and is it a fixed or sliding window? Answer in one or two sentences.

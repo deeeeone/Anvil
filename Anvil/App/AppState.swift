@@ -86,9 +86,10 @@ final class AppState {
         var list = SessionStore.list(root: project)
         // The current session may not be saved yet.
         if let c = current, !list.contains(where: { $0.id == c.session.id }) {
-            list.insert(SessionSummary(id: c.session.id, title: c.session.title, updated: c.session.updated, cost: c.session.usage.cost), at: 0)
+            list.insert(SessionSummary(id: c.session.id, title: c.session.title, updated: c.session.updated, cost: c.session.usage.cost, branch: c.session.branch), at: 0)
         }
-        if let c = current, let i = list.firstIndex(where: { $0.id == c.session.id }) { list[i].title = c.session.title }
+        if let c = current, !list.contains(where: { $0.id == c.session.id }) {}
+        if let c = current, let i = list.firstIndex(where: { $0.id == c.session.id }) { list[i].title = c.session.title; list[i].branch = c.session.branch }
         sessions = list
     }
 
@@ -104,17 +105,45 @@ final class AppState {
         refreshSessions()
     }
 
+    /// A session on its own branch in its own git worktree (folder next to the project), merged back when done.
+    func newWorktreeSession() {
+        guard let project else { return }
+        Task {
+            switch await Git.addWorktree(project, name: "session") {
+            case .failure(let e):
+                newSession()
+                current?.append(ChatItem(kind: .error, text: (e as? ToolFailure)?.message ?? e.localizedDescription))
+            case .success(let (dir, branch, base)):
+                current?.saveNow()
+                var s = Session(projectPath: project.path)
+                s.workdir = dir.path
+                s.branch = branch
+                s.baseBranch = base
+                s.title = "New session on \(branch)"
+                let c = SessionController(session: s, root: dir, processes: processes)
+                c.app = self
+                controllers[s.id] = c
+                current = c
+                c.append(ChatItem(kind: .system, text: "Working in a git worktree on branch \(branch) (from \(base)), folder \(Paths.display(dir, root: nil)). Your checkout of \(project.lastPathComponent) stays untouched. Merge it from the Git tab when you're happy."))
+                selectedDiff = nil
+                refreshSessions()
+                refreshGit()
+            }
+        }
+    }
+
     func select(_ id: UUID) {
         guard let project, current?.session.id != id else { return }
         current?.saveNow()
         if let c = controllers[id] { current = c }
         else if let s = SessionStore.load(id, root: project) {
-            let c = SessionController(session: s, root: project, processes: processes)
+            let c = SessionController(session: s, root: s.root, processes: processes)
             c.app = self
             controllers[id] = c
             current = c
         }
         selectedDiff = current?.changedDiffs.last
+        refreshGit()
     }
 
     func delete(_ id: UUID) {
@@ -128,8 +157,8 @@ final class AppState {
     }
 
     func refreshGit() {
-        guard let project else { return }
-        Task { git = await Git.status(project) }
+        guard let root = current?.root ?? project else { return }
+        Task { git = await Git.status(root) }
     }
 
     /// The agent changed files: show the diff beside the chat when there's room for it.

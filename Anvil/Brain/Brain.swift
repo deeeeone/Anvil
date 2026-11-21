@@ -59,6 +59,11 @@ final class Brain {
         return (model, false)
     }
 
+    nonisolated static func retryable(_ e: BrainError) -> Bool {
+        ["network", "upstream_error", "server_busy", "upstream_timeout", "bad_response", "not_ready", "upstream_blocked"].contains(e.code)
+            || e.status == 503 || e.status == 429 || e.message.lowercased().contains("retry")
+    }
+
     /// A Brain for a helper agent: same providers and usage accounting, its own Gemini session.
     func fork(model m: String? = nil) -> Brain {
         let b = Brain(model: m ?? model, visionModel: visionModel, effort: effort, visionEffort: visionEffort,
@@ -86,9 +91,11 @@ final class Brain {
         while true {
             do {
                 return try await call(history, model: m, images: images, effort: images ? visionEffort : effort, stop: OpenAIClient.agentStops, agent: true)
-            } catch let e as BrainError where attempt < 2 && ["network", "upstream_error", "server_busy", "upstream_timeout", "bad_response"].contains(e.code) {
+            } catch let e as BrainError where Self.retryable(e) && attempt < (e.code == "server_busy" ? 5 : 2) {
+                // Rate limits and "not ready, retry shortly" get a real backoff (about 45 s in total); other blips a short one.
                 attempt += 1
-                try await Task.sleep(for: .seconds(min(10, e.retryAfter ?? Double(2 * attempt))))
+                let wait = e.retryAfter ?? (e.code == "server_busy" ? 3 * pow(2, Double(attempt - 1)) : Double(2 * attempt))
+                try await Task.sleep(for: .seconds(min(20, wait)))
             }
         }
     }

@@ -1,0 +1,2 @@
+{"model": "glm-5.3-flash-uncensored", "task": "js-async-foreach", "pass": false, "agent_ok": true, "steps": 1, "seconds": 1.0, "cost": 0.0001683, "calls": 1, "check": "[]", "log": "/tmp/anvil-evals/20261121-001533/glm-5.3-flash-uncensored/js-async-foreach.log", "extra": ""}
+{"model": "glm-5.3-flash-uncensored", "task": "py-fix-pagination", "pass": true, "agent_ok": true, "steps": 3, "seconds": 5.7, "cost": 0.00051787, "calls": 3, "check": "", "log": "/tmp/anvil-evals/20261121-001533/glm-5.3-flash-uncensored/py-fix-pagination.log", "extra": ""}

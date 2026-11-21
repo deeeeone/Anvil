@@ -198,8 +198,8 @@ final class Agent {
                     userText = "<observation step=\(step)>\(Self.reanchorText) Continue with the request: \"\(Fmt.line(goal, 300))\". Start by reading or searching the relevant files. \(PromptBuilder.formatReminder)</observation>"
                     continue
                 }
-                // Plain-text answer with no JSON at all: treat it as the final reply.
-                if !raw.contains("```") && !raw.contains("{") && !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // Plain-text answer with no JSON at all: treat it as the final reply, unless it only announces what it will do.
+                if !raw.contains("```") && !raw.contains("{") && !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !Self.announcesIntent(raw) {
                     return finish(raw.trimmingCharacters(in: .whitespacesAndNewlines), ok: true, steps: step)
                 }
                 if parseFailures > 2 { return finish("I couldn't produce a usable reply three times in a row and stopped. Try rephrasing.", ok: false, steps: step) }
@@ -240,6 +240,12 @@ final class Agent {
                 if !actedThisRequest && reanchors < 2 && Self.looksLikeCantAct((reply.say ?? "") + " " + reply.thought) {
                     reanchors += 1
                     userText = "<observation step=\(step)>\(Self.reanchorText) Continue with the request: \"\(Fmt.line(goal, 300))\". Start with an action such as read_file or list_dir. \(PromptBuilder.formatReminder)</observation>"
+                    continue
+                }
+                // "I'll implement that and check it." with no actions and no explicit done: it meant to act.
+                if !reply.explicitDone && Self.announcesIntent(reply.say ?? reply.thought) && parseFailures == 0 && reanchors < 3 {
+                    reanchors += 1
+                    userText = "<observation step=\(step)>Your reply described what you'll do but had no actions, so nothing happened. Put the actions in the json block now (or reply with \"done\": true if the request is already complete). \(PromptBuilder.formatReminder)</observation>"
                     continue
                 }
                 if reply.done || reply.say != nil {
@@ -672,6 +678,17 @@ final class Agent {
         case "ask_user": return "Ask: \(Fmt.line(args["question"]?.string ?? "", 100))"
         default: return "\(a.tool) \(Fmt.line(args.compact, 100))"
         }
+    }
+
+    /// "I'll read the file first." with no actions: the model meant to act, it isn't an answer.
+    static func announcesIntent(_ raw: String) -> Bool {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+        guard t.count < 400 else { return false }
+        let starts = ["i'll ", "i will ", "let me ", "let's ", "i'm going to ", "i am going to ", "first, i", "next, i", "now i'll", "now let me", "i need to "]
+        if starts.contains(where: { t.hasPrefix($0) }) || t.hasSuffix(":") { return true }
+        // "...state machine. I'll implement that behavior and check it." : the last sentence is a promise.
+        let last = t.split(whereSeparator: { ".!?\n".contains($0) }).last.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        return ["i'll ", "i will ", "let me ", "next i'll", "now i'll"].contains { last.hasPrefix($0) }
     }
 
     /// "I can't access your files / run commands here": the model thinks it's a plain chat.

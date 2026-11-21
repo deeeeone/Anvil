@@ -74,6 +74,13 @@ nonisolated struct Session: Codable, Identifiable, Equatable, Sendable {
     var checkpoints: [Checkpoint] = []
     var usage = SessionUsage()
     var allowedCommands: [String] = []
+    /// Worktree sessions run in their own git worktree on their own branch.
+    var workdir: String?
+    var branch: String?
+    var baseBranch: String?
+
+    /// Where the agent works: the worktree for worktree sessions, else the project.
+    var root: URL { URL(fileURLWithPath: workdir ?? projectPath) }
 
     static func == (a: Session, b: Session) -> Bool { a.id == b.id && a.updated == b.updated && a.items.count == b.items.count }
 
@@ -90,6 +97,7 @@ nonisolated struct SessionSummary: Identifiable, Equatable, Sendable {
     var title: String
     var updated: Date
     var cost: Double
+    var branch: String? = nil
 }
 
 /// Sessions are JSON files under Application Support/Anvil/projects/<project-key>/sessions.
@@ -127,10 +135,10 @@ nonisolated enum SessionStore {
         let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
-        struct Head: Decodable { var id: UUID; var title: String; var updated: Date; var usage: SessionUsage? }
+        struct Head: Decodable { var id: UUID; var title: String; var updated: Date; var usage: SessionUsage?; var branch: String? }
         return files.filter { $0.pathExtension == "json" }.compactMap { f in
             guard let d = try? Data(contentsOf: f), let h = try? dec.decode(Head.self, from: d) else { return nil }
-            return SessionSummary(id: h.id, title: h.title, updated: h.updated, cost: h.usage?.cost ?? 0)
+            return SessionSummary(id: h.id, title: h.title, updated: h.updated, cost: h.usage?.cost ?? 0, branch: h.branch)
         }.sorted { $0.updated > $1.updated }
     }
 

@@ -1,0 +1,1 @@
+Rename the function calc to calculateTotal everywhere in this project. Behaviour must not change.

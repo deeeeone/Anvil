@@ -74,3 +74,40 @@ final class HarnessTests: XCTestCase {
         XCTAssertTrue(Brain.replyComplete("t\n```json\n{\"actions\": []}\n```\n**Observation:** made up"))
     }
 }
+
+final class WorktreeTests: XCTestCase {
+    func testWorktreeSessionLifecycle() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("anvil-wt-\(UUID().uuidString)")
+        let repo = base.appendingPathComponent("proj")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        _ = await Git.run(["init", "-b", "main"], in: repo)
+        _ = await Git.run(["config", "user.email", "t@example.com"], in: repo)
+        _ = await Git.run(["config", "user.name", "T"], in: repo)
+        try "v1\n".write(to: repo.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        _ = await Git.stageAll(repo)
+        _ = await Git.commit(repo, message: "init")
+
+        guard case .success(let (dir, branch, baseBranch)) = await Git.addWorktree(repo, name: "fix it") else { return XCTFail("worktree") }
+        XCTAssertEqual(baseBranch, "main")
+        XCTAssertTrue(branch.hasPrefix("anvil/fix-it-"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("a.txt").path))
+
+        try "v2\n".write(to: dir.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        _ = await Git.stageAll(dir)
+        _ = await Git.commit(dir, message: "change in worktree")
+        XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent("a.txt"), encoding: .utf8), "v1\n", "the main checkout is untouched")
+
+        let m = await Git.mergeBranch(repo, branch: branch, message: "merge")
+        XCTAssertEqual(m.status, 0, m.combined)
+        XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent("a.txt"), encoding: .utf8), "v2\n")
+    }
+
+    func testWorktreeNeedsACommit() async throws {
+        let repo = FileManager.default.temporaryDirectory.appendingPathComponent("anvil-wt0-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: repo) }
+        _ = await Git.initRepo(repo)
+        if case .success = await Git.addWorktree(repo, name: "x") { XCTFail("should need a first commit") }
+    }
+}

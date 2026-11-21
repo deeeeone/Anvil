@@ -198,11 +198,17 @@ enum FileTools {
                 for (i, line) in all.enumerated() where re.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil {
                     let lo = max(0, i - context), hi = min(all.count - 1, i + context)
                     if context > 0 && lastPrinted >= 0 && lo > lastPrinted + 1 { lines.append("--") }
-                    for k in max(lo, lastPrinted + 1)...hi {
-                        let l = all[k].count > 240 ? String(all[k].prefix(240)) + "…" : all[k]
-                        lines.append("\(shownPath):\(k + 1)\(k == i ? ":" : "-") \(l)")
+                    // Overlapping context windows (two matches near each other, or both clipped at the end of the file)
+                    // leave nothing new to print.
+                    let from = max(lo, lastPrinted + 1)
+                    if from <= hi {
+                        for k in from...hi {
+                            let l = all[k].count > 240 ? String(all[k].prefix(240)) + "…" : all[k]
+                            let hit = k == i || re.firstMatch(in: all[k], range: NSRange(all[k].startIndex..., in: all[k])) != nil
+                            lines.append("\(shownPath):\(k + 1)\(hit ? ":" : "-") \(l)")
+                        }
                     }
-                    lastPrinted = hi
+                    lastPrinted = max(lastPrinted, hi)
                     if lines.count >= limit { truncated = true; break }
                 }
                 if lines.count >= limit { break }

@@ -1,0 +1,8 @@
+Running best() crashes for some inputs:
+
+Traceback (most recent call last):
+  File "report.py", line 4, in average_scores
+    totals[s["name"]] = sum(s["scores"]) / len(s["scores"])
+ZeroDivisionError: division by zero
+
+Students with no scores should be treated as averaging 0, and best([]) should return None. Fix report.py.

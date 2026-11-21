@@ -107,23 +107,25 @@ nonisolated final class OpenAIClient: Sendable {
             var data = Data()
             for try await b in bytes { data.append(b); if data.count > 8000 { break } }
             let msg = JSON.parse(String(decoding: data, as: UTF8.self))?["error"]?["message"]?.string ?? String(decoding: data.prefix(300), as: UTF8.self)
-            let code = status == 429 ? "server_busy" : status == 401 || status == 403 ? "unauthorized" : "upstream_error"
+            let code = status == 429 || status == 503 ? "server_busy" : status == 401 || status == 403 ? "unauthorized" : "upstream_error"
             throw BrainError(status: status, code: code, message: msg, retryAfter: http?.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init))
         }
         var text = ""
         var usage: ChatUsage?
         var lastEmit = Date.distantPast
+        var finished = false
         for try await line in bytes.lines {
             try Task.checkCancellation()
             guard line.hasPrefix("data:") else { continue }
             let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-            if payload == "[DONE]" { break }
+            if payload == "[DONE]" { finished = true; break }
             guard let j = JSON.parse(payload) else { continue }
             if let e = j["error"] { throw BrainError(status: 200, code: e["code"]?.string ?? "stream_error", message: e["message"]?.string ?? "stream error") }
             if let u = j["usage"], u != .null {
                 usage = ChatUsage(prompt: u["prompt_tokens"]?.int ?? 0, completion: u["completion_tokens"]?.int ?? 0,
                                   cached: u["prompt_tokens_details"]?["cached_tokens"]?.int ?? 0, cost: u["cost"]?.double)
             }
+            if let fr = j["choices"]?.array?.first?["finish_reason"], fr != .null { finished = true }
             if let d = j["choices"]?.array?.first?["delta"]?["content"]?.string, !d.isEmpty {
                 text += d
                 if Date().timeIntervalSince(lastEmit) > 0.08 { onText(text); lastEmit = Date() }
@@ -132,6 +134,8 @@ nonisolated final class OpenAIClient: Sendable {
         }
         onText(text)
         if text.isEmpty { throw BrainError(status: status, code: "bad_response", message: "empty reply") }
+        // The connection dropped mid-reply: don't pass a truncated reply off as complete.
+        if !finished && !Brain.replyComplete(text) { throw BrainError(status: status, code: "network", message: "the reply stream ended early") }
         return (text, usage, false)
     }
 }

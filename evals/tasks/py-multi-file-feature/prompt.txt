@@ -1,0 +1,1 @@
+Add an email field to User (app/models.py), include it in to_dict/from_dict (app/serialize.py), and make from_dict raise ValueError when the email has no '@'.

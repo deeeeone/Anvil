@@ -1,0 +1,1 @@
+fetchAll in fetchAll.js returns an empty array even though the loader works. Fix it so it returns all results in the same order as the ids.

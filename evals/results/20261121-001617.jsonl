@@ -1,0 +1,1 @@
+{"model": "glm-5.3-flash-uncensored", "task": "js-async-foreach", "pass": true, "agent_ok": true, "steps": 4, "seconds": 12.1, "cost": 0.0008823349999999999, "calls": 5, "check": "", "log": "/tmp/anvil-evals/20261121-001617/glm-5.3-flash-uncensored/js-async-foreach.log", "extra": "--no-stream"}

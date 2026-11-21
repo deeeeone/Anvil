@@ -1,0 +1,1 @@
+load_config(path) in config.py should merge the file's settings over DEFAULTS (missing keys fall back to defaults), return the defaults when the file doesn't exist, and never modify DEFAULTS. Implement that.

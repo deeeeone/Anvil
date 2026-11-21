@@ -1,0 +1,1 @@
+Create a Python package `inventory` (inventory/__init__.py exposing an Inventory class) with add(name, qty), remove(name, qty) that raises ValueError when removing more than available, count(name) returning 0 for unknown items, and total() returning the sum of all quantities. Add unittest tests in tests/test_inventory.py and make sure they pass.

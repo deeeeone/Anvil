@@ -1,17 +1,16 @@
 # Roadmap
 
 ## Next
-- **Streaming replies.** Stream tokens so the reasoning and `say` appear as they're written. Fall back to non-streaming for providers without SSE.
+- **Grow the eval suite** to 30 to 50 tasks, including bigger existing repos, and track results over time (a chart of pass rate and cost per model).
 - **Per-hunk review.** Accept or reject individual hunks in a diff, and edit the proposed text before applying it.
 - **Shell checkpoints.** Snapshot the git working tree (a stash-like commit) before shell commands in auto modes, so undo covers changes those commands make too.
 - **Persistent allow rules.** Project-level `.anvil/settings.json` allow and deny lists for commands (like Claude Code's permissions), on top of today's session allow list.
 - **Hooks.** Run user commands before and after tool calls (format on save, lint after edit, block patterns).
 
 ## Later
-- Subagents: parallel read-only investigators that report back a summary, to save context on big codebases.
-- Git worktree sessions: run a session on its own branch and worktree, then merge or open a PR.
+- Worktree cleanup: remove merged worktrees and branches from the app.
 - A `gh` integration: PR creation, review comments into the chat, CI status.
-- An LSP bridge for diagnostics after edits (Swift, TypeScript, Python), fed into observations.
+- An LSP bridge for type-level diagnostics after edits (TypeScript, Swift, Python), on top of today's syntax checks.
 - HTTP and SSE MCP servers (stdio only today) and MCP resources and prompts.
 - Image generation and screenshot tools for front-end work, through the vision model.
 - Better token accounting: a provider tokenizer instead of the 3.5 characters per token estimate, and a context bar showing cache hits.

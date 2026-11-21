@@ -25,6 +25,50 @@ Anvil reuses the brain of [Peep](../peep) (same provider, same text protocol, sa
 - **MCP.** Stdio servers from `~/Library/Application Support/Anvil/mcp.json` and the project's `.mcp.json` (Claude's format) become `server.tool` actions.
 - **Design.** Deep blacks, rounded surfaces, one warm coral accent, and a transcript modelled on Claude Code: a dot for each action, a one-line `⎿` result under it, and a cycling ✻ spinner with "esc to interrupt". The layout adapts to the window: wide windows show sidebar, conversation and inspector side by side; medium windows slide the inspector over the chat as a rounded panel; narrow windows hide the sidebar and slide it in on demand. The inspector has Changes (diffs, checkpoints), Files (tree and preview), Plan, Terminal (live output and background processes) and Git.
 
+## What makes it fast and accurate
+
+Each of these is measured by the eval suite (see below):
+
+- **Edit-time syntax checks.** Every edit to Python, JS, JSON, shell, Ruby, Swift, PHP or Go is checked on the spot, and an error lands in the same observation. A broken file stops the batch before the tests run against it.
+- **Parallel reads.** Runs of read-only actions in one reply (reads, greps, globs, `repo_map`, `explore`, web) execute concurrently. Re-reading a file that hasn't changed since a recent read returns "unchanged since step N" instead of the contents.
+- **Repo map.** The briefing includes every source file with its top-level functions, classes and types, so the model goes straight to the right file. `repo_map` gives a deeper map of a folder.
+- **Explore helpers.** `explore {"question"}` starts a read-only helper agent in its own context and returns a short report, which keeps the main context small. Several in one reply run in parallel.
+- **Verification gate.** When the agent says it's done after changing files, Anvil runs the project's test command itself (remembered from earlier passing runs, or guessed from the project files). A pass is noted in the answer at no extra model turn. A failure goes back to the agent. With no test command, the agent is asked once to verify.
+- **Self-review.** A second, low-effort call reads the request's diff and flags concrete problems (bugs, missed requirements, leftover debug code). Real issues go back to the agent once.
+- **Escalation.** When the same action fails twice, or replies keep failing to parse, the next turn goes to the other model family (GLM and DeepSeek), with a nudge to try a different approach.
+- **Project memory.** Passing test and build commands, plus lessons from failed requests, are saved per project and shown in later briefings.
+- **Streaming.** Reasoning shows live under the spinner. For the Luna API and Gemini (which ignore stop sequences), the stream ends the moment the JSON block closes. A stream that drops mid-reply is retried rather than trusted.
+- **Exploration model (optional).** Turns that have only read and searched so far, and explore helpers, can use a faster model (Settings, Agent).
+- **Worktree sessions.** "New worktree session" runs the agent on its own branch in its own folder (`../.anvil-worktrees/`), so your checkout stays untouched. Commit there, then **Merge into main** from the Git tab.
+
+All of these can be switched off in Settings or with headless flags (`--no-verify`, `--no-review`, `--no-escalate`, `--no-stream`, `--explore-model ID`).
+
+## Evals
+
+`evals/tasks/` holds small, realistic coding tasks: fixes, features, refactors across files, implementing from a spec, a dev server, performance, a flaky test, a shell script, and a question that must not change any files. Each task has a `setup.sh`, a `prompt.txt` and a hidden `check.sh` the agent never sees.
+
+```bash
+python3 evals/run.py --models glm-5.3-flash-uncensored,deepseek-v4.1-flash-uncensored,gpt-6-luna,gemini-auto --parallel 4
+python3 evals/run.py --tasks py-,js-csv -- --no-review          # args after -- go to the agent (ablations)
+```
+
+Latest results (16 tasks, Bypass mode, effort high, 21 November 2026):
+
+| Model | Pass | Avg steps | Avg time | Cost (16 tasks) |
+|---|---|---|---|---|
+| glm-5.3-flash-uncensored | 16/16 | 3.7 | 19 s | $0.015 |
+| glm-5.3-flash | 16/16 | 3.4 | 48 s | $0.031 |
+| deepseek-v4.1-flash-uncensored | 16/16 | 5.4 | 23 s | $0.033 |
+| deepseek-v4.1-flash | 16/16 | 4.6 | 38 s | $0.067 |
+| gpt-6-luna | 13/16 | 3.4 | 105 s | free |
+| gemini-auto | not measured | | | free |
+
+- **Experiential models:** two tasks (the cross-file rename and the scaffold) were re-run after fixing a `grep` crash in Anvil and a bug in one check script.
+- **gpt-6-luna:** all three misses were provider errors (duck.ai's 418 challenge and 429 rate limits) before the agent could start. Its time includes rate-limit backoff at 2 runs in parallel.
+- **Gemini:** the proxy reported `ready: false` during the run, so it couldn't be measured.
+
+Each run happens in a fresh git repo under `/tmp/anvil-evals/`, with its own support folder, so evals never touch your sessions or project memory. Results go to `evals/results/*.jsonl`, and a summary table prints at the end.
+
 ## Running it
 
 Requires macOS 15, Xcode 16 or later and [XcodeGen](https://github.com/yonaskolb/XcodeGen).

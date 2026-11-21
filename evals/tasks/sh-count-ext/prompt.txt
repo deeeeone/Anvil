@@ -1,0 +1,1 @@
+Write count_ext.sh: given a directory argument, print a count of files per extension (recursively), one line per extension as `ext count`, sorted by count descending then extension ascending. Files without an extension count as `(none)`. Make it executable.

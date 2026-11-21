@@ -139,7 +139,7 @@ final class SessionController: AgentHost {
 
     func start(goal: String, display: String, images: [(Data, String)] = []) {
         append(ChatItem(kind: .user, text: display, images: images.count))
-        if session.items.filter({ $0.kind == .user }).count == 1 && session.title == "New session" {
+        if session.items.filter({ $0.kind == .user }).count == 1 && (session.title == "New session" || session.title.hasPrefix("New session on ")) {
             session.title = Session.title(from: display)
             app?.refreshSessions()
         }
@@ -322,6 +322,19 @@ final class SessionController: AgentHost {
         let r = await Git.commit(root, message: msg)
         append(ChatItem(kind: r.status == 0 ? .system : .error, text: r.status == 0 ? "Committed:\n\(msg)" : "Commit failed: \(r.combined)"))
         app?.refreshGit()
+    }
+
+    /// Merges this worktree session's branch into the project's current branch.
+    func mergeWorktree() async -> String {
+        guard let branch = session.branch else { return "This session isn't on a worktree branch." }
+        let st = await Git.status(root)
+        if !st.files.isEmpty { return "Commit the session's changes first (\(st.files.count) uncommitted)." }
+        let project = URL(fileURLWithPath: session.projectPath)
+        let r = await Git.mergeBranch(project, branch: branch, message: "Merge \(branch): \(session.title)")
+        app?.refreshGit()
+        let msg = r.status == 0 ? "Merged \(branch) into \(session.baseBranch ?? "the project's branch")." : "Merge failed: \(Fmt.line(r.combined, 400))"
+        append(ChatItem(kind: r.status == 0 ? .system : .error, text: msg))
+        return msg
     }
 
     func generateCommitMessage() async throws -> String {

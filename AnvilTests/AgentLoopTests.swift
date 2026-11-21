@@ -272,6 +272,36 @@ final class AgentLoopTests: XCTestCase {
         XCTAssertTrue(sent[1].last!.text.contains("You do have access"))
     }
 
+    func testIntentWithoutActionsIsNotAnAnswer() async {
+        let agent = makeAgent([
+            "I'll read the file to see why fetchAll loses its results.",
+            fence(#"{"say": "Read it.", "done": true}"#),
+        ])
+        let out = await agent.run(goal: "x")
+        XCTAssertEqual(out.text, "Read it.")
+        XCTAssertTrue(sent[1].last!.text.contains("couldn't be used"))
+    }
+
+    func testAnnouncedPlanWithoutActionsIsNudged() async {
+        let agent = makeAgent([
+            fence(#"{"say": "The README calls for a state machine. I'll implement that behavior and check it."}"#),
+            fence(#"{"say": "Implemented.", "done": true}"#),
+        ])
+        let out = await agent.run(goal: "x")
+        XCTAssertEqual(out.text, "Implemented.")
+        XCTAssertTrue(sent[1].last!.text.contains("had no actions"))
+    }
+
+    func testGrepContextNearEndOfFileDoesNotCrash() async throws {
+        try "a\ncalc\nb\ncalc\ncalc\n".write(to: dir.appendingPathComponent("m.js"), atomically: true, encoding: .utf8)
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "grep", "args": {"pattern": "calc", "context": 3}}]}"#),
+            fence(#"{"say": "ok", "done": true}"#),
+        ])
+        _ = await agent.run(goal: "x")
+        XCTAssertTrue(sent[1].last!.text.contains("m.js:5: calc"))
+    }
+
     func testTodoWrite() async {
         let agent = makeAgent([fence(#"{"actions": [{"tool": "todo_write", "args": {"todos": [{"content": "a", "status": "completed"}, {"content": "b", "status": "in_progress"}]}}]}"#), fence(#"{"say": "ok", "done": true}"#)])
         _ = await agent.run(goal: "x")

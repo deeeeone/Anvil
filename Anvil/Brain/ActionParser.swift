@@ -16,6 +16,8 @@ nonisolated struct AgentReply: Sendable {
     var milestone: Int?
     /// More JSON blocks followed the first one (the model kept writing past its turn); they were ignored.
     var ignoredBlocks = 0
+    /// The reply said done explicitly (a "done" key or a done action), rather than done being inferred.
+    var explicitDone = false
 }
 
 nonisolated enum ParseError: Error, CustomStringConvertible {
@@ -40,6 +42,7 @@ nonisolated enum ActionParser {
         guard let json = parseLenient(jsonText) else { throw ParseError.invalid(diagnose(escapeNewlinesInStrings(jsonText))) }
         var reply = AgentReply(thought: before, say: nil, actions: [], done: false)
         reply.ignoredBlocks = extra
+        reply.explicitDone = json["done"] != nil || json["status"] != nil
 
         switch json {
         case .array(let items):
@@ -68,6 +71,7 @@ nonisolated enum ActionParser {
             if let msg, !msg.isEmpty { reply.say = msg }
             reply.actions = Array(reply.actions[..<i])
             reply.done = true
+            reply.explicitDone = true
         }
         if reply.actions.isEmpty && reply.say != nil && json["done"] == nil && reply.plan.isEmpty { reply.done = true }
         return reply

@@ -1,0 +1,1 @@
+Create server.js: a Node HTTP server (no dependencies) listening on the port in the PORT env var (default 3000). GET /health returns JSON {"status":"ok"} with content-type application/json; any other path returns 404 JSON {"error":"not found"}. Start it to check it works, then stop it.

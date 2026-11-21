@@ -113,6 +113,27 @@ nonisolated enum Git {
         await run(["log", "--oneline", "-n", "\(count)"], in: root).stdout
     }
 
+    /// Creates a worktree for a session on a new branch. Returns (folder, branch, base branch).
+    static func addWorktree(_ root: URL, name: String) async -> Result<(URL, String, String), Error> {
+        let st = await status(root)
+        guard st.isRepo else { return .failure(ToolFailure("This folder isn't a git repository.")) }
+        let head = await run(["rev-parse", "--verify", "HEAD"], in: root)
+        guard head.status == 0 else { return .failure(ToolFailure("Make a first commit before starting a worktree session.")) }
+        let base = st.branch ?? "HEAD"
+        let short = String(UUID().uuidString.prefix(6)).lowercased()
+        let branch = "anvil/\(SkillLibrary.slug(name).prefix(24))-\(short)"
+        let dir = root.deletingLastPathComponent().appendingPathComponent(".anvil-worktrees").appendingPathComponent("\(root.lastPathComponent)-\(short)")
+        try? FileManager.default.createDirectory(at: dir.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let r = await run(["worktree", "add", "-b", branch, dir.path], in: root, timeout: 120)
+        guard r.status == 0 else { return .failure(ToolFailure("git worktree add failed: \(r.combined)")) }
+        return .success((dir, branch, base))
+    }
+
+    /// Merges a session branch into the project's current branch (no fast-forward, so it shows as one unit).
+    static func mergeBranch(_ root: URL, branch: String, message: String) async -> ProcessOutput {
+        await run(["merge", "--no-ff", branch, "-m", message], in: root, timeout: 120)
+    }
+
     static func initRepo(_ root: URL) async -> ProcessOutput { await run(["init"], in: root) }
 
     static func commitPrompt(diff: String) -> String {

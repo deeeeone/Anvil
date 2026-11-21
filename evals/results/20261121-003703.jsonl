@@ -1,0 +1,1 @@
+{"model": "gemini-auto", "task": "py-fix-pagination", "pass": false, "agent_ok": false, "steps": 1, "seconds": 52.3, "cost": 0, "calls": 0, "check": "Traceback (most recent call last):\n  File \"<stdin>\", line 3, in <module>\nAssertionError", "log": "/tmp/anvil-evals/20261121-003703/gemini-auto/py-fix-pagination.log", "extra": ""}
