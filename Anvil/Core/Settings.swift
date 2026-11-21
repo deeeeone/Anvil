@@ -130,12 +130,18 @@ final class AppSettings {
     /// The model to escalate to from `model` ("" = none available).
     func escalation(for model: String) -> String {
         if escalationModel.isEmpty { return "" }
-        if escalationModel != "auto" { return ready(Providers.provider(for: escalationModel)) && escalationModel != model ? escalationModel : "" }
+        if escalationModel != "auto" { return ready(model: escalationModel) && escalationModel != model ? escalationModel : "" }
         guard ready(.experiential) else { return "" }
         return model.hasPrefix("deepseek") ? "glm-5.3-flash-uncensored" : "deepseek-v4.1-flash-uncensored"
     }
 
     /// Can requests to this provider go out?
+    /// Whether a model can be used now: its provider plugin is set up, or its built-in provider is.
+    func ready(model: String) -> Bool {
+        if let (plugin, _) = ProviderPlugins.shared.route(model) { return ProviderPlugins.shared.isReady(plugin.id) }
+        return ready(Providers.provider(for: model))
+    }
+
     func ready(_ p: Provider) -> Bool {
         switch p {
         case .experiential: return !apiKey.isEmpty

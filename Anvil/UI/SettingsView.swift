@@ -60,6 +60,7 @@ struct ProviderSettings: View {
 
             AccountsSection(provider: .gemini)
             AccountsSection(provider: .chatgpt)
+            PluginProvidersSection()
             ProxyFallbackSettings()
 
             Section {

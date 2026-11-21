@@ -194,7 +194,7 @@ struct WelcomeView: View {
                 .frame(maxWidth: 420)
                 .padding(.top, 10)
             }
-            if !AppSettings.shared.ready(Providers.provider(for: AppSettings.shared.model)) {
+            if !AppSettings.shared.ready(model: AppSettings.shared.model) {
                 Text("The selected model's provider isn't set up yet. Open Settings (⌘,).").font(.callout).foregroundStyle(Theme.amber)
             }
             Spacer()

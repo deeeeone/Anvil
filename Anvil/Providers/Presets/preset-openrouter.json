@@ -1,0 +1,18 @@
+{
+  "spec": 1,
+  "id": "openrouter",
+  "name": "OpenRouter",
+  "symbol": "arrow.triangle.branch",
+  "homepage": "https://openrouter.ai",
+  "description": "Hundreds of models from every major lab behind one key.",
+  "type": "openai",
+  "baseURL": "https://openrouter.ai/api/v1",
+  "headers": {
+    "HTTP-Referer": "https://github.com/deeeeone/Anvil",
+    "X-Title": "Anvil"
+  },
+  "auth": {
+    "type": "apiKey",
+    "keyURL": "https://openrouter.ai/keys"
+  }
+}

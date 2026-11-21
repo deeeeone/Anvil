@@ -1,0 +1,14 @@
+{
+  "spec": 1,
+  "id": "groq",
+  "name": "Groq",
+  "symbol": "hare",
+  "homepage": "https://groq.com",
+  "description": "Very fast inference of open models.",
+  "type": "openai",
+  "baseURL": "https://api.groq.com/openai/v1",
+  "auth": {
+    "type": "apiKey",
+    "keyURL": "https://console.groq.com/keys"
+  }
+}

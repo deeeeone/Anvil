@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/deeeeone/Anvil/main/docs/anvil-provider.schema.json",
+  "title": "Anvil provider plugin",
+  "description": "anvil-provider.json: describes a model provider for Anvil. See docs/PROVIDERS.md.",
+  "type": "object",
+  "required": ["spec", "id", "name", "type", "auth"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "spec": { "const": 1, "description": "Spec version." },
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,31}$", "not": { "enum": ["anvil", "experiential", "luna", "gemini", "chatgpt", "builtin", "local"] },
+            "description": "Unique short name. Models appear in Anvil as <id>/<model>." },
+    "name": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "symbol": { "type": "string", "description": "SF Symbol name for menus." },
+    "homepage": { "type": "string", "format": "uri" },
+    "type": { "enum": ["openai", "process"] },
+    "baseURL": { "type": "string", "format": "uri", "description": "openai: API root, e.g. https://api.example.com/v1 (https, or http for localhost)." },
+    "chatPath": { "type": "string", "default": "chat/completions" },
+    "modelsPath": { "type": "string", "default": "models", "description": "\"\" turns live model listing off." },
+    "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+    "command": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "process: run from the plugin folder, e.g. [\"python3\", \"provider.py\"]." },
+    "auth": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["none", "apiKey", "web"] },
+        "header": { "type": "string", "default": "Authorization" },
+        "prefix": { "type": "string", "description": "Default \"Bearer \" for Authorization, \"\" for other headers." },
+        "label": { "type": "string" },
+        "keyURL": { "type": "string", "format": "uri" },
+        "loginURL": { "type": "string", "format": "uri" },
+        "domain": { "type": "string" },
+        "cookies": { "type": "array", "items": { "type": "string" } },
+        "localStorage": { "type": "array", "items": { "type": "string" } },
+        "bearer": { "type": "string", "pattern": "^(localStorage|cookie):.+$" }
+      }
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^\\S+$" },
+          "name": { "type": "string" },
+          "vision": { "type": "boolean" },
+          "context": { "type": "integer" },
+          "input": { "type": "number", "description": "USD per million input tokens." },
+          "output": { "type": "number", "description": "USD per million output tokens." }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "stop": { "type": "boolean", "default": true },
+        "reasoningEffort": { "type": "boolean", "default": false },
+        "streaming": { "type": "boolean", "default": true },
+        "streamUsage": { "type": "boolean", "default": true },
+        "maxTokensField": { "type": "string", "default": "max_tokens" }
+      }
+    },
+    "free": { "type": "boolean" }
+  },
+  "allOf": [
+    { "if": { "properties": { "type": { "const": "openai" } } }, "then": { "required": ["baseURL"] } },
+    { "if": { "properties": { "type": { "const": "process" } } }, "then": { "required": ["command"] } }
+  ]
+}

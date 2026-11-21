@@ -8,10 +8,13 @@
 - **Hooks.** Run user commands before and after tool calls (format on save, lint after edit, block patterns).
 
 ## Recently shipped
+- Provider standard: anvil-provider.json for OpenAI-compatible APIs (no code) and process plugins (any language), presets for eight providers, install from a GitHub URL with a confirmation of what it does, website sign-in for plugins, JSON Schema and templates.
 - Sub-sessions (spawn, wait, message, merge, with conflict checks), parallel queue, LSP type checks after edits, GitHub through gh (issues, PRs, review comments, CI, labeled issues into the queue), native ChatGPT and Gemini accounts.
 - Background queue, live preview with agent browser, rewind, cost limits, @-mentions, learned conventions, skill builder, notifications, app icon.
 
 ## Later
+- A provider plugin directory: browse repositories tagged `anvil-provider` from inside Anvil.
+- Move the four built-in providers onto the plugin spec where they fit (Experiential Labs and Luna are plain OpenAI-compatible APIs).
 - Worktree cleanup: remove merged worktrees and branches from the app (sub-sessions make this more pressing).
 - Persist sub-session links across restarts, and show sub-sessions nested under their parent in the sidebar.
 - HTTP and SSE MCP servers (stdio only today) and MCP resources and prompts.

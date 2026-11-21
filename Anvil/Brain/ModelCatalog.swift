@@ -84,7 +84,16 @@ final class ModelCatalog {
         let luna = lunaModels.map { ModelChoice(id: $0, provider: .luna, detail: "free") }
         let gem = geminiModels.map { ModelChoice(id: $0, provider: .gemini, detail: WebAccounts.shared.hasAny(.gemini) ? "free, your Google account" : "free, via your proxy") }
         let cg = chatgptModels.map { ModelChoice(id: $0, provider: .chatgpt, detail: WebAccounts.shared.hasAny(.chatgpt) ? "your ChatGPT plan" : "via the local proxy") }
-        return exp + luna + gem + cg
+        let plugins = ProviderPlugins.shared.installed.flatMap { p in
+            ProviderPlugins.shared.models(p.id).map { m in
+                ModelChoice(id: "\(p.id)/\(m.id)", provider: .luna,
+                            detail: [p.spec.free == true ? "free" : m.input.map { String(format: "$%.2f/M in", $0) } ?? "",
+                                     m.context.map { "\(Fmt.tokens($0)) context" } ?? "", m.vision == true ? "vision" : ""]
+                                .filter { !$0.isEmpty }.joined(separator: " · "),
+                            plugin: p.id)
+            }
+        }
+        return exp + luna + gem + cg + plugins
     }
 
     /// Kept for older call sites: the offered Experiential models.
@@ -141,6 +150,7 @@ final class ModelCatalog {
                 if !l.isEmpty { chatgptModels = l }
             }
         }
+        await ProviderPlugins.shared.refreshModels()
         error = problems.isEmpty ? nil : "Couldn't reach: " + problems.joined(separator: ", ")
         cache["experiential"] = ["data": models.map { m -> [String: Any] in
             var o: [String: Any] = ["id": m.id]

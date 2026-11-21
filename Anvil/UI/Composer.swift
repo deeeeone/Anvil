@@ -318,11 +318,11 @@ struct ModelPill: View {
                     if !ready, web {
                         Button("Sign in to \(p == .chatgpt ? "ChatGPT" : "Gemini")…") {
                             WebLoginWindow.shared.present(provider: p) { _ in
-                                if let first = catalog.choices.first(where: { $0.provider == p }) { controller.model = first.id }
+                                if let first = catalog.choices.first(where: { $0.provider == p && $0.plugin == nil }) { controller.model = first.id }
                             }
                         }
                     } else {
-                    ForEach(catalog.choices.filter { $0.provider == p }) { c in
+                    ForEach(catalog.choices.filter { $0.provider == p && $0.plugin == nil }) { c in
                         Button {
                             controller.model = c.id
                         } label: {
@@ -333,15 +333,31 @@ struct ModelPill: View {
                     }
                 }
             }
+            ForEach(ProviderPlugins.shared.installed) { p in
+                let ready = ProviderPlugins.shared.isReady(p.id)
+                Section(p.spec.name + (ready ? "" : " (not set up)")) {
+                    let models = catalog.choices.filter { $0.plugin == p.id }
+                    if models.isEmpty { Text("No models yet: set it up in Settings") }
+                    ForEach(models) { c in
+                        Button {
+                            controller.model = c.id
+                        } label: {
+                            let name = String(c.id.dropFirst(p.id.count + 1))
+                            if c.id == controller.model { Label(name, systemImage: "checkmark") } else { Text(name) }
+                        }
+                        .disabled(!ready)
+                    }
+                }
+            }
             Divider()
             if Jailbreak.applies(to: controller.model) {
                 Toggle("Jailbreak mode", isOn: $settings.jailbreak)
                     .help("Inject the rebel prompt into ChatGPT and Gemini web requests")
             }
-            SettingsLink { Text("Set up providers…") }
+            SettingsLink { Text("Set up or add providers…") }
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: Providers.provider(for: controller.model).symbol).font(.system(size: 11, weight: .semibold))
+                Image(systemName: Providers.symbol(for: controller.model)).font(.system(size: 11, weight: .semibold))
                 Text(controller.model).font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)
                 if settings.jailbreak, Jailbreak.applies(to: controller.model) {
                     Image(systemName: "flame.fill").font(.system(size: 9)).foregroundStyle(Theme.amber)
@@ -357,7 +373,7 @@ struct ModelPill: View {
         .frame(maxWidth: 230, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
         .layoutPriority(-0.5)
-        .help("\(Providers.provider(for: controller.model).label), effort \(AppSettings.shared.effort)")
+        .help("\(Providers.label(for: controller.model)), effort \(AppSettings.shared.effort)")
         .task { if catalog.models.isEmpty { await catalog.refresh() } }
     }
 }

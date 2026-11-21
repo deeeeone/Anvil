@@ -43,8 +43,11 @@ final class Brain {
     static func fromSettings(model: String? = nil) throws -> Brain {
         let s = AppSettings.shared
         let m = model ?? s.model
+        if let (plugin, _) = ProviderPlugins.shared.route(m), !ProviderPlugins.shared.isReady(plugin.id) {
+            throw BrainError(status: 0, code: "no_key", message: "Set up \(plugin.spec.name) first: Settings → Provider → \(plugin.spec.auth.type == .web ? "Sign in" : "API key").")
+        }
         let p = Providers.provider(for: m)
-        guard s.ready(p) else {
+        guard ProviderPlugins.shared.route(m) != nil || s.ready(p) else {
             throw BrainError(status: 0, code: "no_key", message: p == .gemini ? "Sign in to Gemini first: pick a Gemini model from the model menu, or open Settings → Provider." : p == .chatgpt ? "Sign in to ChatGPT first: pick a ChatGPT model from the model menu, or open Settings → Provider." : "")
         }
         let exp = s.hasKey ? URL(string: s.baseURL).map { OpenAIClient(baseURL: $0, apiKey: s.apiKey) } : nil
@@ -52,14 +55,15 @@ final class Brain {
         let gem = s.geminiKey.isEmpty ? nil : URL(string: s.geminiURL).map { GeminiProxyClient(baseURL: $0, apiKey: s.geminiKey) }
         let cg = s.chatgptProxyConfigured ? URL(string: s.chatgptURL).map { OpenAIClient(baseURL: $0, apiKey: "") } : nil
         // A vision model is only usable when its provider is set up.
-        let vision = s.ready(Providers.provider(for: s.visionModel)) ? s.visionModel : ""
+        let vision = s.ready(model: s.visionModel) ? s.visionModel : ""
         return Brain(model: m, visionModel: vision, effort: s.effort, visionEffort: s.visionEffort, experiential: exp, luna: luna, gemini: gem, chatgpt: cg)
     }
 
     /// Which model a history goes to, and whether to send its images.
     static func route(_ history: [ChatMessage], model: String, vision: String) -> (model: String, images: Bool) {
         guard history.last?.hasImage ?? false else { return (model, false) }
-        if Providers.seesImages(model) { return (model, true) }
+        if let info = ProviderPlugins.shared.modelInfo(model) { if info.vision == true { return (model, true) } }
+        else if ProviderPlugins.shared.route(model) == nil, Providers.seesImages(model) { return (model, true) }
         if !vision.isEmpty { return (vision, true) }
         return (model, false)
     }
@@ -126,6 +130,16 @@ final class Brain {
 
     private func call(_ history: [ChatMessage], model m: String, images: Bool, effort e: String, stop: [String]?, agent: Bool, maxTokens: Int?) async throws -> String {
         let stream = agent ? onStream : nil
+        if let (plugin, name) = ProviderPlugins.shared.route(m) {
+            // A provider plugin: its spec says what it supports; ignored stop sequences mean ending the stream ourselves.
+            let client = ProviderClient(plugin)
+            let stopEarly: (String) -> Bool = plugin.spec.honorsStop ? { _ in false } : { Self.replyComplete($0) }
+            let (text, usage) = try await client.chat(history, model: name, images: images, effort: e.isEmpty ? nil : e, stop: stop,
+                                                      maxTokens: maxTokens, onText: stream, shouldStop: stopEarly)
+            if agent { lastFinishReason = usage?.finishReason }
+            record(usage, model: m, history: history, reply: text, free: plugin.spec.free ?? false)
+            return text
+        }
         switch Providers.provider(for: m) {
         case .experiential:
             guard let experiential else { throw BrainError(status: 0, code: "no_key", message: "") }
@@ -309,7 +323,10 @@ final class Brain {
             u.prompt = history.reduce(0) { $0 + $1.charCount } / 4
             u.completion = reply.count / 4
         }
-        let cost: Double? = free ? 0 : (u.cost ?? ModelCatalog.shared.info(model)?.cost(prompt: u.prompt, completion: u.completion, cached: u.cached))
+        var cost: Double? = free ? 0 : (u.cost ?? ModelCatalog.shared.info(model)?.cost(prompt: u.prompt, completion: u.completion, cached: u.cached))
+        if !free, u.cost == nil, let m = ProviderPlugins.shared.modelInfo(model), m.input != nil || m.output != nil {
+            cost = (Double(u.prompt) * (m.input ?? 0) + Double(u.completion) * (m.output ?? 0)) / 1_000_000
+        }
         onUsage?(u, model, cost)
     }
 }

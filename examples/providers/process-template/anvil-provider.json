@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/deeeeone/Anvil/main/docs/anvil-provider.schema.json",
+  "spec": 1,
+  "id": "echo",
+  "name": "Echo (template)",
+  "description": "A working example of a process provider. Copy this folder to start your own.",
+  "symbol": "arrow.uturn.left",
+  "type": "process",
+  "command": ["python3", "provider.py"],
+  "auth": { "type": "none" },
+  "models": [{ "id": "echo-1" }],
+  "capabilities": { "stop": false },
+  "free": true
+}

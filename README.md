@@ -26,7 +26,7 @@ On the default model, a typical small coding task costs a fraction of a cent.
 
 ## Why Anvil
 
-- **Bring your own model.** Any OpenAI-compatible endpoint, plus your own ChatGPT and Gemini web accounts. No vendor lock-in and no native tool calling required.
+- **Bring your own model.** Any OpenAI-compatible API in one JSON file, community provider plugins installed from a GitHub link, plus your own ChatGPT and Gemini web accounts. No vendor lock-in and no native tool calling required.
 - **Review everything.** Every edit is a diff before it's written, every request is a checkpoint you can undo, and four permission modes decide what asks first.
 - **Built for the whole loop.** A real terminal, a live browser preview the agent can drive, an iOS Simulator it can tap through, git, GitHub and language servers, all in one window.
 - **Parallel when it pays.** Split a feature into sub-sessions that each run in their own git worktree, then merge them back with conflict checks.
@@ -97,6 +97,7 @@ On the default model, a typical small coding task costs a fraction of a cent.
 - Labeled GitHub issues picked up into the queue
 - `AGENTS.md` / `CLAUDE.md` project memory, `/init` to write one
 - Skills (`SKILL.md`) and custom slash commands, Claude Code compatible
+- Provider plugins: one JSON file, or a GitHub link
 - Headless CLI mode for scripts and evals
 
 </td>
@@ -157,6 +158,21 @@ Pick the model from the menu on the composer. Anvil talks to each provider direc
 | **Any OpenAI-compatible endpoint** ("Luna API") | whatever it lists at `/v1/models` | URL | depends on the endpoint |
 | **ChatGPT (web)** | `chatgpt/auto`, `gpt-5.5`, `gpt-5.5-thinking`, `o3` and more | sign in with your account | your ChatGPT plan |
 | **Gemini (web)** | `gemini-auto`, `gemini-pro`, `gemini-flash`, `gemini-flash-lite` | sign in with a Google account | free |
+
+### More providers, and writing your own
+
+**Settings → Provider → Add provider** offers ready-made presets for **Z.ai, OpenRouter, Groq, DeepSeek, Mistral, the OpenAI API, Ollama and LM Studio**, and installs community plugins straight from a GitHub URL. Every provider is described by one `anvil-provider.json` file:
+
+```json
+{
+  "spec": 1, "id": "zai", "name": "Z.ai", "type": "openai",
+  "baseURL": "https://api.z.ai/api/paas/v4",
+  "auth": { "type": "apiKey" },
+  "models": [{ "id": "glm-4.6", "context": 200000 }]
+}
+```
+
+That's a complete provider for any OpenAI-compatible API. For services without one, such as a chat website, set `"type": "process"` and ship a small program in any language that speaks a JSON-lines protocol; Anvil can run the website sign-in for it and hand over the session. Before installing from GitHub, Anvil shows exactly which host a plugin talks to or which command it runs. The full spec, templates and a JSON Schema are in **[docs/PROVIDERS.md](docs/PROVIDERS.md)**.
 
 Keys and session cookies live in the macOS Keychain. Several ChatGPT or Gemini accounts can be added; requests start on the active one and fall through to the others when one is signed out or rate-limited.
 
@@ -223,11 +239,14 @@ Actions run in order and the batch stops at the first failure. Edit tools *prepa
 Anvil/
 ├── App/      entry point, app state, session controller, background queue, sub-sessions, headless runner
 ├── Brain/    agent loop, reply parser, prompt builder, model routing, provider clients
+├── Providers/ provider spec, plugin registry and installer, plugin client, presets
 ├── Core/     permissions, diffs, checkpoints, git, LSP client, sessions, settings, keychain, web accounts
 ├── Tools/    file, shell, process, web, browser, simulator, GitHub and MCP tools
 └── UI/       SwiftUI views: sidebar, conversation, composer, inspector, diffs, settings
 AnvilTests/   parser, edit engine, permissions, git, LSP, and scripted agent runs against a fake model
 evals/        realistic coding tasks with hidden checks, and the runner
+examples/     provider plugin examples and templates
+docs/         provider spec (PROVIDERS.md) and its JSON Schema
 ```
 
 ## Headless mode
@@ -279,6 +298,7 @@ The first two rows include the speed features (adaptive effort, prefetch, line-r
 | Custom commands | `.anvil/commands/`, `.claude/commands/`, `~/.claude/commands/` (markdown; `$ARGUMENTS` is replaced) |
 | Skills | `.anvil/skills/`, `.claude/skills/`, `~/.claude/skills/` (`SKILL.md` folders) |
 | MCP servers | the project's `.mcp.json`, or `~/Library/Application Support/Anvil/mcp.json` |
+| Provider plugins | Settings → Provider → Add provider; files in `~/Library/Application Support/Anvil/providers/` |
 | Everything else | Settings (⌘,): Provider, Agent, Tools |
 
 ## Roadmap

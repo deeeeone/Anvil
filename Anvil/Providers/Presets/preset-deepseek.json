@@ -1,0 +1,22 @@
+{
+  "spec": 1,
+  "id": "deepseek",
+  "name": "DeepSeek",
+  "symbol": "water.waves",
+  "homepage": "https://platform.deepseek.com",
+  "description": "DeepSeek's own API.",
+  "type": "openai",
+  "baseURL": "https://api.deepseek.com/v1",
+  "auth": {
+    "type": "apiKey",
+    "keyURL": "https://platform.deepseek.com/api_keys"
+  },
+  "models": [
+    {
+      "id": "deepseek-chat"
+    },
+    {
+      "id": "deepseek-reasoner"
+    }
+  ]
+}

@@ -4,11 +4,27 @@ import Foundation
 nonisolated final class OpenAIClient: Sendable {
     let baseURL: URL
     let apiKey: String
+    let endpoint: Endpoint
     private let session: URLSession
 
-    init(baseURL: URL, apiKey: String) {
+    /// How a particular OpenAI-compatible server wants to be called. The defaults match Anvil's built-in providers;
+    /// provider plugins describe theirs in `anvil-provider.json`.
+    struct Endpoint: Sendable, Equatable {
+        var chatPath = "v1/chat/completions"
+        var authHeader = "Authorization"
+        var authPrefix = "Bearer "
+        var headers: [String: String] = [:]
+        var maxTokensField = "max_tokens"
+        var sendsStop = true
+        var sendsEffort = true
+        var streamUsage = true
+        static let standard = Endpoint()
+    }
+
+    init(baseURL: URL, apiKey: String, endpoint: Endpoint = .standard) {
         self.baseURL = baseURL
         self.apiKey = apiKey
+        self.endpoint = endpoint
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 180
         cfg.timeoutIntervalForResource = 600
@@ -33,17 +49,26 @@ nonisolated final class OpenAIClient: Sendable {
     /// The model must stop after its JSON block; these catch it starting to write the app's observation itself.
     static let agentStops = ["<observation", "**Observation", "\nObservation:", "</observation>"]
 
-    func chat(_ messages: [ChatMessage], model: String, sendImages: Bool = false, effort: String? = nil,
-              stop: [String]? = nil, maxTokens: Int? = nil, attempts: Int = 3) async throws -> (text: String, usage: ChatUsage?) {
-        var req = URLRequest(url: baseURL.appendingPathComponent("v1/chat/completions"))
+    /// The POST request for one chat call, shaped the way this endpoint wants it.
+    func request(_ messages: [ChatMessage], model: String, sendImages: Bool, effort: String?, stop: [String]?,
+                 maxTokens: Int?, stream: Bool) throws -> URLRequest {
+        var req = URLRequest(url: baseURL.appendingPathComponent(endpoint.chatPath))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if !apiKey.isEmpty { req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
-        var body: [String: Any] = ["model": model, "messages": Self.messagesJSON(messages, images: sendImages), "stream": false]
-        if let effort, !effort.isEmpty { body["reasoning_effort"] = effort }
-        if let stop, !stop.isEmpty { body["stop"] = stop }
-        if let maxTokens { body["max_tokens"] = maxTokens }
+        if !apiKey.isEmpty { req.setValue(endpoint.authPrefix + apiKey, forHTTPHeaderField: endpoint.authHeader) }
+        for (k, v) in endpoint.headers { req.setValue(v, forHTTPHeaderField: k) }
+        var body: [String: Any] = ["model": model, "messages": Self.messagesJSON(messages, images: sendImages), "stream": stream]
+        if stream && endpoint.streamUsage { body["stream_options"] = ["include_usage": true] }
+        if let effort, !effort.isEmpty, endpoint.sendsEffort { body["reasoning_effort"] = effort }
+        if let stop, !stop.isEmpty, endpoint.sendsStop { body["stop"] = stop }
+        if let maxTokens { body[endpoint.maxTokensField] = maxTokens }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return req
+    }
+
+    func chat(_ messages: [ChatMessage], model: String, sendImages: Bool = false, effort: String? = nil,
+              stop: [String]? = nil, maxTokens: Int? = nil, attempts: Int = 3) async throws -> (text: String, usage: ChatUsage?) {
+        let req = try request(messages, model: model, sendImages: sendImages, effort: effort, stop: stop, maxTokens: maxTokens, stream: false)
 
         var last: BrainError?
         for attempt in 0..<attempts {
@@ -83,16 +108,7 @@ nonisolated final class OpenAIClient: Sendable {
     /// (the reply is complete, the model would only keep talking). Usage comes from the final chunk when the stream runs out.
     func chatStream(_ messages: [ChatMessage], model: String, sendImages: Bool = false, effort: String? = nil, stop: [String]? = nil,
                     maxTokens: Int? = nil, onText: @escaping (String) -> Void, shouldStop: @escaping (String) -> Bool) async throws -> (text: String, usage: ChatUsage?, cut: Bool) {
-        var req = URLRequest(url: baseURL.appendingPathComponent("v1/chat/completions"))
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if !apiKey.isEmpty { req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
-        var body: [String: Any] = ["model": model, "messages": Self.messagesJSON(messages, images: sendImages), "stream": true,
-                                   "stream_options": ["include_usage": true]]
-        if let effort, !effort.isEmpty { body["reasoning_effort"] = effort }
-        if let stop, !stop.isEmpty { body["stop"] = stop }
-        if let maxTokens { body["max_tokens"] = maxTokens }
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let req = try request(messages, model: model, sendImages: sendImages, effort: effort, stop: stop, maxTokens: maxTokens, stream: true)
         return try await Self.consumeSSE(session: session, request: req, onText: onText, shouldStop: shouldStop)
     }
 

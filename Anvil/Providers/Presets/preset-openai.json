@@ -1,0 +1,19 @@
+{
+  "spec": 1,
+  "id": "openai",
+  "name": "OpenAI API",
+  "symbol": "circle.hexagongrid",
+  "homepage": "https://platform.openai.com",
+  "description": "OpenAI's pay-as-you-go API (not your ChatGPT plan).",
+  "type": "openai",
+  "baseURL": "https://api.openai.com/v1",
+  "auth": {
+    "type": "apiKey",
+    "keyURL": "https://platform.openai.com/api-keys"
+  },
+  "capabilities": {
+    "stop": false,
+    "reasoningEffort": true,
+    "maxTokensField": "max_completion_tokens"
+  }
+}

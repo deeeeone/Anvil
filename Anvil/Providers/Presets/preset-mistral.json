@@ -1,0 +1,14 @@
+{
+  "spec": 1,
+  "id": "mistral",
+  "name": "Mistral",
+  "symbol": "wind",
+  "homepage": "https://mistral.ai",
+  "description": "Mistral and Codestral models.",
+  "type": "openai",
+  "baseURL": "https://api.mistral.ai/v1",
+  "auth": {
+    "type": "apiKey",
+    "keyURL": "https://console.mistral.ai/api-keys"
+  }
+}

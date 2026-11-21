@@ -1,0 +1,14 @@
+{
+  "spec": 1,
+  "id": "ollama",
+  "name": "Ollama",
+  "symbol": "desktopcomputer",
+  "homepage": "https://ollama.com",
+  "description": "Models running on this Mac with Ollama.",
+  "type": "openai",
+  "baseURL": "http://localhost:11434/v1",
+  "auth": {
+    "type": "none"
+  },
+  "free": true
+}

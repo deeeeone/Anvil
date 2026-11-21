@@ -125,8 +125,8 @@ final class SessionController: AgentHost {
         a.selfReview = s.selfReview
         a.streaming = s.streaming
         a.escalationModel = s.escalation(for: model)
-        a.exploreModel = s.exploreModel.isEmpty || !s.ready(Providers.provider(for: s.exploreModel)) ? "" : s.exploreModel
-        a.quickModel = s.quickModel.isEmpty || !s.ready(Providers.provider(for: s.quickModel)) ? "" : s.quickModel
+        a.exploreModel = s.exploreModel.isEmpty || !s.ready(model: s.exploreModel) ? "" : s.exploreModel
+        a.quickModel = s.quickModel.isEmpty || !s.ready(model: s.quickModel) ? "" : s.quickModel
         a.adaptiveEffort = s.adaptiveEffort
         a.prefetch = s.prefetch
         a.prepareWhilePlanning = s.prepareWhilePlanning

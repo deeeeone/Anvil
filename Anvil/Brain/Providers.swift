@@ -22,6 +22,8 @@ nonisolated struct ModelChoice: Identifiable, Hashable, Sendable {
     var id: String
     var provider: Provider
     var detail: String = ""
+    /// Set for models from a provider plugin (then `provider` is meaningless).
+    var plugin: String? = nil
 }
 
 nonisolated enum Providers {
@@ -43,6 +45,14 @@ nonisolated enum Providers {
         if model.hasPrefix("chatgpt/") { return .chatgpt }
         if model.hasPrefix("gemini") { return .gemini }
         return .luna
+    }
+
+    /// Menu icon and name for any model, built-in or from a provider plugin.
+    @MainActor static func symbol(for model: String) -> String {
+        ProviderPlugins.shared.route(model)?.provider.spec.symbolName ?? provider(for: model).symbol
+    }
+    @MainActor static func label(for model: String) -> String {
+        ProviderPlugins.shared.route(model)?.provider.spec.name ?? provider(for: model).label
     }
 
     /// Models that read images themselves; others hand image turns to the vision model.

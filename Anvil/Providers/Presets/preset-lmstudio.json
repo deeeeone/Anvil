@@ -1,0 +1,14 @@
+{
+  "spec": 1,
+  "id": "lmstudio",
+  "name": "LM Studio",
+  "symbol": "laptopcomputer",
+  "homepage": "https://lmstudio.ai",
+  "description": "Models served by LM Studio on this Mac.",
+  "type": "openai",
+  "baseURL": "http://localhost:1234/v1",
+  "auth": {
+    "type": "none"
+  },
+  "free": true
+}

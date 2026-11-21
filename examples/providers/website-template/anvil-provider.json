@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/deeeeone/Anvil/main/docs/anvil-provider.schema.json",
+  "spec": 1,
+  "id": "mysite",
+  "name": "My Site (template)",
+  "description": "Template for a chat website with no public API: Anvil handles the sign-in, this plugin calls the site.",
+  "symbol": "globe",
+  "homepage": "https://chat.example.com",
+  "type": "process",
+  "command": ["python3", "provider.py"],
+  "auth": {
+    "type": "web",
+    "loginURL": "https://chat.example.com/login",
+    "domain": "chat.example.com",
+    "localStorage": ["token"]
+  },
+  "models": [{ "id": "default" }],
+  "capabilities": { "stop": false },
+  "free": true
+}
