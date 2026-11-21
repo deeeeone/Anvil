@@ -277,3 +277,14 @@ final class JailbreakTests: XCTestCase {
         XCTAssertTrue(Jailbreak.prompt(for: .experiential, query: "x").isEmpty)
     }
 }
+
+extension WebAccountTests {
+    func testQwenSafariCookies() throws {
+        let c = try SafariCookies.cookies(forDomain: "qwen.ai")
+        print("QWEN", c.count, c.keys.sorted())
+        let h = c.map { "\($0.key)=\($0.value)" }.joined(separator: "; ")
+        print("QWHDR", h)
+        let z = try SafariCookies.cookies(forDomain: "z.ai")
+        print("ZAI", z.count, z.keys.sorted())
+    }
+}

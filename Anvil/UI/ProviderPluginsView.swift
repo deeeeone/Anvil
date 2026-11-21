@@ -52,6 +52,7 @@ private struct PluginRow: View {
     @State private var confirmRemove = false
     @State private var update: PendingProvider?
     @State private var note = ""
+    @State private var pasting = false
 
     var body: some View {
         let store = ProviderPlugins.shared
@@ -111,6 +112,7 @@ private struct PluginRow: View {
                         Text("Sign in with your \(spec.name) account.").font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Button("Sign in…") { PluginLoginWindow.shared.present(provider) { app.resetAgents() } }
+                        Button("Paste cookies…") { pasting = true }
                     }
                 }
             case .none:
@@ -126,6 +128,13 @@ private struct PluginRow: View {
             Button("Remove", role: .destructive) { store.remove(provider.id); app.resetAgents() }
         } message: {
             Text(provider.linked ? "Anvil stops using the linked folder; the folder itself stays." : "Its folder, key and session are deleted.")
+        }
+        .sheet(isPresented: $pasting) {
+            PasteProviderSessionView(provider: provider) {
+                note = "Session saved."
+                app.resetAgents()
+                Task { await store.refreshModels(provider.id); await ModelCatalog.shared.refresh() }
+            }
         }
         .sheet(item: $update) { pending in
             ConfirmProviderView(pending: pending, title: "Update \(spec.name)?") { installed in
@@ -341,5 +350,52 @@ private struct ServerStatusRow: View {
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         }
         .font(.caption)
+    }
+}
+
+
+/// Paste a cookie header instead of signing in inside Anvil (useful when the site blocks embedded browsers).
+private struct PasteProviderSessionView: View {
+    let provider: InstalledProvider
+    var onSaved: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    @State private var problem = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Paste cookies for \(provider.spec.name)").font(.system(size: 15, weight: .semibold))
+                Spacer()
+                Button { dismiss() } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+            }
+            Text("Sign in at \(provider.spec.auth.loginURL ?? "the site") in your browser, then paste its Cookie header here (DevTools → Network → any request → Cookie). A token cookie also becomes the site's localStorage token when the plugin needs one.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            TextEditor(text: $text)
+                .font(.system(size: 11, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .padding(6)
+                .frame(height: 180)
+                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+            if !problem.isEmpty { Text(problem).font(.caption).foregroundStyle(.orange) }
+            HStack {
+                Spacer()
+                Button("Save session") { save() }.buttonStyle(.borderedProminent).disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(16)
+        .frame(width: 560)
+    }
+
+    private func save() {
+        let cookies = WebAccounts.parseCookies(text)
+        guard !cookies.isEmpty else { problem = "No name=value cookies found."; return }
+        var session = ProviderPlugins.Session()
+        session.cookies = cookies
+        if let token = cookies["token"], !token.isEmpty { session.localStorage["token"] = token }
+        ProviderPlugins.shared.setSession(provider.id, session)
+        onSaved()
+        dismiss()
     }
 }

@@ -167,6 +167,7 @@ The [JSON Schema](anvil-provider.schema.json) validates the file in editors that
 | `auth.loginURL`, `auth.domain` | string | web: required |
 | `auth.cookies`, `auth.localStorage` | [string] | web: what "signed in" means (at least one of them) |
 | `auth.bearer` | string | web + openai: `localStorage:<key>` or `cookie:<name>` |
+| `auth.manual` | bool | web: wait for the owner to click "I'm signed in" instead of saving as soon as guest values exist |
 | `models[]` | object | `id` (required), `name`, `vision`, `context`, `input`, `output` |
 | `capabilities` | object | `stop` (default true), `reasoningEffort` (false), `streaming` (true), `streamUsage` (true), `maxTokensField` (`max_tokens`) |
 | `free` | bool | shows "free" and records no cost |

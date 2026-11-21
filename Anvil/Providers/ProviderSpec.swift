@@ -81,6 +81,8 @@ nonisolated struct ProviderSpec: Codable, Equatable, Sendable {
         var localStorage: [String]?
         /// For "openai" plugins with web sign-in: where the bearer token comes from, "localStorage:token" or "cookie:name".
         var bearer: String?
+        /// Don't save automatically when the values first exist (guest tokens exist before signing in); wait for the owner.
+        var manual: Bool?
     }
 
     /// A program that serves the plugin's API on this Mac. Anvil runs `setup` once (and again when the

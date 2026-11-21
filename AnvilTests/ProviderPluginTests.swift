@@ -317,6 +317,44 @@ extension ProviderPluginTests {
         XCTAssertEqual(ProviderServers.shared.state("localsrv"), .running, "starts again when needed")
     }
 
+
+    /// Web sessions reach a plugin's server through the environment, and a changed session restarts it.
+    func testServerGetsWebSessionEnvAndRestartsOnChange() async throws {
+        let port = Int.random(in: 41000...49000)
+        let folder = tmp.appendingPathComponent("src/envsrv")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try """
+        import json, os
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def do_GET(self):
+                b = json.dumps({"data": [{"id": os.environ.get("ANVIL_PROVIDER_COOKIES", "none").replace('"', "")}]}).encode()
+                self.send_response(200); self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+        HTTPServer(("127.0.0.1", int(os.environ["PORT"])), H).serve_forever()
+        """.write(to: folder.appendingPathComponent("server.py"), atomically: true, encoding: .utf8)
+        try """
+        {"spec": 1, "id": "envsrv", "name": "Env server", "type": "openai", "baseURL": "http://127.0.0.1:\(port)/v1",
+         "server": {"command": ["python3", "server.py"], "env": {"PORT": "\(port)"},
+                    "ready": "http://127.0.0.1:\(port)/v1/models", "startupTimeout": 20},
+         "auth": {"type": "web", "loginURL": "https://example.com", "domain": "example.com", "cookies": ["token"]},
+         "models": [{"id": "tiny"}]}
+        """.write(to: folder.appendingPathComponent(ProviderSpec.fileName), atomically: true, encoding: .utf8)
+        try ProviderPlugins.shared.confirm(try ProviderPlugins.shared.inspect(folder: folder))
+        defer { ProviderServers.shared.stop("envsrv"); ProviderPlugins.shared.setSession("envsrv", nil) }
+        var session = ProviderPlugins.Session()
+        session.cookies = ["token": "first"]
+        ProviderPlugins.shared.setSession("envsrv", session)
+        let p = try XCTUnwrap(ProviderPlugins.shared.provider("envsrv"))
+        let first = try await ProviderClient(p).listModels()
+        XCTAssertTrue(first.contains { $0.id.contains("first") }, "\(first)")
+        session.cookies = ["token": "second"]
+        ProviderPlugins.shared.setSession("envsrv", session)
+        let second = try await ProviderClient(p).listModels()
+        XCTAssertTrue(second.contains { $0.id.contains("second") }, "new session restarted the server: \(second)")
+    }
+
     func testServerSpecValidation() throws {
         let remote = try JSONDecoder().decode(ProviderSpec.self, from: Data(#"{"spec":1,"id":"bad-srv","name":"x","type":"openai","baseURL":"https://api.example.com/v1","server":{"command":["sh","s.sh"],"ready":"https://example.com"},"auth":{"type":"none"}}"#.utf8))
         let p = remote.problems().joined(separator: " ")

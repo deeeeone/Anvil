@@ -33,7 +33,9 @@ final class PluginLoginWindow: NSObject, NSWindowDelegate, WKNavigationDelegate,
         web.uiDelegate = self
         webView = web
 
-        let label = NSTextField(wrappingLabelWithString: "Sign in below. Anvil saves the session for \(p.spec.name) as soon as you're in.")
+        let label = NSTextField(wrappingLabelWithString: p.spec.auth.manual == true
+            ? "Sign in below, then click I'm signed in. Anvil saves the session for \(p.spec.name)."
+            : "Sign in below. Anvil saves the session for \(p.spec.name) as soon as you're in.")
         label.font = .systemFont(ofSize: 12)
         label.textColor = .secondaryLabelColor
         label.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -68,7 +70,7 @@ final class PluginLoginWindow: NSObject, NSWindowDelegate, WKNavigationDelegate,
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self, self.window != nil else { return }
-                if let s = await self.capture(), self.signedIn(s) { self.save(s); return }
+                if let p = self.provider, p.spec.auth.manual != true, let s = await self.capture(), self.signedIn(s) { self.save(s); return }
             }
         }
     }

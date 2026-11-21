@@ -12,6 +12,7 @@ final class ProviderServers {
     private(set) var states: [String: State] = [:]
     @ObservationIgnored private var processes: [String: Process] = [:]
     @ObservationIgnored private var starting: [String: Task<Void, Error>] = [:]
+    @ObservationIgnored private var sessionFingerprints: [String: String] = [:]
 
     func state(_ id: String) -> State { states[id] ?? .stopped }
 
@@ -32,6 +33,13 @@ final class ProviderServers {
     /// Makes sure the plugin's server answers, setting it up and starting it if needed.
     func ensureRunning(_ p: InstalledProvider) async throws {
         guard let srv = p.spec.server, ProviderPlugins.shared.baseURL(p) == (p.spec.baseURL ?? "") else { return }
+        // A new or rotated sign-in must restart the server with the new session.
+        let session = ProviderPlugins.shared.session(p.id)
+        let fingerprint = Self.sessionFingerprint(session)
+        if sessionFingerprints[p.id] != fingerprint {
+            if processes[p.id] != nil { stop(p.id) }
+            sessionFingerprints[p.id] = fingerprint
+        }
         if await Self.answers(srv.ready) { states[p.id] = .running; return }
         if let t = starting[p.id] { return try await t.value }
         let task = Task { try await self.start(p, srv) }
@@ -47,6 +55,9 @@ final class ProviderServers {
         env["CI"] = nil
         for (k, v) in srv.env ?? [:] { env[k] = v }
         env["ANVIL_PLUGIN_DIR"] = p.folder.path
+        let session = ProviderPlugins.shared.session(p.id)
+        if !session.cookies.isEmpty { env["ANVIL_PROVIDER_COOKIES"] = Self.json(session.cookies) }
+        if !session.localStorage.isEmpty { env["ANVIL_PROVIDER_LOCALSTORAGE"] = Self.json(session.localStorage) }
 
         if let setup = srv.setup, !setup.isEmpty {
             let marker = Self.setupMarker(p)
@@ -123,6 +134,19 @@ final class ProviderServers {
     }
 
     // MARK: Helpers
+
+    private static func sessionFingerprint(_ s: ProviderPlugins.Session) -> String {
+        var h: UInt64 = 1469598103934665603
+        for part in (s.cookies.sorted { $0.key < $1.key } + s.localStorage.sorted { $0.key < $1.key }).map({ $0.key + "=" + $0.value }) {
+            for b in part.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
+        }
+        return String(h, radix: 16)
+    }
+
+    private static func json(_ d: [String: String]) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: d) else { return "{}" }
+        return String(decoding: data, as: UTF8.self)
+    }
 
     static func answers(_ url: String) async -> Bool {
         guard let u = URL(string: url) else { return false }

@@ -138,6 +138,10 @@
         "optional": {
           "type": "boolean",
           "description": "apiKey: the key may be left empty."
+        },
+        "manual": {
+          "type": "boolean",
+          "description": "web: wait for the owner to confirm instead of saving as soon as guest values exist."
         }
       }
     },

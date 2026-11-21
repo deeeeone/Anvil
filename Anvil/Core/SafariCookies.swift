@@ -17,18 +17,25 @@ nonisolated enum SafariCookies {
     }
 
     static func cookies(for provider: Provider) throws -> [String: String] {
+        try cookies(matching: provider == .chatgpt ? ["chatgpt.com", "openai.com"] : ["google.com"],
+                     specific: provider == .chatgpt ? "chatgpt.com" : "gemini.google.com")
+    }
+
+    static func cookies(forDomain domain: String) throws -> [String: String] {
+        try cookies(matching: [domain], specific: domain)
+    }
+
+    private static func cookies(matching wanted: [String], specific: String) throws -> [String: String] {
         let url: URL
         if let file { url = file } else { throw Failure.noFile }
         let data: Data
         do { data = try Data(contentsOf: url) } catch { throw Failure.noAccess }
-        let wanted = provider == .chatgpt ? ["chatgpt.com", "openai.com"] : ["google.com"]
         let records = parse(data).filter { record in
             (record.expiry > Date() || record.expiry == .distantPast) && wanted.contains(where: { record.domain.contains($0) })
         }
-        let host = provider == .chatgpt ? "chatgpt.com" : "gemini.google.com"
         // Most-specific cookies win (gemini.google.com's OSID over google.com's), like path/domain order in a browser.
-        let generic = records.filter { $0.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) != host }
-        let specific = records.filter { $0.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) == host }
+        let generic = records.filter { $0.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) != specific }
+        let specific = records.filter { $0.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")) == specific }
         var out: [String: String] = [:]
         for record in generic + specific { out[record.name] = record.value }
         return out
