@@ -9,8 +9,8 @@ final class Brain {
     var visionEffort: String
     let experiential: OpenAIClient?
     let luna: OpenAIClient?
-    let gemini: GeminiWebClient?
-    let chatgpt: OpenAIClient?
+    let geminiProxy: GeminiProxyClient?
+    let chatgptProxy: OpenAIClient?
     /// Called after every call with the usage and the cost (provider figure, else catalog estimate; free providers cost 0).
     var onUsage: ((ChatUsage, String, Double?) -> Void)?
     /// Test hook: replaces the network call.
@@ -24,15 +24,15 @@ final class Brain {
     private var geminiSession: (id: String, seen: Int)?
 
     init(model: String, visionModel: String, effort: String, visionEffort: String,
-         experiential: OpenAIClient? = nil, luna: OpenAIClient? = nil, gemini: GeminiWebClient? = nil, chatgpt: OpenAIClient? = nil) {
+         experiential: OpenAIClient? = nil, luna: OpenAIClient? = nil, gemini: GeminiProxyClient? = nil, chatgpt: OpenAIClient? = nil) {
         self.model = model
         self.visionModel = visionModel
         self.effort = effort
         self.visionEffort = visionEffort
         self.experiential = experiential
         self.luna = luna
-        self.gemini = gemini
-        self.chatgpt = chatgpt
+        self.geminiProxy = gemini
+        self.chatgptProxy = chatgpt
     }
 
     /// Test convenience (keeps the old shape).
@@ -45,19 +45,19 @@ final class Brain {
         let m = model ?? s.model
         let p = Providers.provider(for: m)
         guard s.ready(p) else {
-            throw BrainError(status: 0, code: "no_key", message: p == .gemini ? "Add the Gemini proxy key in Settings (or import it from Peep)." : "")
+            throw BrainError(status: 0, code: "no_key", message: p == .gemini ? "Sign in to Gemini first: pick a Gemini model from the model menu, or open Settings → Provider." : p == .chatgpt ? "Sign in to ChatGPT first: pick a ChatGPT model from the model menu, or open Settings → Provider." : "")
         }
         let exp = s.hasKey ? URL(string: s.baseURL).map { OpenAIClient(baseURL: $0, apiKey: s.apiKey) } : nil
         let luna = URL(string: s.lunaURL).map { OpenAIClient(baseURL: $0, apiKey: "") }
-        let gem = s.geminiKey.isEmpty ? nil : URL(string: s.geminiURL).map { GeminiWebClient(baseURL: $0, apiKey: s.geminiKey) }
-        let cg = URL(string: s.chatgptURL).map { OpenAIClient(baseURL: $0, apiKey: "") }
+        let gem = s.geminiKey.isEmpty ? nil : URL(string: s.geminiURL).map { GeminiProxyClient(baseURL: $0, apiKey: s.geminiKey) }
+        let cg = s.chatgptProxyConfigured ? URL(string: s.chatgptURL).map { OpenAIClient(baseURL: $0, apiKey: "") } : nil
         // A vision model is only usable when its provider is set up.
         let vision = s.ready(Providers.provider(for: s.visionModel)) ? s.visionModel : ""
         return Brain(model: m, visionModel: vision, effort: s.effort, visionEffort: s.visionEffort, experiential: exp, luna: luna, gemini: gem, chatgpt: cg)
     }
 
     /// Which model a history goes to, and whether to send its images.
-    nonisolated static func route(_ history: [ChatMessage], model: String, vision: String) -> (model: String, images: Bool) {
+    static func route(_ history: [ChatMessage], model: String, vision: String) -> (model: String, images: Bool) {
         guard history.last?.hasImage ?? false else { return (model, false) }
         if Providers.seesImages(model) { return (model, true) }
         if !vision.isEmpty { return (vision, true) }
@@ -72,7 +72,7 @@ final class Brain {
     /// A Brain for a helper agent: same providers and usage accounting, its own Gemini session.
     func fork(model m: String? = nil) -> Brain {
         let b = Brain(model: m ?? model, visionModel: visionModel, effort: effort, visionEffort: visionEffort,
-                      experiential: experiential, luna: luna, gemini: gemini, chatgpt: chatgpt)
+                      experiential: experiential, luna: luna, gemini: geminiProxy, chatgpt: chatgptProxy)
         b.onUsage = onUsage
         b.override = override
         b.effort = "low"   // helpers only read and search
@@ -154,16 +154,27 @@ final class Brain {
             record(usage, model: m, history: history, reply: text, free: true)
             return text
         case .chatgpt:
-            guard let chatgpt else { throw BrainError(status: 0, code: "network", message: "Set the ChatGPT proxy URL in Settings.") }
+            let accounts = WebAccounts.shared.candidates(for: .chatgpt)
+            if !accounts.isEmpty {
+                do {
+                    let text = try await webChatGPT(history, model: m, stream: stream)
+                    if agent { lastFinishReason = nil }
+                    record(nil, model: m, history: history, reply: text, free: true)
+                    return text
+                } catch {
+                    if chatgptProxy == nil { throw error }
+                }
+            }
+            guard let chatgptProxy else { throw BrainError(status: 0, code: "network", message: "Add a ChatGPT account in Settings, or set the proxy URL.") }
             if let problem = await ChatGPTProxy.shared.ensureRunning() { throw BrainError(status: 0, code: "no_key", message: problem) }
             let text: String, usage: ChatUsage?
             do {
                 if let stream {
                     // Like Luna: no stop-sequence support, so end the stream once the JSON block is complete.
-                    (text, usage, _) = try await chatgpt.chatStream(history, model: m, sendImages: false, effort: nil, stop: nil,
-                                                                    maxTokens: nil, onText: stream, shouldStop: Self.replyComplete)
+                    (text, usage, _) = try await chatgptProxy.chatStream(history, model: m, sendImages: false, effort: nil, stop: nil,
+                                                                         maxTokens: nil, onText: stream, shouldStop: Self.replyComplete)
                 } else {
-                    (text, usage) = try await chatgpt.chat(history, model: m, sendImages: false, stop: nil)
+                    (text, usage) = try await chatgptProxy.chat(history, model: m, sendImages: false, stop: nil)
                 }
             } catch let e as BrainError where e.status == 413 || e.message.contains("message_length") {
                 throw BrainError(status: 413, code: "too_long", message: "ChatGPT's web app rejects messages this long. Use /compact, or a different model for big sessions.")
@@ -172,7 +183,20 @@ final class Brain {
             record(usage, model: m, history: history, reply: text, free: true)
             return text
         case .gemini:
-            guard let gemini else { throw BrainError(status: 0, code: "no_key", message: "Add the Gemini proxy key in Settings.") }
+            let accounts = WebAccounts.shared.candidates(for: .gemini)
+            if !accounts.isEmpty {
+                do {
+                    let message = Self.fold(history)
+                    let images = message.parts.compactMap { if case .image(let d, let mime) = $0 { return (d, mime) } else { return nil } }
+                    let text = try await webGemini(message.text, images: images, model: m, stream: stream)
+                    if agent { lastFinishReason = nil }
+                    record(nil, model: m, history: [message], reply: text, free: true)
+                    return text
+                } catch {
+                    if geminiProxy == nil { throw error }
+                }
+            }
+            guard let geminiProxy else { throw BrainError(status: 0, code: "no_key", message: "Add a Gemini account in Settings, or a proxy key.") }
             // Reuse the server-side session when it already holds everything but the newest turn; otherwise fold.
             let message: ChatMessage
             let id: String
@@ -185,9 +209,9 @@ final class Brain {
             }
             let text: String
             if let stream {
-                text = try await gemini.chatStream([message], model: m, sessionID: id, onText: stream, shouldStop: Self.replyComplete).text
+                text = try await geminiProxy.chatStream([message], model: m, sessionID: id, onText: stream, shouldStop: Self.replyComplete).text
             } else {
-                text = try await gemini.chat([message], model: m, sessionID: agent ? id : nil)
+                text = try await geminiProxy.chat([message], model: m, sessionID: agent ? id : nil)
             }
             if agent { geminiSession = (id, history.count + 1) }   // + the reply the agent appends
             record(nil, model: m, history: [message], reply: text, free: true)
@@ -209,6 +233,74 @@ final class Brain {
         s += "\n[app: latest]\n" + last.text
         let images = last.parts.compactMap { if case .image(let d, let mime) = $0 { return (d, mime) } else { return nil } }
         return .user(s, images: images)
+    }
+
+    /// Errors that mean "this account can't answer right now": try the next one.
+    private static let fallThrough: Set<String> = ["revoked", "unauthorized", "network", "upstream_error", "upstream_timeout", "server_busy", "bad_response"]
+
+    /// Tries the signed-in ChatGPT accounts, active first. A dead session or a rate limit moves to the next.
+    /// An expired session is revived from Safari when Safari is signed in as the same person.
+    private func webChatGPT(_ history: [ChatMessage], model m: String, stream: ((String) -> Void)?) async throws -> String {
+        let store = WebAccounts.shared
+        let stop: ((String) -> Bool)? = stream == nil ? nil : { Self.replyComplete($0) }
+        var last: BrainError?
+        for account in store.candidates(for: .chatgpt) {
+            do {
+                let client = ChatGPTWebClient(accountID: account.id, cookies: store.cookies(account.id))
+                let reply = try await client.chat(history, model: m, onText: stream, shouldStop: stop).text
+                store.record(account.id, prompt: Self.estimate(history), completion: reply.count / 4)
+                return reply
+            } catch let e as BrainError {
+                if e.code == "too_long" {
+                    throw BrainError(status: 413, code: "too_long", message: "ChatGPT's web app rejects messages this long. Use /compact, or a different model for big sessions.")
+                }
+                if e.code == "revoked" || e.code == "unauthorized", let fresh = await WebSignIn.safariSession(matching: account),
+                   let reply = try? await ChatGPTWebClient(accountID: account.id, cookies: fresh.cookies).chat(history, model: m, onText: stream, shouldStop: stop).text {
+                    store.save(fresh, provider: .chatgpt, replacing: account.id)
+                    store.record(account.id, prompt: Self.estimate(history), completion: reply.count / 4)
+                    return reply
+                }
+                let shown = e.code == "revoked" || e.code == "unauthorized"
+                    ? BrainError(status: 401, code: e.code, message: "\(account.label) is signed out of ChatGPT. Open Settings → Provider and click Sign in again.")
+                    : e
+                store.markError(account.id, shown.message)
+                last = shown
+                guard Self.fallThrough.contains(e.code) else { throw e }
+            }
+        }
+        throw last ?? BrainError(status: 0, code: "no_key", message: "No ChatGPT account is usable. Add one in Settings → Provider.")
+    }
+
+    private func webGemini(_ prompt: String, images: [(Data, String)], model m: String, stream: ((String) -> Void)?) async throws -> String {
+        let store = WebAccounts.shared
+        let stop: ((String) -> Bool)? = stream == nil ? nil : { Self.replyComplete($0) }
+        var last: BrainError?
+        for account in store.candidates(for: .gemini) {
+            do {
+                let client = GeminiWebClient(accountID: account.id, cookies: store.cookies(account.id))
+                let reply = try await client.chat(prompt, images: images, model: m, onText: stream, shouldStop: stop)
+                store.record(account.id, prompt: prompt.count / 4, completion: reply.count / 4)
+                return reply
+            } catch let e as BrainError {
+                if e.code == "unauthorized", let fresh = await WebSignIn.safariSession(matching: account),
+                   let reply = try? await GeminiWebClient(accountID: account.id, cookies: fresh.cookies).chat(prompt, images: images, model: m, onText: stream, shouldStop: stop) {
+                    store.save(fresh, provider: .gemini, replacing: account.id)
+                    store.record(account.id, prompt: prompt.count / 4, completion: reply.count / 4)
+                    return reply
+                }
+                let shown = e.code == "unauthorized"
+                    ? BrainError(status: 401, code: e.code, message: "\(account.label) is signed out of Gemini. Open Settings → Provider and click Sign in again.")
+                    : e
+                store.markError(account.id, shown.message)
+                last = shown
+                guard Self.fallThrough.contains(e.code) else { throw e }
+            }
+        }
+        throw last ?? BrainError(status: 0, code: "no_key", message: "No Gemini account is usable. Add one in Settings → Provider.")
+    }
+
+    private static func estimate(_ history: [ChatMessage]) -> Int {
+        history.reduce(0) { $0 + $1.charCount } / 4
     }
 
     private func record(_ usage: ChatUsage?, model: String, history: [ChatMessage], reply: String, free: Bool) {

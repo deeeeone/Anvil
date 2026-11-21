@@ -9,8 +9,8 @@ nonisolated enum Provider: String, Codable, CaseIterable, Identifiable, Sendable
         switch self {
         case .experiential: return "Experiential Labs"
         case .luna: return "Luna API"
-        case .gemini: return "Gemini (web proxy)"
-        case .chatgpt: return "ChatGPT (web proxy)"
+        case .gemini: return "Gemini (web)"
+        case .chatgpt: return "ChatGPT (web)"
         }
     }
     var symbol: String {
@@ -34,7 +34,7 @@ nonisolated enum Providers {
     static let defaultChatGPTModels = ["chatgpt/auto", "chatgpt/gpt-5.5", "chatgpt/gpt-5.5-thinking", "chatgpt/gpt-5.4-thinking", "chatgpt/gpt-5.3",
                                        "chatgpt/gpt-5-mini", "chatgpt/o4-mini", "chatgpt/o3", "chatgpt/gpt-4.1", "chatgpt/gpt-4o"]
     static let defaultLunaModels = ["gpt-6-luna"]
-    static let defaultGeminiModels = ["gemini-auto"]
+    static let defaultGeminiModels = ["gemini-auto", "gemini-pro", "gemini-flash", "gemini-flash-lite"]
 
     static func provider(for model: String) -> Provider {
         if experientialModels.contains(model) { return .experiential }
@@ -49,8 +49,8 @@ nonisolated enum Providers {
     }
 }
 
-/// Client for the self-hosted Gemini web API (ported from Peep): an OpenAI-shaped chat endpoint with server-side sessions.
-nonisolated final class GeminiWebClient: Sendable {
+/// Client for a self-hosted Gemini web API: an OpenAI-shaped chat endpoint with server-side sessions.
+nonisolated final class GeminiProxyClient: Sendable {
     let baseURL: URL
     let apiKey: String
     private let session: URLSession

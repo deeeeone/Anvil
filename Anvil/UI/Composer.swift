@@ -312,7 +312,15 @@ struct ModelPill: View {
         Menu {
             ForEach(Provider.allCases) { p in
                 let ready = AppSettings.shared.ready(p)
-                Section(p.label + (ready ? "" : " (not set up)")) {
+                let web = p == .chatgpt || p == .gemini
+                Section(p.label + (ready || web ? "" : " (not set up)")) {
+                    if !ready, web {
+                        Button("Sign in to \(p == .chatgpt ? "ChatGPT" : "Gemini")…") {
+                            WebLoginWindow.shared.present(provider: p) { _ in
+                                if let first = catalog.choices.first(where: { $0.provider == p }) { controller.model = first.id }
+                            }
+                        }
+                    } else {
                     ForEach(catalog.choices.filter { $0.provider == p }) { c in
                         Button {
                             controller.model = c.id
@@ -320,6 +328,7 @@ struct ModelPill: View {
                             if c.id == controller.model { Label(c.id, systemImage: "checkmark") } else { Text(c.id) }
                         }
                         .disabled(!ready)
+                    }
                     }
                 }
             }

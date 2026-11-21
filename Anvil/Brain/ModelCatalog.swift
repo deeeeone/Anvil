@@ -82,8 +82,8 @@ final class ModelCatalog {
             ModelChoice(id: id, provider: .experiential, detail: [info(id)?.priceLabel ?? "", info(id)?.contextLabel ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
         }
         let luna = lunaModels.map { ModelChoice(id: $0, provider: .luna, detail: "free") }
-        let gem = geminiModels.map { ModelChoice(id: $0, provider: .gemini, detail: "free, via your proxy") }
-        let cg = chatgptModels.map { ModelChoice(id: $0, provider: .chatgpt, detail: "your ChatGPT plan, via the local proxy") }
+        let gem = geminiModels.map { ModelChoice(id: $0, provider: .gemini, detail: WebAccounts.shared.hasAny(.gemini) ? "free, your Google account" : "free, via your proxy") }
+        let cg = chatgptModels.map { ModelChoice(id: $0, provider: .chatgpt, detail: WebAccounts.shared.hasAny(.chatgpt) ? "your ChatGPT plan" : "via the local proxy") }
         return exp + luna + gem + cg
     }
 
@@ -130,8 +130,8 @@ final class ModelCatalog {
             } else { problems.append("Luna API") }
         }
         if !s.geminiKey.isEmpty, let base = URL(string: s.geminiURL) {
-            if let l = try? await GeminiWebClient(baseURL: base, apiKey: s.geminiKey).models(), !l.isEmpty { geminiModels = l }
-            else { problems.append("Gemini proxy") }
+            if let l = try? await GeminiProxyClient(baseURL: base, apiKey: s.geminiKey).models(), !l.isEmpty { geminiModels = l }
+            else if !WebAccounts.shared.hasAny(.gemini) { problems.append("Gemini proxy") }
         }
         if let base = URL(string: s.chatgptURL), await ChatGPTProxy.shared.check() {
             var req = URLRequest(url: base.appendingPathComponent("v1/models"))

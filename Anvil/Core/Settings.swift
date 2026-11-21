@@ -52,10 +52,13 @@ final class AppSettings {
     @ObservationIgnored private var inMemoryKey = false
     /// Your Luna API (keyless, OpenAI-compatible).
     var lunaURL: String { didSet { d.set(lunaURL, forKey: "lunaURL") } }
-    /// The local ChatGPT web proxy (zhaees/chatgpt-proxy) and, optionally, the folder it's cloned in (Anvil can start it).
+    /// The local ChatGPT web proxy (zhaees/chatgpt-proxy) and, optionally, the folder it's cloned in.
+    /// Only used when no ChatGPT account has been added in Settings.
     var chatgptURL: String { didSet { d.set(chatgptURL, forKey: "chatgptURL") } }
     var chatgptProxyFolder: String { didSet { d.set(chatgptProxyFolder, forKey: "chatgptProxyFolder") } }
-    /// The self-hosted Gemini web proxy.
+    /// A proxy is only a fallback; the local ChatGPT client is used when an account exists.
+    var chatgptProxyConfigured: Bool { !chatgptProxyFolder.isEmpty || chatgptURL != Providers.defaultChatGPTURL }
+    /// A self-hosted Gemini web proxy. Only used when no Gemini account has been added.
     var geminiURL: String { didSet { d.set(geminiURL, forKey: "geminiURL") } }
     var geminiKey: String {
         didSet { if !inMemoryGemini { Keychain.set(geminiKey, for: "geminiKey") } }
@@ -125,8 +128,8 @@ final class AppSettings {
         switch p {
         case .experiential: return !apiKey.isEmpty
         case .luna: return URL(string: lunaURL) != nil
-        case .gemini: return !geminiKey.isEmpty && URL(string: geminiURL) != nil
-        case .chatgpt: return URL(string: chatgptURL) != nil
+        case .gemini: return WebAccounts.shared.hasAny(.gemini) || (!geminiKey.isEmpty && URL(string: geminiURL) != nil)
+        case .chatgpt: return WebAccounts.shared.hasAny(.chatgpt) || chatgptProxyConfigured
         }
     }
 

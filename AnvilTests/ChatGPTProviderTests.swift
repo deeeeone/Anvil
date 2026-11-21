@@ -14,7 +14,7 @@ final class ChatGPTProviderTests: XCTestCase {
     }
 
     func testProviderIsKeyless() {
-        XCTAssertEqual(Provider.chatgpt.label, "ChatGPT (web proxy)")
+        XCTAssertEqual(Provider.chatgpt.label, "ChatGPT (web)")
         XCTAssertTrue(Providers.defaultChatGPTModels.allSatisfy { $0.hasPrefix("chatgpt/") })
     }
 }

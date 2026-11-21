@@ -44,6 +44,11 @@ nonisolated enum JSON: Sendable, Equatable, CustomStringConvertible {
         return nil
     }
 
+    subscript(index: Int) -> JSON? {
+        if case .array(let a) = self, a.indices.contains(index) { return a[index] }
+        return nil
+    }
+
     var string: String? {
         switch self {
         case .string(let s): return s

@@ -7,14 +7,13 @@ struct SettingsView: View {
             AgentSettings().tabItem { Label("Agent", systemImage: "gearshape.2") }
             ToolsSettings().tabItem { Label("Tools", systemImage: "puzzlepiece.extension") }
         }
-        .frame(width: 620, height: 520)
+        .frame(width: 680, height: 620)
     }
 }
 
 struct ProviderSettings: View {
     @Environment(AppState.self) private var app
     @State private var expDraft = ""
-    @State private var gemDraft = ""
     @State private var note = ""
 
     var body: some View {
@@ -59,37 +58,9 @@ struct ProviderSettings: View {
                 status(s.ready(.luna), ok: "No key needed, \(catalog.lunaModels.count) models", missing: "Set a URL")
             } header: { Label("Luna API", systemImage: Provider.luna.symbol) }
 
-            Section {
-                TextField("URL", text: $s.geminiURL)
-                HStack {
-                    SecureField(s.geminiKey.isEmpty ? "Proxy key" : "Key saved (enter a new one to replace it)", text: $gemDraft)
-                    Button("Save") { s.geminiKey = gemDraft.trimmingCharacters(in: .whitespacesAndNewlines); gemDraft = ""; changed() }.disabled(gemDraft.isEmpty)
-                }
-                status(s.ready(.gemini), ok: "Key saved", missing: "No key")
-            } header: { Label("Gemini (web proxy)", systemImage: Provider.gemini.symbol) }
-
-            Section {
-                TextField("URL", text: $s.chatgptURL)
-                HStack {
-                    TextField("Folder you cloned zhaees/chatgpt-proxy into (optional)", text: $s.chatgptProxyFolder)
-                    Button("Choose…") {
-                        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
-                        if panel.runModal() == .OK, let u = panel.url { s.chatgptProxyFolder = u.path }
-                    }
-                }
-                HStack {
-                    let proxy = ChatGPTProxy.shared
-                    Label(proxy.running ? "Running" : (proxy.status.isEmpty ? "Not checked" : proxy.status), systemImage: proxy.running ? "checkmark.circle.fill" : "circle")
-                        .font(.caption).foregroundStyle(proxy.running ? .green : .secondary)
-                    Spacer()
-                    Button("Check") { Task { _ = await proxy.check(); await catalog.refresh() } }
-                    if !s.chatgptProxyFolder.isEmpty {
-                        Button(proxy.running ? "Stop" : "Start") { Task { if proxy.running { proxy.stop() } else { await proxy.ensureRunning(); await catalog.refresh() } } }
-                    }
-                }
-            } header: { Label("ChatGPT (web proxy)", systemImage: Provider.chatgpt.symbol) } footer: {
-                Text("Uses your ChatGPT plan through a local copy of github.com/zhaees/chatgpt-proxy (it needs your chatgpt.com cookies in its .env). With its folder set, Anvil starts it when a chatgpt/ model is used. Unofficial: it can break when ChatGPT changes, and OpenAI may not allow it on your account.").font(.caption)
-            }
+            AccountsSection(provider: .gemini)
+            AccountsSection(provider: .chatgpt)
+            ProxyFallbackSettings()
 
             Section {
                 HStack {

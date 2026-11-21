@@ -22,9 +22,10 @@ Anvil reuses the brain of [Peep](../peep) (same provider, same text protocol, sa
 - **Models and providers.** Three providers, chosen from a menu on the composer:
   - **Experiential Labs** (API key): `glm-5.3-flash-uncensored` (default), `glm-5.3-flash` (also the vision model for pasted screenshots), `deepseek-v4.1-flash-uncensored`, `deepseek-v4.1-flash`, with prices.
   - **Luna API** (your keyless OpenAI-compatible endpoint): `gpt-6-luna` and whatever else it lists at `/v1/models`.
-  - **Gemini (web proxy)**: your self-hosted Gemini web API (`gemini-auto`), the same one Peep uses. Its server-side sessions are reused, so only the newest turn is sent.
-  - **ChatGPT (web proxy)**: `chatgpt/*` models (auto, gpt-5.5, gpt-5.5-thinking, o3 and more) through a local copy of [zhaees/chatgpt-proxy](https://github.com/zhaees/chatgpt-proxy) at `http://127.0.0.1:1435`. It uses your ChatGPT plan via your chatgpt.com cookies in the proxy's `.env`. Set its folder in Settings and Anvil starts it on first use. Unofficial, so it can break, and OpenAI may not allow it on your account.
-  Settings has one section per provider and **Import keys from Peep** copies both keys. There's a per-session usage and cost meter (Luna and Gemini are free), and thinking effort defaults to **high**.
+  - **Gemini (web)**: `gemini-auto`, `gemini-pro`, `gemini-flash` and `gemini-flash-lite` through gemini.google.com itself, using the same web protocol as [HanaokaYuzu/Gemini-API](https://github.com/HanaokaYuzu/Gemini-API), including pasted images (uploaded the same way the library does). Add one or more Google accounts in Settings by signing in or pasting cookies; Google rotates the cookies and Anvil keeps the rotated values.
+  - **ChatGPT (web)**: `chatgpt/*` models (auto, gpt-5.5, gpt-5.5-thinking, o3 and more) through chatgpt.com itself, using the same backend as [zhaees/chatgpt-proxy](https://github.com/zhaees/chatgpt-proxy). Add accounts the same way (sign in or paste cookies). Unofficial, so it can break, and OpenAI may not allow it on your account.
+  Accounts are multiple per provider: requests start on the active one and fall through to the others on a dead cookie or rate limit. Each account has its own cookie jar in the Keychain and its own usage count (calls, tokens and errors today, this week and in total), shown in Settings. External proxies still work as a fallback when no account is added.
+  Settings has one section per provider and **Import keys from Peep** copies both keys. There's a per-session usage and cost meter (Luna, Gemini and ChatGPT are free), and thinking effort defaults to **high**.
 - **MCP.** Stdio servers from `~/Library/Application Support/Anvil/mcp.json` and the project's `.mcp.json` (Claude's format) become `server.tool` actions.
 - **Background queue.** Press ⌥⏎ in the composer (or type `/queue <task>`) to line up requests. They run one at a time, each in its own git worktree, in the mode you pick in Settings (Auto-accept edits by default). Each finished task's work is committed on its branch, and the Queue section in the sidebar lists the branches to review. Merge one from its session's Git tab.
 - **Live preview and agent browser.** The Preview tab is a real WebKit browser that identifies itself as Safari. When the agent starts a dev server, its address opens there automatically and the page reloads after each edit. The agent drives the same browser through the DOM, so it rarely needs vision:
@@ -111,7 +112,11 @@ xcodebuild -project Anvil.xcodeproj -scheme Anvil -derivedDataPath build build
 open build/Build/Products/Debug/Anvil.app
 ```
 
-On first launch, open Settings (⌘,) and click **Import keys from Peep** (or paste the Experiential Labs and Gemini proxy keys). Keys live in Anvil's own Keychain entries (service `com.diwan.anvil`); macOS may ask once to let Anvil read Peep's. The Luna API needs no key.
+On first launch, open Settings (⌘,) and click **Import keys from Peep** (or paste the Experiential Labs key). Keys live in Anvil's own Keychain entries (service `com.diwan.anvil`); macOS may ask once to let Anvil read Peep's. The Luna API needs no key. Cookies for the web providers are kept in the Keychain per account, and nothing is sent anywhere except the site itself.
+
+**Sign in to ChatGPT…** / **Sign in to Gemini…** (in Settings → Provider, or straight from the model menu) opens the provider's sign-in page and adds the account by itself as soon as you're in: no button to press afterwards. Signing in again as the same person refreshes that account instead of adding a duplicate, and an account that stops working shows **Sign in again** on its row. An expired session also heals itself from Safari on the next request, but only when Safari is signed in as the same person. Passkeys and Google's embedded-browser check don't work in a web view (the *site* would have to list Anvil in its Apple association file), so the window has **Use Safari**: sign in there and Anvil picks the session up from Safari's cookies, including a session Safari already has. Reading Safari's cookies needs Full Disk Access; the window shows **Grant Access…** when it's missing and keeps waiting. **Paste cookies…** under each provider adds an account from another browser's Cookie header. No external proxy is needed; the proxy fields under *Advanced* are only a fallback.
+
+If you want to try the association anyway (and for password autofill), `Anvil/AnvilPasskeys.entitlements` has the `webcredentials:` entries; use it as `CODE_SIGN_ENTITLEMENTS` together with a provisioning profile that has Associated Domains. The Safari path works with either entitlements file.
 
 Tests:
 
@@ -144,15 +149,17 @@ Anvil/
             SessionController (runs requests, turns agent events into chat items, persistence),
             Headless (CLI runner and console host), AppInfo (name, paths, formatting)
   Brain/    AgentLoop (observe, think, act), ActionParser (lenient reply parser), PromptBuilder,
-            Brain (model routing and usage), OpenAIClient, ModelCatalog, ChatMessage, JSON
+            Brain (model routing and usage), OpenAIClient, ChatGPTWebClient, GeminiWebClient,
+            ModelCatalog, ChatMessage, JSON
   Core/     Permissions (pure policy), Diff (Myers line diffs, hunks, unified text), Checkpoints,
             Git (CLI wrapper and porcelain parser), Compactor, Session (models and JSON store),
-            ProjectContext (memory files, layout), SlashCommands, SkillLibrary, Settings, Keychain
+            ProjectContext (memory files, layout), SlashCommands, SkillLibrary, Settings, Keychain,
+            WebAccounts (cookies in the Keychain, per-account usage), SHA3 (ChatGPT proof of work)
   Tools/    Tool (ToolSpec, AgentHost, ToolContext), FileTools, EditEngine, ShellTools,
             ProcessRunner (streaming, timeouts, process-tree kill, background processes),
             WorkTools (web, todos, skills, ask_user), MCPClient
   UI/       ContentView, SidebarView, ConversationView, Composer, InspectorView, DiffView,
-            MarkdownText, SettingsView
+            MarkdownText, SettingsView, AccountsView, WebLoginView
 AnvilTests/ parser, edit engine, diffs, permissions, git, compaction, checkpoints, commands,
             sessions, pricing, and scripted agent-loop runs against a fake model
 ```
