@@ -114,6 +114,20 @@ final class SessionController: AgentHost {
         a.streaming = s.streaming
         a.escalationModel = s.escalation(for: model)
         a.exploreModel = s.exploreModel.isEmpty || !s.ready(Providers.provider(for: s.exploreModel)) ? "" : s.exploreModel
+        a.quickModel = s.quickModel.isEmpty || !s.ready(Providers.provider(for: s.quickModel)) ? "" : s.quickModel
+        a.adaptiveEffort = s.adaptiveEffort
+        a.prefetch = s.prefetch
+        a.prepareWhilePlanning = s.prepareWhilePlanning
+    }
+
+    @ObservationIgnored private var lastWarm = Date.distantPast
+    /// The owner started typing: warm the provider's prompt cache so the first turn skips re-reading the prefix.
+    func warmCache() {
+        guard AppSettings.shared.warmCache, !running, Date().timeIntervalSince(lastWarm) > 45 else { return }
+        lastWarm = Date()
+        guard let agent = try? makeAgent() else { return }
+        applySettings(agent)
+        Task { await agent.warmCache() }
     }
 
     /// Drops the cached agent so new settings (key, effort, MCP tools) apply on the next request.

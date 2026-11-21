@@ -111,6 +111,15 @@ struct AgentSettings: View {
                 Toggle("Verify before finishing (run the project's tests after edits)", isOn: $s.autoVerify)
                 Toggle("Review the diff before finishing (one extra model call)", isOn: $s.selfReview)
                 Toggle("Stream replies", isOn: $s.streaming)
+                Toggle("Adaptive effort (lighter thinking on routine turns; your effort setting is the ceiling)", isOn: $s.adaptiveEffort)
+                Toggle("Attach the code an error points to", isOn: $s.prefetch)
+                Toggle("Look ahead while a plan waits for approval", isOn: $s.prepareWhilePlanning)
+                Toggle("Warm the prompt cache while you type", isOn: $s.warmCache)
+                Toggle("Keep a project brief (one cheap call when the project changes)", isOn: $s.projectBrief)
+                Picker("Model for simple requests", selection: $s.quickModel) {
+                    Text("Same as the session").tag("")
+                    ForEach(ModelCatalog.shared.choices) { Text($0.id).tag($0.id) }
+                }
                 Picker("After repeated failures, switch to", selection: $s.escalationModel) {
                     Text("Off").tag("")
                     Text("Auto (the other model family)").tag("auto")

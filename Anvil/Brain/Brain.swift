@@ -16,6 +16,8 @@ final class Brain {
     var override: (([ChatMessage], String) async throws -> String)?
     /// Live text while a reply streams in (nil = don't stream).
     var onStream: ((String) -> Void)?
+    /// Why the last agent reply ended ("stop", "length"...), when the provider says.
+    private(set) var lastFinishReason: String?
 
     /// The Gemini proxy keeps history server-side: the session id and how many messages it already holds.
     private var geminiSession: (id: String, seen: Int)?
@@ -70,6 +72,7 @@ final class Brain {
                       experiential: experiential, luna: luna, gemini: gemini)
         b.onUsage = onUsage
         b.override = override
+        b.effort = "low"   // helpers only read and search
         return b
     }
 
@@ -83,14 +86,16 @@ final class Brain {
     }
 
     /// One agent turn. `model` overrides the session model for this turn (escalation, exploration routing).
-    func reply(_ history: [ChatMessage], model requested: String? = nil) async throws -> String {
+    func reply(_ history: [ChatMessage], model requested: String? = nil, effort requestedEffort: String? = nil, maxTokens: Int? = nil) async throws -> String {
         let (m, images) = Self.route(history, model: requested ?? model, vision: visionModel)
+        lastFinishReason = nil
         if let override { return try await override(history, m) }
+        let turnEffort = images ? visionEffort : (requestedEffort ?? effort)
         // Streaming has no built-in retry: retry transient failures here.
         var attempt = 0
         while true {
             do {
-                return try await call(history, model: m, images: images, effort: images ? visionEffort : effort, stop: OpenAIClient.agentStops, agent: true)
+                return try await call(history, model: m, images: images, effort: turnEffort, stop: OpenAIClient.agentStops, agent: true, maxTokens: maxTokens)
             } catch let e as BrainError where Self.retryable(e) && attempt < (e.code == "server_busy" ? 5 : 2) {
                 // Rate limits and "not ready, retry shortly" get a real backoff (about 45 s in total); other blips a short one.
                 attempt += 1
@@ -104,10 +109,19 @@ final class Brain {
     func oneShot(_ prompt: String, effort: String = "low") async throws -> String {
         let history = [ChatMessage.user(prompt)]
         if let override { return try await override(history, model) }
-        return try await call(history, model: model, images: false, effort: effort, stop: nil, agent: false)
+        return try await call(history, model: model, images: false, effort: effort, stop: nil, agent: false, maxTokens: nil)
     }
 
-    private func call(_ history: [ChatMessage], model m: String, images: Bool, effort e: String, stop: [String]?, agent: Bool) async throws -> String {
+    /// Sends a history with a 1-token reply so the provider caches its prefix (prompt caching is automatic on
+    /// Experiential Labs). The real request that follows reuses it. Errors are ignored: this is only a speed-up.
+    func warm(_ history: [ChatMessage]) async {
+        guard override == nil, Providers.provider(for: model) == .experiential, let experiential else { return }
+        if let (_, usage) = try? await experiential.chat(history, model: model, effort: "low", maxTokens: 1, attempts: 1) {
+            record(usage, model: model, history: history, reply: "", free: false)
+        }
+    }
+
+    private func call(_ history: [ChatMessage], model m: String, images: Bool, effort e: String, stop: [String]?, agent: Bool, maxTokens: Int?) async throws -> String {
         let stream = agent ? onStream : nil
         switch Providers.provider(for: m) {
         case .experiential:
@@ -116,10 +130,11 @@ final class Brain {
             if let stream {
                 // Runs to the end (stop sequences end it) so the provider's exact usage and cost arrive.
                 (text, usage, _) = try await experiential.chatStream(history, model: m, sendImages: images, effort: e.isEmpty ? nil : e, stop: stop,
-                                                                     onText: stream, shouldStop: { _ in false })
+                                                                     maxTokens: maxTokens, onText: stream, shouldStop: { _ in false })
             } else {
-                (text, usage) = try await experiential.chat(history, model: m, sendImages: images, effort: e.isEmpty ? nil : e, stop: stop)
+                (text, usage) = try await experiential.chat(history, model: m, sendImages: images, effort: e.isEmpty ? nil : e, stop: stop, maxTokens: maxTokens)
             }
+            if agent { lastFinishReason = usage?.finishReason }
             record(usage, model: m, history: history, reply: text, free: false)
             return text
         case .luna:
@@ -128,10 +143,11 @@ final class Brain {
             if let stream {
                 // Luna ignores stop sequences: end the stream as soon as the JSON block is complete.
                 (text, usage, _) = try await luna.chatStream(history, model: m, sendImages: images, effort: e.isEmpty ? nil : e, stop: stop,
-                                                             onText: stream, shouldStop: Self.replyComplete)
+                                                             maxTokens: maxTokens, onText: stream, shouldStop: Self.replyComplete)
             } else {
-                (text, usage) = try await luna.chat(history, model: m, sendImages: images, effort: e.isEmpty ? nil : e, stop: stop)
+                (text, usage) = try await luna.chat(history, model: m, sendImages: images, effort: e.isEmpty ? nil : e, stop: stop, maxTokens: maxTokens)
             }
+            if agent { lastFinishReason = usage?.finishReason }
             record(usage, model: m, history: history, reply: text, free: true)
             return text
         case .gemini:

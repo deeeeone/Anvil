@@ -111,3 +111,79 @@ final class WorktreeTests: XCTestCase {
         if case .success = await Git.addWorktree(repo, name: "x") { XCTFail("should need a first commit") }
     }
 }
+
+
+final class SpeedTests: XCTestCase {
+    func testRequestSizing() {
+        XCTAssertEqual(RequestSize.classify("rename calc to calculateTotal"), .simple)
+        XCTAssertEqual(RequestSize.classify("fix the typo in the README"), .simple)
+        XCTAssertEqual(RequestSize.classify("how does the rate limiter work?"), .question)
+        XCTAssertEqual(RequestSize.classify("Question only, don't change any files: what does X do"), .question)
+        XCTAssertEqual(RequestSize.classify("test_shuffle.py is flaky, make it reliable"), .hard)
+        XCTAssertEqual(RequestSize.classify("add a due date option to the CLI with tests"), .feature)
+    }
+
+    func testAdaptiveEffort() {
+        func e(step: Int = 3, size: RequestSize = .feature, edited: Bool = false, explored: Bool = false, failed: Bool = false, verified: Bool = false, parse: Int = 0) -> String {
+            AdaptiveEffort.effort(.init(step: step, size: size, editedThisRequest: edited, lastBatchExploratory: explored, lastBatchFailed: failed,
+                                        verifiedSinceEdit: verified, parseFailures: parse), full: "high")
+        }
+        XCTAssertEqual(e(step: 1, size: .simple), "low")
+        XCTAssertEqual(e(step: 1, size: .feature), "high")
+        XCTAssertEqual(e(explored: true), "high", "the turn after reading decides the change")
+        XCTAssertEqual(e(edited: true, verified: true), "low", "tests passed: wrapping up")
+        XCTAssertEqual(e(edited: true, failed: true), "high")
+        XCTAssertEqual(e(edited: true), "medium")
+        XCTAssertEqual(AdaptiveEffort.cap("high", "medium"), "medium", "the setting is the ceiling")
+    }
+
+    func testTracebackLocations() {
+        let py = "Traceback (most recent call last):\n  File \"/x/app.py\", line 12, in run\n  File \"lib/util.py\", line 3, in f\nZeroDivisionError"
+        XCTAssertEqual(Prefetch.locations(in: py).map(\.1), [12, 3])
+        let node = "TypeError: x\n    at total (/p/src/pricing.js:5:11)\n    at Object.<anonymous> (/p/index.js:2:1)"
+        XCTAssertEqual(Prefetch.locations(in: node).map(\.0), ["/p/src/pricing.js", "/p/index.js"])
+        XCTAssertEqual(Prefetch.locations(in: "Sources/App/main.swift:40:7: error: cannot find 'x'").first?.1, 40)
+    }
+
+    func testBriefFingerprintAndRoundTrip() throws {
+        XCTAssertEqual(ProjectBrief.fingerprint(repoMap: "a"), ProjectBrief.fingerprint(repoMap: "a"))
+        XCTAssertNotEqual(ProjectBrief.fingerprint(repoMap: "a"), ProjectBrief.fingerprint(repoMap: "b"))
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("anvil-brief-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        ProjectBrief(text: "A todo CLI.", fingerprint: "f", created: Date()).save(dir)
+        XCTAssertEqual(ProjectBrief.load(dir)?.text, "A todo CLI.")
+    }
+
+    func testBriefIsGeneratedOnceAndReused() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("anvil-brief2-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try "def main():\n    pass\n".write(to: dir.appendingPathComponent("app.py"), atomically: true, encoding: .utf8)
+        var calls = 0
+        let brain = Brain(client: OpenAIClient(baseURL: URL(string: "http://localhost:1")!, apiKey: ""), model: "m", visionModel: "", effort: "high", visionEffort: "low")
+        brain.override = { _, _ in calls += 1; return "A tiny app; entry point app.py main()." }
+        let b1 = await Agent.refreshBrief(root: dir, brain: brain)
+        let b2 = await Agent.refreshBrief(root: dir, brain: brain)
+        XCTAssertEqual(b1?.text, "A tiny app; entry point app.py main().")
+        XCTAssertEqual(b2?.text, b1?.text)
+        XCTAssertEqual(calls, 1, "unchanged project: no second call")
+    }
+
+    func testFileIndexTracksAgentEdits() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("anvil-index-\(UUID().uuidString)").resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try "a".write(to: dir.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        let idx = FileIndex(root: dir)
+        let first = await idx.list()
+        XCTAssertEqual(first.map(\.lastPathComponent), ["a.txt"])
+        let b = dir.appendingPathComponent("b.txt")
+        try "b".write(to: b, atomically: true, encoding: .utf8)
+        idx.noteChanged(b, deleted: false)
+        let second = await idx.list()
+        XCTAssertEqual(Set(second.map(\.lastPathComponent)), ["a.txt", "b.txt"])
+        idx.invalidate()
+        XCTAssertFalse(idx.isBuilt)
+    }
+}

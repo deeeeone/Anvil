@@ -73,6 +73,13 @@ enum Headless {
         agent.streaming = !args.contains("--no-stream")
         agent.escalationModel = args.contains("--no-escalate") ? "" : (value("--escalate") ?? AppSettings.shared.escalation(for: brain.model))
         agent.exploreModel = value("--explore-model") ?? ""
+        agent.quickModel = value("--quick-model") ?? ""
+        agent.adaptiveEffort = !args.contains("--no-adaptive")
+        agent.prefetch = !args.contains("--no-prefetch")
+        if args.contains("--brief") {
+            let b = await Agent.refreshBrief(root: root, brain: brain.fork(model: brain.model))
+            print("  brief: \(b.map { Fmt.line($0.text, 160) } ?? "none")")
+        }
         var checkpoints = session.checkpoints
         agent.onCheckpoint = { cp in
             if let i = checkpoints.firstIndex(where: { $0.id == cp.id }) { checkpoints[i] = cp } else { checkpoints.append(cp) }

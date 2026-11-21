@@ -62,6 +62,7 @@ final class AgentLoopTests: XCTestCase {
         a.autoVerify = verify
         a.selfReview = review
         a.streaming = false
+        a.prepareWhilePlanning = false
         a.memory = ProjectMemory()
         return a
     }
@@ -178,15 +179,25 @@ final class AgentLoopTests: XCTestCase {
         XCTAssertTrue(sent[1].last!.text.contains("you marked this done"))
     }
 
-    func testDangerousCommandAsksEvenInBypass() async {
+    func testDangerousCommandAsksInAutoEditButNotBypass() async {
         host.permissionAnswers = [.deny(nil)]
         let agent = makeAgent([
             fence(#"{"actions": [{"tool": "shell", "args": {"command": "rm -rf ./calc.py"}}]}"#),
             fence(#"{"say": "ok", "done": true}"#),
-        ], mode: .bypass)
+        ], mode: .acceptEdits)
         _ = await agent.run(goal: "x")
         XCTAssertEqual(host.permissionRequests.first?.reason, "deletes files recursively")
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("calc.py").path))
+
+        let host2 = TestHost()
+        self.host = host2
+        let agent2 = makeAgent([
+            fence(#"{"actions": [{"tool": "shell", "args": {"command": "rm -rf ./calc.py"}}]}"#),
+            fence(#"{"say": "ok", "done": true}"#),
+        ], mode: .bypass)
+        _ = await agent2.run(goal: "x")
+        XCTAssertTrue(host2.permissionRequests.isEmpty, "bypass never asks")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("calc.py").path))
     }
 
     func testServerCommandRedirectedToStartProcess() async {
@@ -452,5 +463,103 @@ final class AgentLoopTests: XCTestCase {
         ], mode: .bypass)
         _ = await agent.run(goal: "x")
         XCTAssertEqual(agent.memory.testCommand, "python3 -m unittest -q")
+    }
+
+    // MARK: Speed features
+
+    func testLineRangeEdit() async {
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "read_file", "args": {"path": "calc.py"}}]}"#),
+            fence(#"{"actions": [{"tool": "replace_lines", "args": {"path": "calc.py", "start": 2, "end": 2, "content": "    return a + b"}}]}"#),
+            fence(#"{"say": "ok", "done": true}"#),
+        ], mode: .bypass)
+        _ = await agent.run(goal: "x")
+        XCTAssertEqual(try String(contentsOf: dir.appendingPathComponent("calc.py"), encoding: .utf8), "def add(a, b):\n    return a + b\n")
+    }
+
+    func testLineRangeEditNeedsAFreshRead() async throws {
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "replace_lines", "args": {"path": "calc.py", "start": 2, "end": 2, "content": "x"}}]}"#),
+            fence(#"{"say": "ok", "done": true}"#),
+        ], mode: .bypass)
+        _ = await agent.run(goal: "x")
+        XCTAssertTrue(sent[1].last!.text.contains("read_file it again"))
+    }
+
+    func testLineRangeMultipleRangesAndShiftNote() async throws {
+        try "1\n2\n3\n4\n5\n".write(to: dir.appendingPathComponent("n.txt"), atomically: true, encoding: .utf8)
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "read_file", "args": {"path": "n.txt"}}, {"tool": "replace_lines", "args": {"path": "n.txt", "ranges": [{"start": 1, "end": 1, "content": "one\nuno"}, {"start": 4, "end": 5, "content": ""}]}}]}"#),
+            fence(#"{"say": "ok", "done": true}"#),
+        ], mode: .bypass)
+        _ = await agent.run(goal: "x")
+        XCTAssertEqual(try String(contentsOf: dir.appendingPathComponent("n.txt"), encoding: .utf8), "one\nuno\n2\n3\n")
+        XCTAssertTrue(sent[1].last!.text.contains("moved by -1"), sent[1].last!.text)
+    }
+
+    func testTracebackPrefetch() async throws {
+        try "def boom():\n    x = 1\n    return 1 / 0\n".write(to: dir.appendingPathComponent("boom.py"), atomically: true, encoding: .utf8)
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "shell", "args": {"command": "python3 -c 'import boom; boom.boom()'"}}]}"#),
+            fence(#"{"say": "ok", "done": true}"#),
+        ], mode: .bypass)
+        _ = await agent.run(goal: "x")
+        let obs = sent[1].last!.text
+        XCTAssertTrue(obs.contains("RELEVANT CODE"), obs)
+        XCTAssertTrue(obs.contains(">3\t    return 1 / 0"), obs)
+    }
+
+    func testGrepPrefetchShowsSurroundingCode() async {
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "grep", "args": {"pattern": "return a - b"}}]}"#),
+            fence(#"{"say": "ok", "done": true}"#),
+        ])
+        _ = await agent.run(goal: "x")
+        XCTAssertTrue(sent[1].last!.text.contains("CODE AROUND THE HITS"))
+    }
+
+    func testBatchApprovalCoversTheRestOfTheReply() async throws {
+        host.permissionAnswers = [.allowBatch]
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "write_file", "args": {"path": "a.txt", "content": "1"}}, {"tool": "write_file", "args": {"path": "b.txt", "content": "2"}}, {"tool": "write_file", "args": {"path": "c.txt", "content": "3"}}]}"#),
+            fence(#"{"actions": [{"tool": "write_file", "args": {"path": "d.txt", "content": "4"}}]}"#),
+            fence(#"{"say": "ok", "done": true}"#),
+        ], mode: .ask)
+        host.permissionAnswers = [.allowBatch, .allow]
+        _ = await agent.run(goal: "x")
+        XCTAssertEqual(host.permissionRequests.count, 2, "one card for the first reply's three edits, one for the next reply")
+        XCTAssertEqual(host.permissionRequests[0].batchRemaining, 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("c.txt").path))
+    }
+
+    func testApprovedPlanCoversItsEdits() async {
+        let agent = makeAgent([
+            fence(#"{"say": "Plan.", "plan": ["Write a", "Write b"], "actions": [], "done": false}"#),
+            fence(#"{"actions": [{"tool": "write_file", "args": {"path": "a.txt", "content": "1"}}], "milestone": 1}"#),
+            fence(#"{"actions": [{"tool": "write_file", "args": {"path": "b.txt", "content": "2"}}], "milestone": 2}"#),
+            fence(#"{"say": "Done.", "done": true}"#),
+        ], mode: .ask)
+        _ = await agent.run(goal: "big job")
+        XCTAssertTrue(host.permissionRequests.isEmpty, "approving the plan approved its edits")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("b.txt").path))
+    }
+
+    func testPlanLookAheadReportReachesTheAgent() async {
+        let agent = makeAgent([
+            fence(#"{"say": "Plan.", "plan": ["Fix add", "Test"], "actions": [], "done": false}"#),
+            fence(#"{"say": "add is in calc.py line 2.", "done": true}"#),   // the look-ahead helper
+            fence(#"{"say": "Done.", "done": true}"#),
+        ], mode: .bypass)
+        agent.prepareWhilePlanning = true
+        _ = await agent.run(goal: "fix add")
+        XCTAssertTrue(sent[2].last!.text.contains("looked ahead at milestone 1"), sent[2].last!.text)
+        XCTAssertTrue(sent[2].last!.text.contains("add is in calc.py line 2."))
+    }
+
+    func testSimpleRequestUsesTheQuickModel() async {
+        let agent = makeAgent([fence(#"{"say": "Renamed.", "done": true}"#)])
+        agent.quickModel = "quick-m"
+        _ = await agent.run(goal: "rename foo to bar in calc.py")
+        XCTAssertEqual(models.first, "quick-m")
     }
 }

@@ -34,7 +34,7 @@ nonisolated final class OpenAIClient: Sendable {
     static let agentStops = ["<observation", "**Observation", "\nObservation:", "</observation>"]
 
     func chat(_ messages: [ChatMessage], model: String, sendImages: Bool = false, effort: String? = nil,
-              stop: [String]? = nil, attempts: Int = 3) async throws -> (text: String, usage: ChatUsage?) {
+              stop: [String]? = nil, maxTokens: Int? = nil, attempts: Int = 3) async throws -> (text: String, usage: ChatUsage?) {
         var req = URLRequest(url: baseURL.appendingPathComponent("v1/chat/completions"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -42,6 +42,7 @@ nonisolated final class OpenAIClient: Sendable {
         var body: [String: Any] = ["model": model, "messages": Self.messagesJSON(messages, images: sendImages), "stream": false]
         if let effort, !effort.isEmpty { body["reasoning_effort"] = effort }
         if let stop, !stop.isEmpty { body["stop"] = stop }
+        if let maxTokens { body["max_tokens"] = maxTokens }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         var last: BrainError?
@@ -52,11 +53,12 @@ nonisolated final class OpenAIClient: Sendable {
                 let http = resp as? HTTPURLResponse
                 let status = http?.statusCode ?? 0
                 let j = JSON.parse(String(decoding: data, as: UTF8.self))
-                if (200..<300).contains(status), let text = j?["choices"]?.array?.first?["message"]?["content"]?.string, !text.isEmpty {
-                    let usage = j?["usage"].map { u in
+                if (200..<300).contains(status), let text = j?["choices"]?.array?.first?["message"]?["content"]?.string, !text.isEmpty || maxTokens != nil {
+                    var usage = j?["usage"].map { u in
                         ChatUsage(prompt: u["prompt_tokens"]?.int ?? 0, completion: u["completion_tokens"]?.int ?? 0,
                                   cached: u["prompt_tokens_details"]?["cached_tokens"]?.int ?? 0, cost: u["cost"]?.double)
                     }
+                    usage?.finishReason = j?["choices"]?.array?.first?["finish_reason"]?.string
                     return (text, usage)
                 }
                 let msg = j?["error"]?["message"]?.string ?? String(decoding: data.prefix(300), as: UTF8.self)
@@ -80,7 +82,7 @@ nonisolated final class OpenAIClient: Sendable {
     /// Streaming chat. `onText` gets the accumulated text; return true from `shouldStop` to end the stream early
     /// (the reply is complete, the model would only keep talking). Usage comes from the final chunk when the stream runs out.
     func chatStream(_ messages: [ChatMessage], model: String, sendImages: Bool = false, effort: String? = nil, stop: [String]? = nil,
-                    onText: @escaping (String) -> Void, shouldStop: @escaping (String) -> Bool) async throws -> (text: String, usage: ChatUsage?, cut: Bool) {
+                    maxTokens: Int? = nil, onText: @escaping (String) -> Void, shouldStop: @escaping (String) -> Bool) async throws -> (text: String, usage: ChatUsage?, cut: Bool) {
         var req = URLRequest(url: baseURL.appendingPathComponent("v1/chat/completions"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -89,6 +91,7 @@ nonisolated final class OpenAIClient: Sendable {
                                    "stream_options": ["include_usage": true]]
         if let effort, !effort.isEmpty { body["reasoning_effort"] = effort }
         if let stop, !stop.isEmpty { body["stop"] = stop }
+        if let maxTokens { body["max_tokens"] = maxTokens }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         return try await Self.consumeSSE(session: session, request: req, onText: onText, shouldStop: shouldStop)
     }
@@ -114,6 +117,7 @@ nonisolated final class OpenAIClient: Sendable {
         var usage: ChatUsage?
         var lastEmit = Date.distantPast
         var finished = false
+        var finishReason: String?
         for try await line in bytes.lines {
             try Task.checkCancellation()
             guard line.hasPrefix("data:") else { continue }
@@ -125,7 +129,7 @@ nonisolated final class OpenAIClient: Sendable {
                 usage = ChatUsage(prompt: u["prompt_tokens"]?.int ?? 0, completion: u["completion_tokens"]?.int ?? 0,
                                   cached: u["prompt_tokens_details"]?["cached_tokens"]?.int ?? 0, cost: u["cost"]?.double)
             }
-            if let fr = j["choices"]?.array?.first?["finish_reason"], fr != .null { finished = true }
+            if let fr = j["choices"]?.array?.first?["finish_reason"], fr != .null { finished = true; finishReason = fr.string }
             if let d = j["choices"]?.array?.first?["delta"]?["content"]?.string, !d.isEmpty {
                 text += d
                 if Date().timeIntervalSince(lastEmit) > 0.08 { onText(text); lastEmit = Date() }
@@ -136,6 +140,8 @@ nonisolated final class OpenAIClient: Sendable {
         if text.isEmpty { throw BrainError(status: status, code: "bad_response", message: "empty reply") }
         // The connection dropped mid-reply: don't pass a truncated reply off as complete.
         if !finished && !Brain.replyComplete(text) { throw BrainError(status: status, code: "network", message: "the reply stream ended early") }
-        return (text, usage, false)
+        var u = usage ?? (finishReason != nil ? ChatUsage() : nil)
+        u?.finishReason = finishReason
+        return (text, u, false)
     }
 }

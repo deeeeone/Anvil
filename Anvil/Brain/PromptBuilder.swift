@@ -10,9 +10,9 @@ nonisolated enum PromptBuilder {
         back in an <observation> block; then you choose the next step. The owner can see every action and its diff.
 
         HOW TO REPLY (every single time)
-        1. One or two sentences of reasoning.
+        1. At most one short sentence of reasoning. On routine steps (reading, searching, running tests) skip it and send only the json block.
         2. Exactly one fenced ```json block shaped like:
-        {"say": "short progress line", "actions": [{"tool": "name", "args": {...}}], "done": false}
+        {"say": "a few words", "actions": [{"tool": "name", "args": {...}}], "done": false}
 
         - Batch several actions when you are confident of the order (e.g. read three files, or make two edits then run the tests). End the batch at any action whose result you need to see first. A batch stops at the first failure.
         - When the request is complete, or it is a question you can answer, reply with "done": true, "actions": [] and the final answer in "say".
@@ -24,7 +24,7 @@ nonisolated enum PromptBuilder {
 
         CODING RULES
         - Understand before changing: use grep, glob and read_file to find and read the relevant code. Don't guess at APIs, file names or project structure.
-        - Edit with edit_file or multi_edit. "find" must be copied exactly from the file, with its indentation, and WITHOUT read_file's line-number prefix (the number and tab). Include enough lines to be unique. Use write_file for new files or full rewrites of small files.
+        - For a file you read this session, replace_lines is the cheapest edit (line numbers from read_file, no old text needed). Otherwise edit with edit_file or multi_edit. "find" must be copied exactly from the file, with its indentation, and WITHOUT read_file's line-number prefix (the number and tab). Include enough lines to be unique. Use write_file for new files or full rewrites of small files.
         - Keep changes focused and in the project's existing style, naming and patterns. Don't reformat unrelated code or add needless comments.
         - After changing code, verify: build, run the tests or the relevant command with shell, and fix what you broke. When adding a feature, add or update tests if the project has them.
         - When a test fails, work out whether the code or the test is wrong. Never weaken, skip or delete a test just to make it pass; if a test's expectation really was wrong, say so in the final answer.
@@ -59,10 +59,11 @@ nonisolated enum PromptBuilder {
         var testCommandProven = false
         var buildCommand: String?
         var lessons: [String] = []
+        var brief: String?
     }
 
     static func projectContext(_ p: ProjectInfo) -> String {
-        let now = Date().formatted(date: .complete, time: .shortened)
+        let now = Date().formatted(date: .complete, time: .omitted)   // no clock time: keeps the prefix cacheable
         let os = ProcessInfo.processInfo.operatingSystemVersionString
         var s = """
         CONTEXT (per session; everything above stays the same)
@@ -88,9 +89,10 @@ nonisolated enum PromptBuilder {
         for m in p.memory {
             s += "PROJECT INSTRUCTIONS FROM \(m.name) (written by the owner; follow them)\n\(m.text)\n\n"
         }
-        if !p.skills.isEmpty {
-            s += "SKILLS THAT MAY HELP (load with use_skill before starting)\n" + p.skills.map { "- \($0.name): \(Fmt.line($0.description, 160))" }.joined(separator: "\n") + "\n\n"
-        } else if p.skillCount > 0 {
+        if let brief = p.brief, !brief.isEmpty {
+            s += "PROJECT BRIEF (written earlier by a helper; trust the code over it if they disagree)\n\(brief)\n\n"
+        }
+        if p.skillCount > 0 {
             s += "SKILLS: \(p.skillCount) playbooks available (list_skills to search them).\n\n"
         }
         return s
@@ -113,5 +115,5 @@ nonisolated enum PromptBuilder {
         }
     }
 
-    static let formatReminder = "Reply with one or two sentences of reasoning, then exactly one ```json block."
+    static let formatReminder = "Reply with at most one short sentence of reasoning (none for routine steps), then exactly one ```json block."
 }

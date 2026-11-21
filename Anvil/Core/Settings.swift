@@ -29,6 +29,16 @@ final class AppSettings {
     var exploreModel: String { didSet { d.set(exploreModel, forKey: "exploreModel") } }
     /// Stream replies (live text, and early stop for providers that ignore stop sequences).
     var streaming: Bool { didSet { d.set(streaming, forKey: "streaming") } }
+    /// Reasoning effort per turn (low for wrap-ups and simple requests); the effort setting is the ceiling.
+    var adaptiveEffort: Bool { didSet { d.set(adaptiveEffort, forKey: "adaptiveEffort") } }
+    /// Model for simple requests (renames, typos); "" = the session model.
+    var quickModel: String { didSet { d.set(quickModel, forKey: "quickModel") } }
+    var prefetch: Bool { didSet { d.set(prefetch, forKey: "prefetch") } }
+    var prepareWhilePlanning: Bool { didSet { d.set(prepareWhilePlanning, forKey: "prepareWhilePlanning") } }
+    /// Warm the provider's prompt cache while the owner types.
+    var warmCache: Bool { didSet { d.set(warmCache, forKey: "warmCache") } }
+    /// Keep a short project brief (one cheap call when the project's shape changes).
+    var projectBrief: Bool { didSet { d.set(projectBrief, forKey: "projectBrief") } }
     /// Experiential Labs key.
     var apiKey: String {
         didSet { if !inMemoryKey { Keychain.set(apiKey, for: "apiKey") } }
@@ -63,6 +73,12 @@ final class AppSettings {
         escalationModel = d.string(forKey: "escalationModel") ?? "auto"
         exploreModel = d.string(forKey: "exploreModel") ?? ""
         streaming = d.object(forKey: "streaming") as? Bool ?? true
+        adaptiveEffort = d.object(forKey: "adaptiveEffort") as? Bool ?? true
+        quickModel = d.string(forKey: "quickModel") ?? ""
+        prefetch = d.object(forKey: "prefetch") as? Bool ?? true
+        prepareWhilePlanning = d.object(forKey: "prepareWhilePlanning") as? Bool ?? true
+        warmCache = d.object(forKey: "warmCache") as? Bool ?? true
+        projectBrief = d.object(forKey: "projectBrief") as? Bool ?? true
         lunaURL = d.string(forKey: "lunaURL") ?? Providers.defaultLunaURL
         geminiURL = d.string(forKey: "geminiURL") ?? Providers.defaultGeminiURL
         if let env = ProcessInfo.processInfo.environment["ANVIL_GEMINI_KEY"], !env.isEmpty {

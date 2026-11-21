@@ -83,6 +83,17 @@ final class AppState {
         refreshSessions()
         if let first = sessions.first { select(first.id) } else { newSession() }
         refreshGit()
+        refreshBrief(root)
+    }
+
+    /// Keep the project brief current in the background (one cheap call only when the project's shape changed).
+    func refreshBrief(_ root: URL) {
+        let s = AppSettings.shared
+        guard s.projectBrief else { return }
+        let model = s.quickModel.isEmpty ? s.model : s.quickModel
+        guard let brain = try? Brain.fromSettings(model: model) else { return }
+        brain.onUsage = { [weak self] u, _, cost in self?.current?.session.usage.add(u, cost: cost) }
+        Task { await Agent.refreshBrief(root: root, brain: brain) }
     }
 
     func refreshSessions() {
@@ -176,6 +187,7 @@ final class AppState {
 
     private func filesChanged() {
         fileTick += 1
+        if let root = current?.root ?? project { FileIndex.of(root).invalidate() }
         // Git status at most every 0.8 s, however many files change.
         guard !gitRefreshPending else { return }
         gitRefreshPending = true

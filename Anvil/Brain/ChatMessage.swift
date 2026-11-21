@@ -43,6 +43,8 @@ nonisolated struct ChatUsage: Sendable, Codable, Equatable {
     var completion = 0
     var cached = 0
     var cost: Double?
+    /// "stop", "length"... (not persisted meaningfully; used to detect capped replies).
+    var finishReason: String?
 }
 
 nonisolated struct BrainError: Error, LocalizedError, Sendable {

@@ -61,11 +61,14 @@ struct PermissionRequest {
     var command: String?
     var diffs: [FileDiff]
     var commandKey: String?
+    /// Edits in the same reply still waiting after this one (offer "allow all of them").
+    var batchRemaining = 0
 }
 
 enum PermissionAnswer: Equatable {
     case allow
     case allowSession      // commands: allow this command key for the session; edits: switch to auto-accept edits
+    case allowBatch        // edits: allow this one and every other edit in the same reply
     case deny(String?)     // optional note for the model
 }
 
@@ -105,6 +108,15 @@ final class ToolContext {
     var todos: [TodoItem] = []
     /// Files read this session (edit hints).
     var readFiles = Set<String>()
+    /// Modification date of each file when the agent last read or wrote it (line-range edits need it unchanged).
+    var readStamps: [String: Date] = [:]
+    /// Extra text for the next edit result (line shifts after replace_lines).
+    var editNote: String?
+
+    func stamp(_ url: URL) {
+        let p = url.standardizedFileURL.path
+        readStamps[p] = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+    }
 
     init(root: URL, processes: ProcessManager, host: AgentHost?) {
         self.root = root.standardizedFileURL

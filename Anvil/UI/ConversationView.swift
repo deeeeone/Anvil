@@ -440,8 +440,12 @@ struct PermissionCard: View {
                     .buttonStyle(Pill(kind: .secondary)).help("Allow this command for the rest of the session")
             }
         } else {
+            if r.batchRemaining > 0 {
+                Button("Allow all \(r.batchRemaining + 1) in this reply") { pending.resume(.allowBatch) }
+                    .buttonStyle(Pill(kind: .secondary)).help("Approve this edit and the other edits the agent sent with it")
+            }
             Button("Allow all edits") { pending.resume(.allowSession) }
-                .buttonStyle(Pill(kind: .secondary)).help("Switch this session to auto-accept edits")
+                .buttonStyle(Pill(kind: r.batchRemaining > 0 ? .ghost : .secondary)).help("Switch this session to auto-accept edits")
         }
     }
 

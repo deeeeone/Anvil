@@ -36,6 +36,20 @@ final class Agent {
     var exploreModel = ""
     /// Stream replies to the host (live text; early stop for providers that ignore stop sequences).
     var streaming = true
+    /// Pick reasoning effort per turn (low for wrap-ups and simple requests, full for decisions and after failures).
+    var adaptiveEffort = true
+    /// Model for requests that look simple (renames, typos); "" = the session model.
+    var quickModel = ""
+    /// Attach the code a failure points to, and the code around a few grep hits.
+    var prefetch = true
+    /// While a plan waits for approval, a read-only helper looks ahead at milestone 1.
+    var prepareWhilePlanning = true
+    /// The briefing built ahead of time (cache warming); reused if the request starts soon after.
+    private var prepared: (text: String, at: Date)?
+    // Approvals for the current request and batch.
+    private var planEditsApproved = false
+    private var batchEditsApproved = false
+    private var batchEditsLeft = 0
     /// What this project taught earlier sessions: test/build commands and lessons.
     var memory: ProjectMemory
     /// A turn that never reached the model (network failure), re-sent with the next request.
@@ -111,7 +125,43 @@ final class Agent {
         else { info.testCommand = ProjectMemory.guessTestCommand(root) }
         info.buildCommand = memory.buildCommand
         info.lessons = memory.lessons
+        if !isSubagent, let b = ProjectBrief.load(root) { info.brief = b.text }
         return info
+    }
+
+    /// The first turn's fixed text: rules, catalog, project context. Goal-independent, so it can be built (and cached
+    /// by the provider) while the owner is still typing.
+    func buildBriefing() async -> String {
+        if let p = prepared, Date().timeIntervalSince(p.at) < 300 { return p.text }
+        let info = await projectInfo()
+        let text = PromptBuilder.fixed(catalog: catalog) + PromptBuilder.projectContext(info)
+        prepared = (text, Date())
+        return text
+    }
+
+    /// Warm the provider's prompt cache with what the next request will start with.
+    func warmCache() async {
+        if messages.isEmpty {
+            refreshTools()
+            let b = await buildBriefing()
+            await brain.warm([.user(b)])
+        } else if messages.last?.role == "assistant" {
+            await brain.warm(messages + [.user("(warming the cache; no reply needed)")])
+        }
+    }
+
+    /// Writes (or refreshes) the project brief with a fast, low-effort call. Skips the call when the code's shape is unchanged.
+    @discardableResult
+    static func refreshBrief(root: URL, brain: Brain) async -> ProjectBrief? {
+        let map = await Task.detached { RepoMap.build(root) }.value
+        let layout = ProjectContext.layout(root)
+        guard !map.isEmpty || layout != "(empty folder)" else { return nil }
+        let fp = ProjectBrief.fingerprint(repoMap: map + layout)
+        if let old = ProjectBrief.load(root), old.fingerprint == fp { return old }
+        guard let text = try? await brain.oneShot(ProjectBrief.prompt(root: root, repoMap: map, layout: layout), effort: "low") else { return nil }
+        let b = ProjectBrief(text: Fmt.plain(text.trimmingCharacters(in: .whitespacesAndNewlines)), fingerprint: fp, created: Date())
+        b.save(root)
+        return b
     }
 
     static let reanchorText = "You do have access. This app executes the actions you list in the json block, on the owner's project, with their permission, and sends you the results. You never need the owner to paste files or run commands."
@@ -131,14 +181,17 @@ final class Agent {
         defer { brain.onStream = nil; host?.agentStream("") }
 
         refreshTools()
+        let size: RequestSize = isSubagent ? .question : RequestSize.classify(goal)
+        planEditsApproved = false
         var intro: String
+        let skills = SkillLibrary.matching(goal, project: ctx.root)
+        let skillNote = skills.isEmpty ? "" : "SKILLS THAT MAY HELP (load with use_skill before starting)\n" + skills.map { "- \($0.name): \(Fmt.line($0.description, 160))" }.joined(separator: "\n") + "\n\n"
         if messages.isEmpty {
-            var info = await projectInfo()
-            info.skills = SkillLibrary.matching(goal, project: ctx.root)
-            briefing = PromptBuilder.fixed(catalog: catalog) + PromptBuilder.projectContext(info)
-            intro = briefing + PromptBuilder.request(goal, attachments: attachmentsNote)
+            briefing = await buildBriefing()
+            prepared = nil
+            intro = briefing + skillNote + PromptBuilder.request(goal, attachments: attachmentsNote)
         } else {
-            intro = PromptBuilder.followUp(goal, attachments: attachmentsNote)
+            intro = skillNote + PromptBuilder.followUp(goal, attachments: attachmentsNote)
         }
         var userText = (unsent.map { $0 + "\n\n" } ?? "") + intro + (isSubagent ? "" : PromptBuilder.modeNote(mode)) + PromptBuilder.formatReminder
         unsent = nil
@@ -148,6 +201,7 @@ final class Agent {
         var actedThisRequest = false
         var editedThisRequest = false
         var lastBatchExploratory = false
+        var lastBatchFailed = false
         var verifyRuns = 0
         var askedToVerify = false
         var reviewed = false
@@ -172,22 +226,40 @@ final class Agent {
                 }
             }
 
-            // Which model thinks this turn: escalation after repeated failures, a fast model while only exploring.
+            // Which model thinks this turn, and how hard: escalation after repeated failures, a quick model for simple
+            // requests, a fast model while only exploring; effort follows what the turn is likely to do.
             var turnModel: String?
-            if escalateNext && !escalationModel.isEmpty && escalationModel != brain.model {
+            var turnEffort: String? = nil
+            var cap: Int? = nil
+            let escalating = escalateNext && !escalationModel.isEmpty && escalationModel != brain.model
+            if escalating {
                 turnModel = escalationModel
                 host?.agentStatus("Thinking harder (\(escalationModel))")
+            } else if size == .simple && !quickModel.isEmpty && !lastBatchFailed {
+                turnModel = quickModel
             } else if !exploreModel.isEmpty && lastBatchExploratory && !editedThisRequest && step > 1 {
                 turnModel = exploreModel
+            }
+            if adaptiveEffort && !escalating {
+                let st = AdaptiveEffort.State(step: step, size: size, editedThisRequest: editedThisRequest, lastBatchExploratory: lastBatchExploratory,
+                                              lastBatchFailed: lastBatchFailed, verifiedSinceEdit: editedThisRequest && !editedSinceVerify, parseFailures: parseFailures)
+                turnEffort = AdaptiveEffort.effort(st, full: brain.effort)
+                // Wrap-up turns (verified edits) only need the final answer: cap the reply.
+                if editedThisRequest && !editedSinceVerify && !lastBatchFailed { cap = 2500 }
+                if turnEffort != brain.effort { host?.agentStatus(step == 1 ? "Thinking (\(turnEffort!) effort)" : "Thinking (step \(step), \(turnEffort!) effort)") }
             }
             escalateNext = false
 
             Compactor.slim(&messages)
             messages.append(.user(userText, images: pendingImages))
             onHistory?()
-            let raw: String
+            var raw: String
             do {
-                raw = try await brain.reply(messages, model: turnModel)
+                raw = try await brain.reply(messages, model: turnModel, effort: turnEffort, maxTokens: cap)
+                // A capped reply that got cut off: redo the turn without the cap.
+                if cap != nil && brain.lastFinishReason == "length" {
+                    raw = try await brain.reply(messages, model: turnModel, effort: turnEffort, maxTokens: nil)
+                }
             } catch is CancellationError {
                 messages.removeLast()
                 onHistory?()
@@ -231,8 +303,38 @@ final class Agent {
             // Plan first for big jobs: the owner approves (or edits) before anything runs.
             if !reply.plan.isEmpty && !planApproved && !planShown && !isSubagent {
                 if let say = reply.say, !say.isEmpty { host?.agentSay(Fmt.plain(say), final: false) }
+                // While the owner reads the plan, a read-only helper looks ahead at milestone 1.
+                var prep: Task<String?, Never>?
+                var prepID: UUID?
+                if prepareWhilePlanning && !isSubagent {
+                    let id = UUID()
+                    prepID = id
+                    host?.agentStepBegan(id, tool: "explore", summary: "Preparing milestone 1 while you review the plan")
+                    ctx.stepID = id
+                    let plan = reply.plan
+                    prep = Task { [weak self] in
+                        guard let self else { return nil }
+                        let r = await self.runExplorer("Prepare for this plan's first milestone: \"\(plan[0])\" (the whole plan: \(plan.joined(separator: "; "))). For the request \"\(Fmt.line(goal, 300))\", find the exact files, functions and line numbers that milestone 1 will change, and note anything surprising.")
+                        return r.ok ? r.output : nil
+                    }
+                }
                 let decision = await host?.agentPlan(reply.plan.map(Fmt.plain)) ?? .approve
-                if Task.isCancelled { return finish("Stopped.", ok: false, steps: step) }
+                if Task.isCancelled { prep?.cancel(); return finish("Stopped.", ok: false, steps: step) }
+                var lookAhead = ""
+                if let prep {
+                    if case .approve = decision {} else if case .approveAutoEdits = decision {} else { prep.cancel() }
+                    // Give it a few more seconds if the owner approved fast; otherwise go without it.
+                    let report = await withTaskGroup(of: String?.self) { g -> String? in
+                        g.addTask { await prep.value }
+                        g.addTask { try? await Task.sleep(for: .seconds(20)); return nil }
+                        let first = await g.next() ?? nil
+                        g.cancelAll()
+                        return first
+                    }
+                    if report == nil { prep.cancel() }
+                    if let id = prepID { host?.agentStepEnded(id, status: report == nil ? .denied : .ok, output: report ?? "Skipped", diffs: [], duration: 0) }
+                    if let report { lookAhead = "\nWhile the owner reviewed the plan, a read-only helper looked ahead at milestone 1:\n\(Fmt.clip(report, max: 3000))\n" }
+                }
                 switch decision {
                 case .cancel:
                     planShown = true
@@ -243,10 +345,12 @@ final class Agent {
                 case .approve, .approveAutoEdits:
                     planApproved = true
                     planShown = true
+                    // Approving a plan approves the edits that carry it out (commands still follow the mode).
+                    planEditsApproved = true
                     if decision == .approveAutoEdits { mode = .acceptEdits } else if mode == .plan { mode = .ask }
                     lastMode = mode
                     if reply.actions.isEmpty || reply.done {
-                        userText = "<observation step=\(step)>The owner approved the plan. Start milestone 1 now. Include \"milestone\": n in the reply where milestone n is finished.</observation>\n\(PromptBuilder.formatReminder)"
+                        userText = "<observation step=\(step)>The owner approved the plan. Start milestone 1 now. Include \"milestone\": n in the reply where milestone n is finished.\(lookAhead)</observation>\n\(PromptBuilder.formatReminder)"
                         continue
                     }
                 }
@@ -311,6 +415,8 @@ final class Agent {
             actedThisRequest = true
             lastBatchExploratory = reply.actions.allSatisfy { isParallelSafe($0) }
             let actions = reply.actions
+            batchEditsApproved = false
+            batchEditsLeft = actions.filter { tools[$0.tool]?.prepare != nil }.count
             var i = 0
             batch: while i < actions.count {
                 if Task.isCancelled { break }
@@ -329,7 +435,7 @@ final class Agent {
                     if !r.result.ok {
                         let key = "\(r.action.tool) \(r.action.args["path"]?.string ?? r.command ?? "")"
                         failureCounts[key, default: 0] += 1
-                        if failureCounts[key]! >= 2 && !escalationModel.isEmpty { escalateNext = true }
+                        if failureCounts[key]! >= (size == .hard ? 1 : 2) && !escalationModel.isEmpty { escalateNext = true }
                         lastFailure = "\(r.action.tool) \(Fmt.line(Self.argsForLog(r.action), 100)) failed: \(Fmt.line(r.result.output, 140))"
                     }
                     if !r.result.ok || r.result.stopBatch { anyFailed = anyFailed || !r.result.ok; stop = true }
@@ -341,6 +447,7 @@ final class Agent {
                 i = j
             }
             if Task.isCancelled { return finish("Stopped.", ok: false, steps: step) }
+            lastBatchFailed = anyFailed
             if reply.done && !anyFailed { results.append("(you marked this done; check these results, then reply with done:true and the final answer in say)") }
 
             var obs = "<observation step=\(step)>\nresults of your actions:\n" + results.joined(separator: "\n") + "\n"
@@ -568,6 +675,8 @@ final class Agent {
                     checkpoint.record(c.url, before: c.old)
                     try c.apply()
                     ctx.readFiles.insert(c.url.standardizedFileURL.path)
+                    ctx.stamp(c.url)
+                    FileIndex.of(ctx.root).noteChanged(c.url, deleted: c.new == nil)
                 }
             } catch {
                 host?.agentStepEnded(id, status: .failed, output: error.localizedDescription, diffs: diffs, duration: Date().timeIntervalSince(start))
@@ -590,7 +699,8 @@ final class Agent {
                 return Executed(line: "- \(action.tool) \(Self.argsForLog(action)) → ok, but \(msg)", result: r, action: action, edited: true)
             }
             host?.agentStepEnded(id, status: .ok, output: desc, diffs: diffs, duration: Date().timeIntervalSince(start))
-            let checked = changes.contains { Diagnostics.command(for: $0.url) != nil } ? " (syntax ok)" : ""
+            var checked = changes.contains { Diagnostics.command(for: $0.url) != nil } ? " (syntax ok)" : ""
+            if let note = ctx.editNote { checked += " " + note; ctx.editNote = nil }
             return Executed(line: "- \(action.tool) \(Self.argsForLog(action)) → ok: \(desc)\(checked)", result: .ok(desc), action: action, edited: true)
         }
 
@@ -613,6 +723,17 @@ final class Agent {
         } catch {
             r = .fail((error as? ToolFailure)?.message ?? "error: \(error.localizedDescription)")
         }
+        // Prefetch what's obviously next: the code a failure points to, the code around a few grep hits.
+        var extra = ""
+        if prefetch {
+            if action.tool == "shell" && !r.ok {
+                let code = Prefetch.snippets(for: r.output, root: ctx.root)
+                if !code.isEmpty { extra = "\nRELEVANT CODE (where the error output points; '>' marks the line):\n" + code }
+            } else if action.tool == "grep" && r.ok && action.args["context"] == nil, let code = Prefetch.grepContext(r.output, root: ctx.root) {
+                extra = "\nCODE AROUND THE HITS:\n" + code
+            }
+        }
+        if action.tool == "shell" { FileIndex.of(ctx.root).invalidate() }
         host?.agentStepEnded(id, status: r.ok ? .ok : .failed, output: r.output, diffs: [], duration: Date().timeIntervalSince(start))
         if r.ok, let key = readKey, let d = readDate { readCache[key] = (d, currentStep) }
         var verified = false
@@ -620,20 +741,28 @@ final class Agent {
             verified = true
             remember(command: cmd)
         }
-        return Executed(line: "- \(action.tool) \(argsShort) → \(r.ok ? "ok" : "FAILED"): \(Fmt.clip(r.output, max: 16000))", result: r, action: action, command: command, verified: verified)
+        return Executed(line: "- \(action.tool) \(argsShort) → \(r.ok ? "ok" : "FAILED"): \(Fmt.clip(r.output, max: 16000))\(extra)", result: r, action: action, command: command, verified: verified)
     }
 
     /// Applies the permission decision, asking the owner when needed. Returns the refusal text, or nil to proceed.
     private func gate(_ decision: PermissionDecision, tool: String, command: String?, diffs: [FileDiff]) async -> String? {
+        if command == nil { batchEditsLeft = max(0, batchEditsLeft - 1) }
         switch decision {
         case .allow: return nil
         case .deny(let why): return why
         case .ask(let reason):
+            // Edits inside the project that an approved plan or a "whole reply" approval already covers.
+            if command == nil && reason == "edit" && (planEditsApproved || batchEditsApproved) { return nil }
             let key = command.map(Permissions.commandKey)
             host?.agentStatus("Waiting for your approval")
-            let answer = await host?.agentPermission(PermissionRequest(tool: tool, reason: reason, command: command, diffs: diffs, commandKey: key)) ?? .deny(nil)
+            let req = PermissionRequest(tool: tool, reason: reason, command: command, diffs: diffs, commandKey: key,
+                                        batchRemaining: command == nil ? batchEditsLeft : 0)
+            let answer = await host?.agentPermission(req) ?? .deny(nil)
             switch answer {
             case .allow: return nil
+            case .allowBatch:
+                batchEditsApproved = true
+                return nil
             case .allowSession:
                 if let key, Permissions.dangerReason(command ?? "") == nil { allowedCommands.insert(key) }
                 if command == nil && mode == .ask { mode = .acceptEdits }

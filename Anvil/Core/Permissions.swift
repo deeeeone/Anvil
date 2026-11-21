@@ -9,7 +9,7 @@ nonisolated enum PermissionMode: String, Codable, CaseIterable, Identifiable, Se
         case .ask: return "Ask before edits"
         case .acceptEdits: return "Auto-accept edits"
         case .plan: return "Plan only"
-        case .bypass: return "Bypass permissions"
+        case .bypass: return "Bypass permissions (never asks)"
         }
     }
     var short: String {
@@ -42,6 +42,9 @@ nonisolated enum Permissions {
                        root: URL, allowed: Set<String> = []) -> PermissionDecision {
         switch kind {
         case .read, .network, .meta:
+            return .allow
+        case _ where mode == .bypass:
+            // Bypass means no prompts at all (the owner's explicit choice). Edits still get checkpoints.
             return .allow
         case .edit:
             let outside = paths.filter { !Paths.isInside($0, root: root) }

@@ -60,7 +60,10 @@ struct Composer: View {
                         guard !text.isEmpty else { return .ignored }
                         text = ""; return .handled
                     }
-                    .onChange(of: text) { _, _ in selection = 0 }
+                    .onChange(of: text) { old, new in
+                        selection = 0
+                        if old.isEmpty && !new.isEmpty && !new.hasPrefix("/") { controller.warmCache() }
+                    }
                 HStack(spacing: 6) {
                     IconButton(symbol: "paperclip", help: "Attach an image (or paste one with ⌘V)", size: 28) { attach() }
                     ModePill(controller: controller)

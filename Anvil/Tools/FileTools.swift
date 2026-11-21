@@ -3,7 +3,18 @@ import AppKit
 
 /// Reading, writing, editing and searching files in the project.
 enum FileTools {
-    static func all() -> [ToolSpec] { [readFile, listDir, glob, grep, editFile, multiEdit, writeFile, deleteFile] }
+    static func all() -> [ToolSpec] { [readFile, listDir, glob, grep, editFile, replaceLines, multiEdit, writeFile, deleteFile] }
+
+    /// Files under `root` from the project's index when possible (instant on big repos), else a fresh walk.
+    static func files(under root: URL, ctx: ToolContext) async -> [URL] {
+        guard Paths.isInside(root, root: ctx.root) else { return await Task.detached { walk(root) }.value }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDir), isDir.boolValue else { return [root] }
+        let all = await FileIndex.of(ctx.root).list()
+        if root.standardizedFileURL.path == ctx.root.standardizedFileURL.path { return all }
+        let prefix = root.standardizedFileURL.path + "/"
+        return all.filter { $0.standardizedFileURL.path.hasPrefix(prefix) }
+    }
 
     static let imageExts: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp"]
 
@@ -46,6 +57,7 @@ enum FileTools {
         }
         let text = try readText(url)
         ctx.readFiles.insert(url.standardizedFileURL.path)
+        ctx.stamp(url)
         if text.isEmpty { return .ok("\(ctx.rel(url)) is empty") }
         let limit = max(1, min(2000, a["limit"]?.int ?? 400))
         let (body, s, e, total) = numbered(text, offset: a["offset"]?.int ?? a["start_line"]?.int ?? 1, limit: limit)
@@ -148,8 +160,9 @@ enum FileTools {
         let root = ctx.resolve(a["path"]?.string ?? ".")
         guard let re = globRegex(pat.contains("/") ? pat : "**/" + pat) else { return .fail("bad pattern") }
         let base = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        let candidates = pat.hasSuffix("/") ? await Task.detached { walk(root, includeDirs: true) }.value : await files(under: root, ctx: ctx)
         let hits = await Task.detached { () -> [(String, Date)] in
-            walk(root, includeDirs: true).compactMap { url in
+            candidates.compactMap { url in
                 let rel = url.path.hasPrefix(base) ? String(url.path.dropFirst(base.count)) : url.lastPathComponent
                 guard matches(re, rel) else { return nil }
                 return (rel, (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
@@ -178,13 +191,14 @@ enum FileTools {
         let limit = max(1, min(400, a["limit"]?.int ?? 120))
         let context = max(0, min(5, a["context"]?.int ?? 0))
         let projectRoot = ctx.root
+        let candidates = await files(under: root, ctx: ctx)
         let result = await Task.detached { () -> (lines: [String], files: Int, truncated: Bool) in
             var lines: [String] = []
             var files = 0
             var truncated = false
             let deadline = Date().addingTimeInterval(25)
             let base = root.path.hasSuffix("/") ? root.path : root.path + "/"
-            for url in walk(root) {
+            for url in candidates {
                 if Date() > deadline { truncated = true; break }
                 let rel = url.path.hasPrefix(base) ? String(url.path.dropFirst(base.count)) : url.lastPathComponent
                 if let nameRE, !matches(nameRE, rel) { continue }
@@ -239,6 +253,61 @@ enum FileTools {
         guard let text = try currentText(url) else { throw ToolFailure("\(ctx.rel(url)) doesn't exist. Use write_file to create it.") }
         let out = try EditEngine.apply(text, .init(find: find, replace: repl, all: a["all"]?.bool ?? a["replace_all"]?.bool ?? false), file: ctx.rel(url))
         return [FileChange(url: url, old: text, new: out.text)]
+    }
+
+    static let replaceLines = ToolSpec(
+        edit: "replace_lines",
+        signature: #"{"path": str, "start": first line, "end": last line, "content": new text} or {"path": str, "ranges": [{"start", "end", "content"}, ...]}"#,
+        summary: "replace whole lines by number in a file you read this session and that hasn't changed since (cheapest edit: no need to repeat the old text). Numbers refer to the file as you last saw it; content \"\" deletes the lines; \"insert\": true inserts before start"
+    ) { a, ctx in
+        guard let p = a["path"]?.string ?? a["file"]?.string else { throw ToolFailure("missing path") }
+        let url = ctx.resolve(p)
+        guard let text = try currentText(url) else { throw ToolFailure("\(ctx.rel(url)) doesn't exist; use write_file to create it") }
+        let now = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        guard let seen = ctx.readStamps[url.standardizedFileURL.path], seen == now else {
+            throw ToolFailure("\(ctx.rel(url)) changed since you last read it (or you haven't read it). read_file it again, then use the new line numbers.")
+        }
+        struct R { var start: Int; var end: Int; var content: String; var insert: Bool }
+        var ranges: [R] = []
+        if let list = a["ranges"]?.array {
+            for r in list {
+                guard let st = r["start"]?.int, let c = r["content"]?.string ?? r["text"]?.string else { throw ToolFailure("each range needs start and content") }
+                ranges.append(R(start: st, end: r["end"]?.int ?? st, content: c, insert: r["insert"]?.bool ?? false))
+            }
+        } else {
+            guard let st = a["start"]?.int ?? a["start_line"]?.int ?? a["line"]?.int, let c = a["content"]?.string ?? a["text"]?.string ?? a["replace"]?.string
+            else { throw ToolFailure("need start, end and content (or ranges)") }
+            ranges.append(R(start: st, end: a["end"]?.int ?? a["end_line"]?.int ?? st, content: c, insert: a["insert"]?.bool ?? false))
+        }
+        let hadTrailingNewline = text.hasSuffix("\n")
+        var lines = DiffEngine.lines(text)
+        // Validate, then apply bottom-up so earlier numbers stay valid within this call.
+        let sorted = ranges.sorted { $0.start > $1.start }
+        for (i, r) in sorted.enumerated() {
+            let maxStart = r.insert ? lines.count + 1 : lines.count
+            guard r.start >= 1, r.start <= max(1, maxStart), r.insert || r.end >= r.start, r.insert || r.end <= lines.count else {
+                throw ToolFailure("lines \(r.start)-\(r.end) are outside \(ctx.rel(url)) (it has \(lines.count) lines)")
+            }
+            if i > 0 && !r.insert && r.end >= sorted[i - 1].start { throw ToolFailure("ranges overlap; merge them") }
+        }
+        var shifts: [(Int, Int)] = []
+        for r in sorted {
+            let new = r.content.isEmpty ? [] : DiffEngine.lines(r.content.hasSuffix("\n") ? r.content : r.content + "\n")
+            if r.insert {
+                lines.insert(contentsOf: new, at: r.start - 1)
+                shifts.append((r.start, new.count))
+            } else {
+                lines.replaceSubrange((r.start - 1)...(r.end - 1), with: new)
+                shifts.append((r.end, new.count - (r.end - r.start + 1)))
+            }
+        }
+        let net = shifts.reduce(0) { $0 + $1.1 }
+        if net != 0, let lowest = shifts.map(\.0).min() {
+            ctx.editNote = "(lines after \(lowest) moved by \(net > 0 ? "+" : "")\(net); use the new numbers for further edits)"
+        }
+        let out = lines.joined(separator: "\n") + (hadTrailingNewline || lines.isEmpty ? "\n" : "")
+        if out == text { throw ToolFailure("no change: the content matches what's already there") }
+        return [FileChange(url: url, old: text, new: out)]
     }
 
     static let multiEdit = ToolSpec(
