@@ -33,6 +33,10 @@ final class AppState {
     var selectedDiff: FileDiff?
     var previewFile: URL?
     private(set) var git = Git.Status(isRepo: false)
+    /// Bumped when files under the working folder change (the Files tab and git status follow it).
+    private(set) var fileTick = 0
+    @ObservationIgnored private var watcher: FileWatcher?
+    @ObservationIgnored private var gitRefreshPending = false
     @ObservationIgnored private var controllers: [UUID: SessionController] = [:]
 
     init() {
@@ -158,7 +162,28 @@ final class AppState {
 
     func refreshGit() {
         guard let root = current?.root ?? project else { return }
+        watch(root)
         Task { git = await Git.status(root) }
+    }
+
+    /// Follow the folder the current session works in (the project, or its worktree).
+    private func watch(_ root: URL) {
+        guard watcher?.path != root.path else { return }
+        watcher?.stop()
+        watcher = FileWatcher(path: root.path) { [weak self] in self?.filesChanged() }
+        fileTick += 1
+    }
+
+    private func filesChanged() {
+        fileTick += 1
+        // Git status at most every 0.8 s, however many files change.
+        guard !gitRefreshPending else { return }
+        gitRefreshPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self else { return }
+            self.gitRefreshPending = false
+            if let root = self.current?.root ?? self.project { Task { self.git = await Git.status(root) } }
+        }
     }
 
     /// The agent changed files: show the diff beside the chat when there's room for it.

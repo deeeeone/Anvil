@@ -17,7 +17,7 @@ struct InspectorView: View {
                 if let c = app.current {
                     switch app.inspectorTab ?? .changes {
                     case .changes: ChangesPane(controller: c)
-                    case .files: FilesPane(root: c.root)
+                    case .files: FilesPane(root: c.root).id(c.root.path)
                     case .todo: TodoPane(controller: c)
                     case .terminal: TerminalPane(controller: c)
                     case .git: GitPane(controller: c)
@@ -162,8 +162,15 @@ struct FilesPane: View {
             FilePreview(url: file, root: root) { app.previewFile = nil }
         } else {
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) { FileTree(url: root, root: root, depth: 0) }
-                    .padding(8)
+                VStack(alignment: .leading, spacing: 0) {
+                    FileTree(url: root, root: root, depth: 0)
+                    if ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []).filter({ !$0.hasPrefix(".") }).isEmpty {
+                        let _ = app.fileTick
+                        Text("This folder is empty. Files the agent creates show up here as they're written.")
+                            .font(.system(size: 12.5)).foregroundStyle(Theme.text3).padding(10)
+                    }
+                }
+                .padding(8)
             }
         }
     }
@@ -200,6 +207,7 @@ struct FileTree: View {
     }
 
     private var children: [URL] {
+        _ = app.fileTick   // re-list when files change
         let items = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
         return items.filter { !ProjectContext.skipDirs.contains($0.lastPathComponent) }
             .sorted { a, b in
@@ -213,10 +221,12 @@ struct FileTree: View {
 }
 
 struct FilePreview: View {
+    @Environment(AppState.self) private var app
     let url: URL
     let root: URL
     let close: () -> Void
     var body: some View {
+        let _ = app.fileTick   // live: reload when the file changes
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 IconButton(symbol: "chevron.left", help: "Back to files") { close() }

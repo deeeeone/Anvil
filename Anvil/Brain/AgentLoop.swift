@@ -51,6 +51,10 @@ final class Agent {
     /// read_file results recently shown to the model: path|offset|limit → (modification date, step).
     private var readCache: [String: (Date, Int)] = [:]
 
+    /// Supplies tools that can appear while the agent lives (MCP servers that finish connecting later).
+    var toolProvider: (() -> [ToolSpec])?
+    private var knownToolNames = Set<String>()
+
     var onModeChange: ((PermissionMode) -> Void)?
     var onCheckpoint: ((Checkpoint) -> Void)?
     /// Called whenever `messages` changes (persist the session).
@@ -65,7 +69,19 @@ final class Agent {
         var specs = FileTools.all() + ShellTools.all() + WorkTools.all() + [Self.repoMapTool] + extraTools
         if subagent { specs.removeAll { ["ask_user", "todo_write", "start_process", "stop_process"].contains($0.name) } }
         register(specs)
-        if !subagent { register([exploreTool()]) }
+        if !subagent { register([exploreTool()] + mcpTools()) }
+        knownToolNames = Set(tools.keys)
+    }
+
+    /// Picks up tools that appeared since the last step. Returns catalog lines for the new ones.
+    @discardableResult
+    func refreshTools() -> [String] {
+        guard let provider = toolProvider else { return [] }
+        let fresh = provider().filter { !knownToolNames.contains($0.name) }
+        guard !fresh.isEmpty else { return [] }
+        register(fresh)
+        knownToolNames.formUnion(fresh.map(\.name))
+        return fresh.map(\.catalogLine)
     }
 
     var host: AgentHost? { ctx.host }
@@ -114,6 +130,7 @@ final class Agent {
         if streaming && !isSubagent { brain.onStream = host.map { h in { [weak h] text in h?.agentStream(text) } } }
         defer { brain.onStream = nil; host?.agentStream("") }
 
+        refreshTools()
         var intro: String
         if messages.isEmpty {
             var info = await projectInfo()
@@ -341,6 +358,10 @@ final class Agent {
                 obs += "\n(The owner switched the permission mode to \"\(mode.label)\".)\n" + PromptBuilder.modeNote(mode)
                 lastMode = mode
             }
+            let newTools = refreshTools()
+            if !newTools.isEmpty {
+                obs += "\nNEW TOOLS AVAILABLE NOW (an MCP server finished connecting):\n" + newTools.joined(separator: "\n") + "\n"
+            }
             obs += "</observation>\n" + Self.budgetNote(step: step, maxSteps: maxSteps) + Self.timeNote(since: taskStart) + PromptBuilder.formatReminder
             userText = obs
             pendingImages = images
@@ -432,6 +453,30 @@ final class Agent {
         let root = ctx.resolve(a["path"]?.string ?? ".")
         let map = await Task.detached { RepoMap.build(root, limit: 14000) }.value
         return .ok(map.isEmpty ? "no source files with known languages under \(ctx.rel(root))" : map)
+    }
+
+    func mcpTools() -> [ToolSpec] {
+        let list = ToolSpec(name: "list_mcp_servers", kind: .meta, signature: "{}",
+                            summary: "the MCP servers Anvil knows (from Anvil, the project, Peep, Claude Desktop and Claude Code) and their state",
+                            group: .mcp) { _, _ in .ok(MCPManager.shared.statusLines.joined(separator: "\n")) }
+        let add = ToolSpec(name: "add_mcp_server", kind: .exec,
+                           signature: #"{"name": str, "command": "npx"|"uvx"|path, "args": [str], optional "env": {str: str}}"#,
+                           summary: "add an MCP server to Anvil's mcp.json and connect it; its tools become callable right away",
+                           group: .mcp,
+                           command: { a in ([a["command"]?.string ?? ""] + (a["args"]?.array?.compactMap(\.string) ?? [])).joined(separator: " ") }
+        ) { [weak self] a, _ in
+            guard let name = a["name"]?.string, !name.isEmpty, let command = a["command"]?.string, !command.isEmpty else { return .fail("need name and command") }
+            try MCPConfigFile.upsert(name: name, command: command, args: a["args"]?.array?.compactMap(\.string) ?? [],
+                                     env: (a["env"]?.object ?? [:]).compactMapValues(\.string))
+            let m = MCPManager.shared
+            m.start(project: m.project)
+            await m.waitUntilSettled()
+            guard let s = m.servers.first(where: { $0.name == name }) else { return .fail("the server didn't start; check list_mcp_servers") }
+            if case .failed(let msg) = s.state { return .fail("added \(name) to mcp.json but it failed to connect: \(msg)") }
+            let lines = self?.refreshTools() ?? []
+            return .ok("connected \(name): \(s.state.label). Tools you can call now:\n" + (lines.isEmpty ? m.toolSpecs.filter { $0.name.hasPrefix(MCPSchema.toolName(server: name, tool: "")) }.map(\.catalogLine) : lines).joined(separator: "\n"))
+        }
+        return [list, add]
     }
 
     func exploreTool() -> ToolSpec {

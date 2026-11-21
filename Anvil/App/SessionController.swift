@@ -82,6 +82,7 @@ final class SessionController: AgentHost {
         ctx.shellTimeout = AppSettings.shared.shellTimeout
         ctx.todos = session.todos
         let a = Agent(ctx: ctx, brain: brain, extraTools: MCPManager.shared.toolSpecs)
+        a.toolProvider = { MCPManager.shared.toolSpecs }
         a.messages = session.messages
         a.briefing = session.briefing
         a.mode = mode

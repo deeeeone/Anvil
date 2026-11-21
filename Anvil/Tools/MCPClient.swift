@@ -143,7 +143,8 @@ nonisolated enum MCPSchema {
     static func summary(_ description: String?, max: Int = 140) -> String {
         let d = (description ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !d.isEmpty else { return "MCP tool" }
-        var s = d.components(separatedBy: "\n").first ?? d
+        // First non-empty line, without markdown heading marks.
+        var s = d.components(separatedBy: "\n").map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "# ").union(.whitespaces)) }.first { !$0.isEmpty } ?? d
         if let r = s.range(of: ". ") { s = String(s[..<r.lowerBound]) + "." }
         return s.count > max ? String(s.prefix(max - 1)) + "…" : s
     }
@@ -331,15 +332,51 @@ final class MCPManager {
         var name: String
         var command: String
         var state: State
+        var source = "Anvil"
         var id: String { name }
+    }
+
+    /// Where servers come from, highest priority first (a name defined earlier wins).
+    static func sources(project: URL?) -> [(label: String, url: URL, key: String?)] {
+        let home = Paths.home
+        var out: [(String, URL, String?)] = [("Anvil", MCPServerConfig.fileURL, nil)]
+        if let project { out.append(("project .mcp.json", project.appendingPathComponent(".mcp.json"), nil)) }
+        out.append(("Peep", home.appendingPathComponent("Library/Application Support/Peep/mcp.json"), nil))
+        out.append(("Claude Desktop", home.appendingPathComponent("Library/Application Support/Claude/claude_desktop_config.json"), nil))
+        out.append(("Claude Code", home.appendingPathComponent(".claude.json"), project?.path))
+        return out
+    }
+
+    /// Reads every source and merges them. Claude Code's ~/.claude.json also has per-project servers.
+    static func loadConfigs(project: URL?) -> (configs: [(MCPServerConfig, String)], errors: [String]) {
+        var seen = Set<String>()
+        var out: [(MCPServerConfig, String)] = []
+        var errors: [String] = []
+        for (label, url, projectKey) in sources(project: project) where FileManager.default.fileExists(atPath: url.path) {
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            var texts = [text]
+            if let projectKey, let j = JSON.parse(text), let per = j["projects"]?[projectKey]?["mcpServers"] {
+                texts.append(JSON.object(["mcpServers": per]).compact)
+            }
+            for t in texts {
+                do {
+                    for c in try MCPServerConfig.parse(t) where seen.insert(c.name).inserted { out.append((c, label)) }
+                } catch {
+                    if label == "Anvil" || label.hasPrefix("project") { errors.append("\(label): \(error.localizedDescription)") }
+                }
+            }
+        }
+        return (out, errors)
     }
 
     private(set) var servers: [Server] = []
     private(set) var configError: String?
+    /// Bumped whenever the set of MCP tools changes (agents pick up new tools on their next step).
+    private(set) var toolsVersion = 0
     @ObservationIgnored private(set) var toolSpecs: [ToolSpec] = []
     @ObservationIgnored private var clients: [String: MCPStdioClient] = [:]
     @ObservationIgnored private var generation = 0
-    @ObservationIgnored private var project: URL?
+    @ObservationIgnored private var projectRoot: URL?
 
     static let connectTimeout: Double = 45
     static let callTimeout: Double = 120
@@ -347,24 +384,16 @@ final class MCPManager {
     /// Reads the global and project configs and connects every server in the background.
     func start(project: URL?) {
         stopAll()
-        self.project = project
+        self.projectRoot = project
         generation += 1
         let gen = generation
         configError = nil
-        var configs: [MCPServerConfig] = []
-        var files = [MCPServerConfig.fileURL]
-        if let project { files.append(project.appendingPathComponent(".mcp.json")) }
-        for url in files where FileManager.default.fileExists(atPath: url.path) {
-            do {
-                for c in try MCPServerConfig.parse(String(contentsOf: url, encoding: .utf8)) {
-                    configs.removeAll { $0.name == c.name }
-                    configs.append(c)
-                }
-            } catch { configError = "Couldn't read \(url.lastPathComponent): \(error.localizedDescription)" }
-        }
-        servers = configs.map { c in
-            let state: State = c.disabled ? .disabled : c.command == nil ? .failed(c.url != nil ? "HTTP servers aren't supported yet" : "no command") : .connecting
-            return Server(name: c.name, command: ([c.command ?? c.url ?? ""] + c.args).joined(separator: " "), state: state)
+        let loaded = Self.loadConfigs(project: project)
+        let configs = loaded.0.map(\.0)
+        configError = loaded.1.isEmpty ? nil : loaded.1.joined(separator: "; ")
+        servers = loaded.0.map { c, source in
+            let state: State = c.disabled ? .disabled : c.command == nil ? .failed(c.url != nil ? "HTTP servers aren't supported yet (use npx mcp-remote <url>)" : "no command") : .connecting
+            return Server(name: c.name, command: ([c.command ?? c.url ?? ""] + c.args).joined(separator: " "), state: state, source: source)
         }
         for c in configs where !c.disabled && c.command != nil {
             Task { [weak self] in await self?.connect(c, gen: gen) }
@@ -384,9 +413,19 @@ final class MCPManager {
     }
 
     var statusLines: [String] {
-        if servers.isEmpty { return ["No MCP servers configured. Add them to \(MCPServerConfig.fileURL.path) or the project's .mcp.json."] + (configError.map { [$0] } ?? []) }
-        return servers.map { "\($0.name): \($0.state.label)" }
+        if servers.isEmpty { return ["No MCP servers configured. Add them to \(MCPServerConfig.fileURL.path), the project's .mcp.json, Peep, Claude Desktop or Claude Code."] + (configError.map { [$0] } ?? []) }
+        return servers.map { "\($0.name) [\($0.source)]: \($0.state.label)" }
     }
+
+    /// Waits until no server is still connecting (or the timeout passes).
+    func waitUntilSettled(timeout: Double = Double(MCPManager.connectTimeout) + 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline, servers.contains(where: { $0.state == .connecting }) {
+            try? await Task.sleep(for: .milliseconds(300))
+        }
+    }
+
+    var project: URL? { projectRoot }
 
     private func connect(_ config: MCPServerConfig, gen: Int) async {
         let client = MCPStdioClient(config: config)
@@ -398,6 +437,7 @@ final class MCPManager {
             let specs = tools.map { Self.spec(server: config.name, tool: $0, client: client) }
             toolSpecs.removeAll { $0.name.hasPrefix(MCPSchema.toolName(server: config.name, tool: "")) }
             toolSpecs += specs
+            toolsVersion += 1
             setState(config.name, .connected(tools: specs.count))
         } catch {
             client.stop()
@@ -439,5 +479,41 @@ final class MCPManager {
             let r = try await client.request("tools/call", .object(["name": .string(mcpName), "arguments": args]), timeout: callTimeout)
             return MCPResultMapper.toolResult(r)
         }
+    }
+}
+
+
+/// Reads and writes Anvil's mcp.json (Claude's format), keeping any other keys intact.
+enum MCPConfigFile {
+    private static func read() throws -> [String: Any] {
+        let url = MCPServerConfig.fileURL
+        guard let data = FileManager.default.contents(atPath: url.path), !data.isEmpty else { return [:] }
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw MCPError.badConfig("mcp.json isn't a JSON object") }
+        return obj
+    }
+
+    private static func write(_ obj: [String: Any]) throws {
+        let url = MCPServerConfig.fileURL
+        let data = try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        try data.write(to: url, options: .atomic)
+    }
+
+    static func upsert(name: String, command: String, args: [String], env: [String: String]) throws {
+        var root = try read()
+        var servers = root["mcpServers"] as? [String: Any] ?? [:]
+        var entry: [String: Any] = ["command": command, "args": args]
+        if !env.isEmpty { entry["env"] = env }
+        servers[name] = entry
+        root["mcpServers"] = servers
+        try write(root)
+    }
+
+    static func remove(name: String) throws -> Bool {
+        var root = try read()
+        var servers = root["mcpServers"] as? [String: Any] ?? [:]
+        guard servers.removeValue(forKey: name) != nil else { return false }
+        root["mcpServers"] = servers
+        try write(root)
+        return true
     }
 }

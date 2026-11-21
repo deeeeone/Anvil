@@ -142,6 +142,7 @@ struct ToolsSettings: View {
                 ForEach(mcp.servers) { s in
                     HStack {
                         Text(s.name).fontWeight(.medium)
+                        Text(s.source).font(.caption2).padding(.horizontal, 6).padding(.vertical, 2).background(.quaternary, in: Capsule())
                         Text(s.command).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
                         Spacer()
                         Text(s.state.label).font(.caption).foregroundStyle(.secondary)
@@ -152,7 +153,7 @@ struct ToolsSettings: View {
                     Button("Reconnect") { mcp.start(project: app.project); app.resetAgents() }
                 }
             } header: { Text("MCP servers") } footer: {
-                Text("Global servers live in \(MCPServerConfig.fileURL.path); a project's .mcp.json is merged in.").font(.caption)
+                Text("Anvil reads its own \(MCPServerConfig.fileURL.path), the project's .mcp.json, and your Peep, Claude Desktop and Claude Code configs (the first definition of a name wins). The agent can also add servers with add_mcp_server.").font(.caption)
             }
             Section("Skills and commands") {
                 Text("Skills: SKILL.md folders in the project's .anvil/skills or .claude/skills, \(SkillLibrary.anvilDir.path), and ~/.claude/skills.").font(.callout)

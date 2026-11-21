@@ -53,7 +53,16 @@ enum Headless {
             print("   · \(model): \(u.prompt) in (\(u.cached) cached), \(u.completion) out, \(cost.map(Fmt.dollars) ?? "?")")
         }
         let ctx = ToolContext(root: root, processes: processes, host: host)
+        MCPManager.shared.start(project: root)
+        if CommandLine.arguments.contains("--mcp-status") {
+            await MCPManager.shared.waitUntilSettled()
+            print(MCPManager.shared.statusLines.joined(separator: "\n"))
+            for t in MCPManager.shared.toolSpecs { print("  " + t.catalogLine) }
+            MCPManager.shared.stopAll()
+            return 0
+        }
         let agent = Agent(ctx: ctx, brain: brain)
+        agent.toolProvider = { MCPManager.shared.toolSpecs }
         agent.messages = session.messages
         agent.briefing = session.briefing
         agent.mode = mode
@@ -77,6 +86,7 @@ enum Headless {
         }
         let outcome = await work.value
         processes.stopAll()
+        MCPManager.shared.stopAll()
         session.items += host.items
         session.messages = agent.messages
         session.briefing = agent.briefing
