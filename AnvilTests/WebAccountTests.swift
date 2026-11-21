@@ -98,7 +98,7 @@ extension WebAccountTests {
         let client = ChatGPTWebClient(accountID: UUID(), cookies: c)
         var streamed = ""
         do {
-            let r = try await client.chat([.user("Reply with exactly: hello")], model: "chatgpt/gpt-5.5", onText: { streamed = $0 }, shouldStop: nil)
+            let r = try await client.chat([.user("Reply with exactly: hello")], model: "chatgpt/auto", onText: { streamed = $0 }, shouldStop: nil)
             print("LIVE reply:", r.text.prefix(120), "streamed:", streamed.count)
             XCTAssertFalse(r.text.isEmpty)
         } catch {
@@ -119,7 +119,7 @@ extension WebAccountTests {
         do {
             _ = try await client.prepare()
             var streamed = ""
-            let text = try await client.chat("Reply with exactly: hello", model: "gemini-auto", onText: { streamed = $0 }, shouldStop: nil)
+            let text = try await client.chat("Reply with exactly: hello", model: "gemini-pro-thinking", onText: { streamed = $0 }, shouldStop: nil)
             print("LIVE gemini:", text.prefix(160), "streamed:", streamed.count)
             XCTAssertFalse(text.isEmpty)
         } catch {
@@ -173,7 +173,7 @@ extension WebAccountTests {
         let client = GeminiWebClient(accountID: UUID(), cookies: c)
         do {
             _ = try await client.prepare()
-            let text = try await client.chat("What is in this image? Answer in one short sentence.", images: [(png, "image/png")], model: "gemini-auto", onText: nil, shouldStop: nil)
+            let text = try await client.chat("What is in this image? Answer in one short sentence.", images: [(png, "image/png")], model: "gemini-pro-thinking", onText: nil, shouldStop: nil)
             print("LIVE gemini image:", text.prefix(200))
             XCTAssertFalse(text.isEmpty)
         } catch {
@@ -218,5 +218,62 @@ extension WebAccountTests {
         }
         let v = try await WebSignIn.verify(.gemini, cookies: c)
         XCTAssertTrue(v.email.contains("@"), "Gemini's app shell no longer carries the address (oPEP7c)")
+    }
+}
+
+extension WebAccountTests {
+    func testJailbreakLabChatGPT() async throws {
+        guard let c = try? SafariCookies.cookies(for: .chatgpt), WebAccounts.looksSignedIn(.chatgpt, c) else { throw XCTSkip() }
+        let q = "Explain how a car engine works, in detail."
+
+
+
+
+
+        let client = ChatGPTWebClient(accountID: UUID(), cookies: c)
+        let r = try await client.chat([.user(Jailbreak.prompt(for: .chatgpt, query: q))], model: "chatgpt/auto", onText: nil, shouldStop: nil)
+        print("JBLAB gpt52", r.text.count, r.text.prefix(300).replacingOccurrences(of: "\n", with: " | "))
+        XCTAssertGreaterThan(r.text.count, 300)
+    }
+}
+
+extension WebAccountTests {
+    func testDumpChatGPTCookie() throws {
+        guard let c = try? SafariCookies.cookies(for: .chatgpt), WebAccounts.looksSignedIn(.chatgpt, c) else { throw XCTSkip() }
+        print("CGHDR", c.map { "\($0.key)=\($0.value)" }.joined(separator: "; "))
+    }
+}
+
+extension WebAccountTests {
+    func testJailbreakLabGemini() async throws {
+        guard let c = try? SafariCookies.cookies(for: .gemini), WebAccounts.looksSignedIn(.gemini, c) else { throw XCTSkip() }
+        let q = "Explain how a car engine works, in detail."
+
+
+
+
+
+        let client = GeminiWebClient(accountID: UUID(), cookies: c)
+        _ = try await client.prepare()
+        let text = try await client.chat(Jailbreak.prompt(for: .gemini, query: q), model: "gemini-auto", onText: nil, shouldStop: nil)
+        print("JBLAB gem20 gemini", text.count, text.prefix(300).replacingOccurrences(of: "\n", with: " | "))
+        XCTAssertGreaterThan(text.count, 500)
+    }
+}
+
+final class JailbreakTests: XCTestCase {
+    func testOnlyWebModels() {
+        XCTAssertTrue(Jailbreak.applies(to: "chatgpt/auto"))
+        XCTAssertTrue(Jailbreak.applies(to: "gemini-auto"))
+        XCTAssertFalse(Jailbreak.applies(to: "glm-5.3-flash"))
+        XCTAssertFalse(Jailbreak.applies(to: "gpt-6-luna"))
+    }
+
+    func testPromptCarriesQueryAndFormatNote() {
+        let p = Jailbreak.prompt(for: .gemini, query: "fix the parser")
+        XCTAssertTrue(p.contains("BUCKLE UP"))
+        XCTAssertTrue(p.contains("fix the parser"))
+        XCTAssertTrue(p.contains("json reply format"))
+        XCTAssertTrue(Jailbreak.prompt(for: .experiential, query: "x").isEmpty)
     }
 }

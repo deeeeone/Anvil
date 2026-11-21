@@ -217,6 +217,7 @@ final class Agent {
         defer { brain.onStream = nil; host?.agentStream("") }
 
         refreshTools()
+        let jail = AppSettings.shared.jailbreak ? Jailbreak.prompt(for: Providers.provider(for: brain.model), query: goal) : ""
         let size: RequestSize = isSubagent ? .question : RequestSize.classify(goal)
         planEditsApproved = false
         var intro: String
@@ -226,12 +227,12 @@ final class Agent {
             briefing = await buildBriefing()
             prepared = nil
             briefedTools = Set(tools.keys)
-            intro = briefing + skillNote + PromptBuilder.request(goal, attachments: attachmentsNote)
+            intro = briefing + skillNote + jail + PromptBuilder.request(goal, attachments: attachmentsNote)
         } else {
             // A resumed conversation may predate tools Anvil has gained since: list them before the request.
             let fresh = unannouncedTools()
             let note = fresh.isEmpty ? "" : "NEW TOOLS AVAILABLE NOW (added since this conversation started; same reply format):\n" + fresh.joined(separator: "\n") + "\n\n"
-            intro = note + skillNote + PromptBuilder.followUp(goal, attachments: attachmentsNote)
+            intro = note + skillNote + jail + PromptBuilder.followUp(goal, attachments: attachmentsNote)
         }
         var userText = (unsent.map { $0 + "\n\n" } ?? "") + intro + (isSubagent ? "" : PromptBuilder.modeNote(mode)) + PromptBuilder.formatReminder
         unsent = nil

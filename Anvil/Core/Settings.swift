@@ -51,6 +51,8 @@ final class AppSettings {
     var warmCache: Bool { didSet { d.set(warmCache, forKey: "warmCache") } }
     /// Keep a short project brief (one cheap call when the project's shape changes).
     var projectBrief: Bool { didSet { d.set(projectBrief, forKey: "projectBrief") } }
+    /// Inject the jailbreak prompt ahead of requests to ChatGPT and Gemini web models.
+    var jailbreak: Bool { didSet { d.set(jailbreak, forKey: "jailbreak") } }
     /// Experiential Labs key.
     var apiKey: String {
         didSet { if !inMemoryKey { Keychain.set(apiKey, for: "apiKey") } }
@@ -103,6 +105,7 @@ final class AppSettings {
         prepareWhilePlanning = d.object(forKey: "prepareWhilePlanning") as? Bool ?? true
         warmCache = d.object(forKey: "warmCache") as? Bool ?? true
         projectBrief = d.object(forKey: "projectBrief") as? Bool ?? true
+        jailbreak = d.object(forKey: "jailbreak") as? Bool ?? false
         lunaURL = d.string(forKey: "lunaURL") ?? Providers.defaultLunaURL
         geminiURL = d.string(forKey: "geminiURL") ?? Providers.defaultGeminiURL
         chatgptURL = d.string(forKey: "chatgptURL") ?? Providers.defaultChatGPTURL

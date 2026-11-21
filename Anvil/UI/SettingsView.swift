@@ -121,6 +121,7 @@ struct AgentSettings: View {
                 Toggle("Verify before finishing (run the project's tests after edits)", isOn: $s.autoVerify)
                 Toggle("Review the diff before finishing (one extra model call)", isOn: $s.selfReview)
                 Toggle("Stream replies", isOn: $s.streaming)
+                Toggle("Jailbreak web models (rebel tone, fewer hedges; ChatGPT and Gemini only)", isOn: $s.jailbreak)
                 Toggle("Adaptive effort (lighter thinking on routine turns; your effort setting is the ceiling)", isOn: $s.adaptiveEffort)
                 Toggle("Attach the code an error points to", isOn: $s.prefetch)
                 Toggle("Type-check edits with the project's language server (LSP)", isOn: $s.lspChecks)

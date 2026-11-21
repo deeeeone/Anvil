@@ -25,6 +25,7 @@ Anvil reuses the brain of [Peep](../peep) (same provider, same text protocol, sa
   - **Gemini (web)**: `gemini-auto`, `gemini-pro`, `gemini-flash` and `gemini-flash-lite` through gemini.google.com itself, using the same web protocol as [HanaokaYuzu/Gemini-API](https://github.com/HanaokaYuzu/Gemini-API), including pasted images (uploaded the same way the library does). Add one or more Google accounts in Settings by signing in or pasting cookies; Google rotates the cookies and Anvil keeps the rotated values.
   - **ChatGPT (web)**: `chatgpt/*` models (auto, gpt-5.5, gpt-5.5-thinking, o3 and more) through chatgpt.com itself, using the same backend as [zhaees/chatgpt-proxy](https://github.com/zhaees/chatgpt-proxy). Add accounts the same way (sign in or paste cookies). Unofficial, so it can break, and OpenAI may not allow it on your account.
   Accounts are multiple per provider: requests start on the active one and fall through to the others on a dead cookie or rate limit. Each account has its own cookie jar in the Keychain and its own usage count (calls, tokens and errors today, this week and in total), shown in Settings. External proxies still work as a fallback when no account is added.
+  **Jailbreak mode** is a toggle in Settings → Agent and in the model menu (flame icon when on). It injects a compact rebel prompt, adapted and tested from [L1B3RT4S](https://github.com/elder-plinius/L1B3RT4S) (AGPL-3.0), ahead of ChatGPT and Gemini requests: no apologies or "I can't", no disclaimers, denser answers. The json reply format and tool names are unchanged. It applies only to the two web providers.
   Settings has one section per provider and **Import keys from Peep** copies both keys. There's a per-session usage and cost meter (Luna, Gemini and ChatGPT are free), and thinking effort defaults to **high**.
 - **MCP.** Stdio servers from `~/Library/Application Support/Anvil/mcp.json` and the project's `.mcp.json` (Claude's format) become `server.tool` actions.
 - **Background queue.** Press ⌥⏎ in the composer (or type `/queue <task>`) to line up requests. Up to two run at once by default (Settings, Agent: 1 to 4), each in its own git worktree, in the mode you pick in Settings (Auto-accept edits by default). Each finished task's work is committed on its branch, and the Queue section in the sidebar lists the branches to review. Merge one from its session's Git tab.
@@ -153,7 +154,7 @@ Anvil/
             Headless (CLI runner and console host), AppInfo (name, paths, formatting)
   Brain/    AgentLoop (observe, think, act), ActionParser (lenient reply parser), PromptBuilder,
             Brain (model routing and usage), OpenAIClient, ChatGPTWebClient, GeminiWebClient,
-            ModelCatalog, ChatMessage, JSON
+            Jailbreak, ModelCatalog, ChatMessage, JSON
   Core/     Permissions (pure policy), Diff (Myers line diffs, hunks, unified text), Checkpoints,
             Git (CLI wrapper and porcelain parser), Compactor, Session (models and JSON store),
             ProjectContext (memory files, layout), SlashCommands, SkillLibrary, Settings, Keychain,

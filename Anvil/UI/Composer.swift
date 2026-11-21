@@ -307,6 +307,7 @@ struct ModePill: View {
 
 struct ModelPill: View {
     let controller: SessionController
+    @Bindable private var settings = AppSettings.shared
     var body: some View {
         let catalog = ModelCatalog.shared
         Menu {
@@ -333,11 +334,18 @@ struct ModelPill: View {
                 }
             }
             Divider()
+            if Jailbreak.applies(to: controller.model) {
+                Toggle("Jailbreak mode", isOn: $settings.jailbreak)
+                    .help("Inject the rebel prompt into ChatGPT and Gemini web requests")
+            }
             SettingsLink { Text("Set up providers…") }
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: Providers.provider(for: controller.model).symbol).font(.system(size: 11, weight: .semibold))
                 Text(controller.model).font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)
+                if settings.jailbreak, Jailbreak.applies(to: controller.model) {
+                    Image(systemName: "flame.fill").font(.system(size: 9)).foregroundStyle(Theme.amber)
+                }
                 Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.text3)
             }
             .foregroundStyle(Theme.text2)
