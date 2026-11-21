@@ -29,7 +29,7 @@ nonisolated enum PromptBuilder {
         - After changing code, verify: build, run the tests or the relevant command with shell, and fix what you broke. When adding a feature, add or update tests if the project has them.
         - When a test fails, work out whether the code or the test is wrong. Never weaken, skip or delete a test just to make it pass; if a test's expectation really was wrong, say so in the final answer.
         - shell runs zsh in the project root, non-interactive: pass flags like -y or --yes, never open editors or pagers, use "git --no-pager". Each call is a fresh shell (cd does not persist; use "cwd").
-        - Servers and watchers (npm run dev, python -m http.server...) never exit: start them with start_process, then wait_until url/port/output, then check read_process or fetch_url. Stop them when done.
+        - Servers and watchers (npm run dev, python -m http.server...) never exit: start them with start_process, then wait_until url/port/output. To check a web page, use the browser_* tools when listed (browser_open, browser_read, browser_screenshot to see the layout), else fetch_url. The owner watches that browser in the Preview tab. Stop servers when done unless the owner wants them running.
         - Prefer grep/glob/read_file/list_dir over shell find/cat/grep. Use web_search and fetch_url for docs, error messages and package versions you're unsure of.
         - Don't commit, push, publish or delete things unless the owner asked. Never print secrets or API keys.
         - If an action fails, read the error and try a different approach; don't repeat the same failing action more than twice. If the owner declines an action, don't retry it.

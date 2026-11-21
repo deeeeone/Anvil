@@ -77,7 +77,7 @@ struct EmptySessionView: View {
         ScrollView {
             VStack(spacing: 22) {
                 Spacer(minLength: 40)
-                Text("✻").font(.system(size: 34, weight: .bold)).foregroundStyle(Theme.accent)
+                Image("Logo").resizable().scaledToFit().frame(width: 56, height: 56)
                 Text("What are we building in \(controller.root.lastPathComponent)?")
                     .font(.system(size: 26, weight: .semibold)).multilineTextAlignment(.center)
                 Composer(controller: controller, prominent: true)
@@ -121,8 +121,11 @@ struct ItemView: View {
     var body: some View {
         switch item.kind {
         case .user:
-            HStack {
+            HStack(alignment: .top) {
                 Spacer(minLength: 48)
+                if !controller.running && item.historyIndex != nil {
+                    RewindButton(item: item, controller: controller)
+                }
                 VStack(alignment: .leading, spacing: 6) {
                     Text(item.text).font(.system(size: 14)).textSelection(.enabled).lineSpacing(2)
                     if item.images > 0 { Label("\(item.images) image\(item.images == 1 ? "" : "s")", systemImage: "photo").font(.caption).foregroundStyle(Theme.text3) }
@@ -131,7 +134,16 @@ struct ItemView: View {
                 .background(Theme.surface2, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
         case .assistant:
-            MarkdownText(text: item.text).textSelection(.enabled)
+            VStack(alignment: .leading, spacing: 8) {
+                MarkdownText(text: item.text).textSelection(.enabled)
+                if item.final && item.skillWorthy && !controller.running {
+                    Button { controller.saveSkill(from: item.id) } label: { Label("Save as skill", systemImage: "wand.and.stars") }
+                        .buttonStyle(Pill(kind: .ghost, compact: true))
+                        .help("Turn what the agent did here into a reusable SKILL.md for this project")
+                }
+            }
+        case .suggestion:
+            if let sug = item.suggestion { SuggestionCard(item: item, suggestion: sug, controller: controller) }
         case .plan:
             if let plan = item.plan { PlanCardView(plan: plan, itemID: item.id, controller: controller) }
         case .system:
@@ -509,5 +521,60 @@ struct StatusLine: View {
             }
           }
         }
+    }
+}
+
+
+struct RewindButton: View {
+    let item: ChatItem
+    let controller: SessionController
+    @State private var confirm = false
+    @State private var hover = false
+
+    var body: some View {
+        Button { confirm = true } label: {
+            Image(systemName: "arrow.uturn.backward").font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(hover ? Theme.text : Theme.text3).frame(width: 24, height: 24)
+                .background(hover ? Theme.surface2 : .clear, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .padding(.top, 6)
+        .help("Rewind to here: restore files to how they were before this message and edit it")
+        .confirmationDialog("Rewind to before this message?", isPresented: $confirm) {
+            Button("Rewind", role: .destructive) { controller.rewind(to: item.id) }
+        } message: {
+            Text(controller.canRewindConversation(item)
+                 ? "Files the agent changed from this message on are restored, the conversation goes back to this point, and the message returns to the composer."
+                 : "Files are restored, but the conversation was compacted after this point, so the agent starts fresh.")
+        }
+    }
+}
+
+struct SuggestionCard: View {
+    let item: ChatItem
+    let suggestion: Suggestion
+    let controller: SessionController
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: "lightbulb").foregroundStyle(Theme.amber)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Remember this for the project?").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.text2)
+                Text(item.text).font(.system(size: 13.5))
+                switch suggestion.state {
+                case .open:
+                    HStack(spacing: 8) {
+                        Button("Add to AGENTS.md") { controller.acceptSuggestion(item.id) }.buttonStyle(Pill(kind: .secondary, compact: true))
+                        Button("Dismiss") { controller.dismissSuggestion(item.id) }.buttonStyle(Pill(kind: .ghost, compact: true))
+                    }
+                case .accepted: Label("Saved", systemImage: "checkmark").font(.system(size: 11.5)).foregroundStyle(Theme.green)
+                case .dismissed: Text("Dismissed").font(.system(size: 11.5)).foregroundStyle(Theme.text3)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .card(14, fill: Theme.surface, stroke: Theme.amber.opacity(0.25))
     }
 }

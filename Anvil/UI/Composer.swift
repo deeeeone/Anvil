@@ -21,21 +21,37 @@ struct Composer: View {
     @FocusState private var focused: Bool
 
     var suggestions: [SlashCommand] { SlashCommands.suggestions(text, project: controller.root).prefix(8).map { $0 } }
+    @State private var mentionFiles: [String] = []
+    var mentionQuery: String? { Mentions.activeQuery(text) }
+    var mentions: [(token: String, label: String)] {
+        guard let q = mentionQuery else { return [] }
+        return Mentions.suggestions(q, files: mentionFiles)
+    }
     var canSend: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !suggestions.isEmpty { suggestionList }
+            if suggestions.isEmpty && !mentions.isEmpty { mentionList }
             VStack(alignment: .leading, spacing: 10) {
                 if !images.isEmpty { attachments }
-                TextField(controller.running ? "Add a note for the agent, it arrives with the next step" : "Ask for a change, a fix or an explanation",
+                TextField(controller.running ? "Add a note for the agent, it arrives with the next step" : "Ask for a change. @ to attach files, / for commands, ⌥⏎ to queue",
                           text: $text, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 14.5))
                     .lineLimit(prominent ? 3...12 : 1...12)
                     .focused($focused)
                     .onKeyPress(.return, phases: .down) { press in
-                        if press.modifiers.contains(.shift) || press.modifiers.contains(.option) { text += "\n"; return .handled }
+                        if press.modifiers.contains(.shift) { text += "\n"; return .handled }
+                        if press.modifiers.contains(.option) {
+                            // ⌥⏎: hand it to the background queue (its own worktree) instead of this session.
+                            let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !t.isEmpty { app.enqueue(t); text = "" }
+                            return .handled
+                        }
+                        if !mentions.isEmpty && suggestions.isEmpty {
+                            completeMention(mentions[min(selection, mentions.count - 1)].token); return .handled
+                        }
                         if !suggestions.isEmpty && !text.contains(" ") {
                             let c = suggestions[min(selection, suggestions.count - 1)]
                             if "/\(c.name)" != text { complete(c); return .handled }
@@ -43,17 +59,19 @@ struct Composer: View {
                         send(); return .handled
                     }
                     .onKeyPress(.tab) {
+                        if suggestions.isEmpty && !mentions.isEmpty { completeMention(mentions[min(selection, mentions.count - 1)].token); return .handled }
                         guard !suggestions.isEmpty else { return .ignored }
                         complete(suggestions[min(selection, suggestions.count - 1)]); return .handled
                     }
                     .onKeyPress(.upArrow) {
-                        if !suggestions.isEmpty { selection = max(0, selection - 1); return .handled }
+                        if !suggestions.isEmpty || !mentions.isEmpty { selection = max(0, selection - 1); return .handled }
                         guard text.isEmpty, let last = history.last else { return .ignored }
                         text = last; return .handled
                     }
                     .onKeyPress(.downArrow) {
-                        guard !suggestions.isEmpty else { return .ignored }
-                        selection = min(suggestions.count - 1, selection + 1); return .handled
+                        let n = suggestions.isEmpty ? mentions.count : suggestions.count
+                        guard n > 0 else { return .ignored }
+                        selection = min(n - 1, selection + 1); return .handled
                     }
                     .onKeyPress(.escape) {
                         if controller.running && text.isEmpty { controller.stop(); return .handled }
@@ -62,6 +80,7 @@ struct Composer: View {
                     }
                     .onChange(of: text) { old, new in
                         selection = 0
+                        if Mentions.activeQuery(new) != nil && mentionFiles.isEmpty { loadMentionFiles() }
                         if old.isEmpty && !new.isEmpty && !new.hasPrefix("/") { controller.warmCache() }
                     }
                 HStack(spacing: 6) {
@@ -83,8 +102,10 @@ struct Composer: View {
             .onDrop(of: [.fileURL, .image], isTargeted: nil) { providers in drop(providers) }
             .onTapGesture { focused = true }
         }
+        .onChange(of: controller.draft) { _, d in if let d { text = d; controller.draft = nil; focused = true } }
         .onAppear {
             focused = true
+            if let d = controller.draft { text = d; controller.draft = nil }
             pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
                 guard e.charactersIgnoringModifiers?.lowercased() == "v", e.modifierFlags.contains(.command) else { return e }
                 return pasteImage() ? nil : e
@@ -130,6 +151,43 @@ struct Composer: View {
         .padding(5)
         .card(14, fill: Theme.surface, stroke: Theme.borderStrong)
         .shadow(color: .black.opacity(0.5), radius: 18, y: 6)
+    }
+
+    var mentionList: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            ForEach(Array(mentions.enumerated()), id: \.element.token) { i, m in
+                Button { completeMention(m.token) } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: m.label == "folder" ? "folder" : m.label == "file" ? "doc.text" : "sparkle")
+                            .font(.system(size: 11)).foregroundStyle(Theme.text3).frame(width: 14)
+                        Text("@" + m.token).font(.system(size: 12.5, design: .monospaced)).foregroundStyle(i == selection ? Theme.accent : Theme.text).lineLimit(1).truncationMode(.head)
+                        Spacer(minLength: 4)
+                        if m.label != "file" && m.label != "folder" { Text(m.label).font(.system(size: 11.5)).foregroundStyle(Theme.text3) }
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(i == selection ? Theme.surface2 : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(5)
+        .card(14, fill: Theme.surface, stroke: Theme.borderStrong)
+        .shadow(color: .black.opacity(0.5), radius: 18, y: 6)
+    }
+
+    func completeMention(_ token: String) {
+        guard let at = text.lastIndex(of: "@") else { return }
+        text = String(text[..<at]) + "@" + token + (token.hasSuffix("/") ? "" : " ")
+        selection = 0
+    }
+
+    func loadMentionFiles() {
+        let root = controller.root
+        Task {
+            let base = root.standardizedFileURL.path + "/"
+            mentionFiles = await FileIndex.of(root).list().map { $0.standardizedFileURL.path.hasPrefix(base) ? String($0.standardizedFileURL.path.dropFirst(base.count)) : $0.lastPathComponent }.sorted()
+        }
     }
 
     var attachments: some View {

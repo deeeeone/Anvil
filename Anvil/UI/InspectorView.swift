@@ -1,3 +1,4 @@
+import WebKit
 import SwiftUI
 
 struct InspectorView: View {
@@ -17,6 +18,7 @@ struct InspectorView: View {
                 if let c = app.current {
                     switch app.inspectorTab ?? .changes {
                     case .changes: ChangesPane(controller: c)
+                    case .preview: PreviewPane()
                     case .files: FilesPane(root: c.root).id(c.root.path)
                     case .todo: TodoPane(controller: c)
                     case .terminal: TerminalPane(controller: c)
@@ -477,5 +479,48 @@ struct GitPane: View {
             busy = false
             app.refreshGit(); loadLog(); loadDiff()
         }
+    }
+}
+
+
+struct WebViewHost: NSViewRepresentable {
+    let webView: WKWebView
+    func makeNSView(context: Context) -> WKWebView { webView }
+    func updateNSView(_ nsView: WKWebView, context: Context) {}
+}
+
+/// The embedded browser: a live preview of the dev server, which the agent can also drive.
+struct PreviewPane: View {
+    @Environment(AppState.self) private var app
+    @State private var address = ""
+
+    var body: some View {
+        let b = app.browser
+        VStack(spacing: 0) {
+            HStack(spacing: 4) {
+                IconButton(symbol: "chevron.left", help: "Back") { b.webView.goBack() }
+                IconButton(symbol: "chevron.right", help: "Forward") { b.webView.goForward() }
+                IconButton(symbol: b.loading ? "xmark" : "arrow.clockwise", help: "Reload") { b.loading ? b.webView.stopLoading() : b.reload() }
+                TextField("localhost:3000 or any URL", text: $address)
+                    .textFieldStyle(.plain).font(.system(size: 12, design: .monospaced))
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .card(9, fill: Theme.surface)
+                    .onSubmit { Task { await b.open(address) } }
+                IconButton(symbol: "safari", help: "Open in Safari") { if let u = URL(string: b.url), !b.url.isEmpty { NSWorkspace.shared.open(u) } }
+            }
+            .padding(8)
+            Hairline()
+            ZStack {
+                WebViewHost(webView: b.webView)
+                if b.url.isEmpty {
+                    EmptyPane(symbol: "safari", title: "No page yet",
+                              detail: "When the agent starts a dev server, it opens here and reloads after each edit. The agent can click, type and take screenshots in this browser. Or type a URL above.")
+                        .background(Theme.panel)
+                }
+            }
+            if let e = b.lastError { Text(e).font(.system(size: 11.5)).foregroundStyle(Theme.amber).padding(8).frame(maxWidth: .infinity, alignment: .leading) }
+        }
+        .onAppear { address = b.url }
+        .onChange(of: b.url) { _, u in address = u }
     }
 }

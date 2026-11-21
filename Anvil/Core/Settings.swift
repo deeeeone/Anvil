@@ -19,6 +19,10 @@ final class AppSettings {
     var autoCompactTokens: Int { didSet { d.set(autoCompactTokens, forKey: "autoCompactTokens") } }
     var defaultMode: PermissionMode { didSet { d.set(defaultMode.rawValue, forKey: "defaultMode") } }
     var shellTimeout: Double { didSet { d.set(shellTimeout, forKey: "shellTimeout") } }
+    /// Stop a request once it has cost this much (USD; 0 = no limit). Free models never reach it.
+    var maxTaskCost: Double { didSet { d.set(maxTaskCost, forKey: "maxTaskCost") } }
+    /// Permission mode for background queue tasks.
+    var queueMode: PermissionMode { didSet { d.set(queueMode.rawValue, forKey: "queueMode") } }
     /// Before accepting "done" after edits, run the project's test command (or ask the agent to verify).
     var autoVerify: Bool { didSet { d.set(autoVerify, forKey: "autoVerify") } }
     /// A second model call reads the final diff and flags real problems before the agent finishes.
@@ -68,6 +72,8 @@ final class AppSettings {
         autoCompactTokens = d.object(forKey: "autoCompactTokens") as? Int ?? 160_000
         defaultMode = PermissionMode(rawValue: d.string(forKey: "defaultMode") ?? "") ?? .ask
         shellTimeout = d.object(forKey: "shellTimeout") as? Double ?? 300
+        maxTaskCost = d.object(forKey: "maxTaskCost") as? Double ?? 0
+        queueMode = PermissionMode(rawValue: d.string(forKey: "queueMode") ?? "") ?? .acceptEdits
         autoVerify = d.object(forKey: "autoVerify") as? Bool ?? true
         selfReview = d.object(forKey: "selfReview") as? Bool ?? true
         escalationModel = d.string(forKey: "escalationModel") ?? "auto"

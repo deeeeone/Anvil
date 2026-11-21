@@ -36,6 +36,9 @@ final class Agent {
     var exploreModel = ""
     /// Stream replies to the host (live text; early stop for providers that ignore stop sequences).
     var streaming = true
+    /// Stop the request once it has cost this much (USD; 0 = no limit).
+    var maxCost = 0.0
+    private(set) var taskCost = 0.0
     /// Pick reasoning effort per turn (low for wrap-ups and simple requests, full for decisions and after failures).
     var adaptiveEffort = true
     /// Model for requests that look simple (renames, typos); "" = the session model.
@@ -84,6 +87,7 @@ final class Agent {
         if subagent { specs.removeAll { ["ask_user", "todo_write", "start_process", "stop_process"].contains($0.name) } }
         register(specs)
         if !subagent { register([exploreTool()] + mcpTools()) }
+        if ctx.browser != nil && !subagent { register(BrowserTools.all()) }
         knownToolNames = Set(tools.keys)
     }
 
@@ -177,6 +181,10 @@ final class Agent {
         failureCounts = [:]
         escalateNext = false
         lastFailure = nil
+        taskCost = 0
+        let priorUsage = brain.onUsage
+        brain.onUsage = { [weak self] u, m, c in self?.taskCost += c ?? 0; priorUsage?(u, m, c) }
+        defer { brain.onUsage = priorUsage }
         if streaming && !isSubagent { brain.onStream = host.map { h in { [weak h] text in h?.agentStream(text) } } }
         defer { brain.onStream = nil; host?.agentStream("") }
 
@@ -272,6 +280,10 @@ final class Agent {
             }
             host?.agentStream("")
             messages.append(.assistant(raw))
+            if maxCost > 0 && taskCost >= maxCost && !isSubagent {
+                onHistory?()
+                return finish("Stopped at this request's cost limit (\(Fmt.dollars(maxCost)); spent \(Fmt.dollars(taskCost))). Say \"continue\" to keep going, or raise the limit with /limit.", ok: false, steps: step)
+            }
             onHistory?()
             pendingImages = []
 
@@ -846,6 +858,12 @@ final class Agent {
         case "web_search": return "Search the web: \(Fmt.line(args["query"]?.string ?? "", 80))"
         case "fetch_url": return "Fetch \(Fmt.line(args["url"]?.string ?? "", 100))"
         case "todo_write": return "Update todos"
+        case "browser_open": return "Open \(Fmt.line(args["url"]?.string ?? "", 100))"
+        case "browser_read": return "Read the page"
+        case "browser_click": return "Click [\(args["id"]?.int ?? 0)]"
+        case "browser_type": return "Type into [\(args["id"]?.int ?? 0)]"
+        case "browser_eval": return "Run JS in the page"
+        case "browser_screenshot": return "Screenshot the page"
         case "repo_map": return "Map " + (path.isEmpty ? "the repo" : path)
         case "explore": return "Explore: \(Fmt.line(args["question"]?.string ?? args["task"]?.string ?? "", 110))"
         case "use_skill": return "Use skill \(args["name"]?.string ?? "")"

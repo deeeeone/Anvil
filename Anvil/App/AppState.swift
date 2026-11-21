@@ -3,11 +3,11 @@ import Observation
 import AppKit
 
 enum InspectorTab: String, CaseIterable, Identifiable {
-    case changes = "Changes", files = "Files", todo = "Plan", terminal = "Terminal", git = "Git"
+    case changes = "Changes", preview = "Preview", files = "Files", todo = "Plan", terminal = "Terminal", git = "Git"
     var id: String { rawValue }
     var symbol: String {
         switch self {
-        case .changes: return "plusminus"; case .files: return "folder"; case .todo: return "checklist"
+        case .changes: return "plusminus"; case .preview: return "safari"; case .files: return "folder"; case .todo: return "checklist"
         case .terminal: return "terminal"; case .git: return "arrow.triangle.branch"
         }
     }
@@ -38,9 +38,18 @@ final class AppState {
     @ObservationIgnored private var watcher: FileWatcher?
     @ObservationIgnored private var gitRefreshPending = false
     @ObservationIgnored private var controllers: [UUID: SessionController] = [:]
+    /// Background tasks for this project (see TaskQueue.swift).
+    var queue: [QueuedTask] = []
+    /// The embedded browser (live preview, and the agent's browser tools).
+    let browser = BrowserController()
+
+    func controller(for id: UUID) -> SessionController? { controllers[id] }
+    func registerController(_ c: SessionController) { controllers[c.session.id] = c }
 
     init() {
         NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
+        Notifier.shared.setup()
+        Notifier.shared.onOpen = { [weak self] id in if let u = UUID(uuidString: id) { self?.select(u) } }
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.processes.stopAll()
@@ -79,11 +88,13 @@ final class AppState {
         controllers = [:]
         project = root
         RecentProjects.add(root)
+        queue = QueuedTask.load(root)
         MCPManager.shared.start(project: root)
         refreshSessions()
         if let first = sessions.first { select(first.id) } else { newSession() }
         refreshGit()
         refreshBrief(root)
+        processQueue()
     }
 
     /// Keep the project brief current in the background (one cheap call only when the project's shape changed).

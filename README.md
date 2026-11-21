@@ -1,3 +1,5 @@
+<p align="center"><img src="design/anvil-icon-1024.png" width="128" alt="Anvil"></p>
+
 # Anvil
 
 A native macOS coding agent in the spirit of Claude Code: open a project folder, describe a change, review every diff, and let the agent read, edit, run and test until it's done.
@@ -23,6 +25,14 @@ Anvil reuses the brain of [Peep](../peep) (same provider, same text protocol, sa
   - **Gemini (web proxy)**: your self-hosted Gemini web API (`gemini-auto`), the same one Peep uses. Its server-side sessions are reused, so only the newest turn is sent.
   Settings has one section per provider and **Import keys from Peep** copies both keys. There's a per-session usage and cost meter (Luna and Gemini are free), and thinking effort defaults to **high**.
 - **MCP.** Stdio servers from `~/Library/Application Support/Anvil/mcp.json` and the project's `.mcp.json` (Claude's format) become `server.tool` actions.
+- **Background queue.** Press ⌥⏎ in the composer (or type `/queue <task>`) to line up requests. They run one at a time, each in its own git worktree, in the mode you pick in Settings (Auto-accept edits by default). Each finished task's work is committed on its branch, and the Queue section in the sidebar lists the branches to review. Merge one from its session's Git tab.
+- **Live preview and agent browser.** The Preview tab is a real WebKit browser that identifies itself as Safari. When the agent starts a dev server, its address opens there automatically and the page reloads after each edit. The agent drives the same browser with `browser_open`, `browser_read` (visible text plus numbered links and fields), `browser_click`, `browser_type`, `browser_eval` and `browser_screenshot`; screenshots go to the vision model.
+- **Rewind.** Hover over one of your messages and click ↶ to go back to just before it: files the agent changed from then on are restored, the conversation is cut there, and the message returns to the composer to edit. If the session was compacted after that point, the files are still restored but the agent starts fresh.
+- **Cost and step limits.** Settings sets a per-request cost cap (and the step cap). `/limit $0.02 40` overrides both for a session, and `/limit off` removes the cost cap. Free models never hit it.
+- **@-mentions.** Type `@` in the composer to attach a file, a folder, `@git-diff`, `@git-status` or `@last-output`, with autocomplete from the project index.
+- **Learned conventions.** When a follow-up sounds like a lasting preference ("we use tabs, not spaces"), a cheap call rewrites it as one convention line and offers to add it to AGENTS.md, so later sessions follow it.
+- **Skill builder.** Final answers of requests that took three or more successful steps show **Save as skill**. A cheap call turns the request and its steps into `.anvil/skills/<name>/SKILL.md`, which is suggested when a later request matches.
+- **Notifications.** Only when Anvil isn't in front: approvals come with Allow and Decline buttons, questions take a typed reply, and finished requests and queue tasks send a short note.
 - **Design.** Deep blacks, rounded surfaces, one warm coral accent, and a transcript modelled on Claude Code: a dot for each action, a one-line `⎿` result under it, and a cycling ✻ spinner with "esc to interrupt". The layout adapts to the window: wide windows show sidebar, conversation and inspector side by side; medium windows slide the inspector over the chat as a rounded panel; narrow windows hide the sidebar and slide it in on demand. The inspector has Changes (diffs, checkpoints), Files (tree and preview), Plan, Terminal (live output and background processes) and Git.
 
 ## What makes it fast and accurate

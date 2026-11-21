@@ -46,6 +46,10 @@ final class SessionController: AgentHost {
     /// Messages typed while the agent works; delivered with its next observation, or run next if it finishes first.
     private(set) var steering: [String] = []
     private(set) var terminal: [TerminalChunk] = []
+    /// Text to put back in the composer (after a rewind).
+    var draft: String?
+    /// Called when a request finishes (the background queue uses it).
+    @ObservationIgnored var onFinish: ((AgentOutcome) -> Void)?
 
     @ObservationIgnored private var agent: Agent?
     @ObservationIgnored private var task: Task<Void, Never>?
@@ -71,14 +75,18 @@ final class SessionController: AgentHost {
 
     // MARK: Agent
 
+    /// Tests: supplies the brain instead of the real providers.
+    static var brainFactory: ((String?) throws -> Brain)?
+
     private func makeAgent() throws -> Agent {
         if let agent { return agent }
-        let brain = try Brain.fromSettings(model: session.model)
+        let brain = try Self.brainFactory?(session.model) ?? Brain.fromSettings(model: session.model)
         brain.onUsage = { [weak self] u, _, cost in
             self?.session.usage.add(u, cost: cost)
             self?.scheduleSave()
         }
         let ctx = ToolContext(root: root, processes: processes, host: self)
+        ctx.browser = app?.browser
         ctx.shellTimeout = AppSettings.shared.shellTimeout
         ctx.todos = session.todos
         let a = Agent(ctx: ctx, brain: brain, extraTools: MCPManager.shared.toolSpecs)
@@ -96,6 +104,7 @@ final class SessionController: AgentHost {
             self.session.allowedCommands = Array(a.allowedCommands)
             self.scheduleSave()
         }
+        a.onCompacted = { [weak self] _ in self?.session.compactedAt = Date() }
         a.onCheckpoint = { [weak self] cp in
             guard let self else { return }
             if let i = self.session.checkpoints.firstIndex(where: { $0.id == cp.id }) { self.session.checkpoints[i] = cp } else { self.session.checkpoints.append(cp) }
@@ -107,7 +116,8 @@ final class SessionController: AgentHost {
 
     private func applySettings(_ a: Agent) {
         let s = AppSettings.shared
-        a.maxSteps = s.maxSteps
+        a.maxSteps = session.stepLimit ?? s.maxSteps
+        a.maxCost = session.costLimit ?? s.maxTaskCost
         a.autoCompactTokens = s.autoCompactTokens
         a.autoVerify = s.autoVerify
         a.selfReview = s.selfReview
@@ -139,10 +149,23 @@ final class SessionController: AgentHost {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !images.isEmpty else { return }
         if images.isEmpty, let (name, args) = SlashCommands.split(text) {
-            if running && name != "cost" && name != "help" && name != "mode" { append(ChatItem(kind: .system, text: "Wait for the current request to finish (or Stop it) before running /\(name).")); return }
+            if running && !["cost", "help", "mode", "queue", "limit"].contains(name) { append(ChatItem(kind: .system, text: "Wait for the current request to finish (or Stop it) before running /\(name).")); return }
             runCommand(name, args: args, raw: text)
             return
         }
+        if !Mentions.tokens(in: text).isEmpty && images.isEmpty {
+            let last = terminal.last?.text
+            let display = text
+            Task { [weak self] in
+                guard let self else { return }
+                let attach = await Mentions.expand(text, root: self.root, lastOutput: last)
+                if self.running { self.steering.append(attach + text); self.append(ChatItem(kind: .user, text: display)) }
+                else { self.start(goal: attach + text, display: display) }
+            }
+            noteCorrection(text)
+            return
+        }
+        noteCorrection(text)
         if running {
             steering.append(text)
             append(ChatItem(kind: .user, text: text, images: images.count))
@@ -153,14 +176,16 @@ final class SessionController: AgentHost {
     }
 
     func start(goal: String, display: String, images: [(Data, String)] = []) {
-        append(ChatItem(kind: .user, text: display, images: images.count))
+        append(ChatItem(kind: .user, text: display, images: images.count, historyIndex: agent?.messages.count ?? session.messages.count))
         if session.items.filter({ $0.kind == .user }).count == 1 && (session.title == "New session" || session.title.hasPrefix("New session on ")) {
             session.title = Session.title(from: display)
             app?.refreshSessions()
         }
         let agent: Agent
         do { agent = try makeAgent() } catch {
-            append(ChatItem(kind: .error, text: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription))
+            let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            append(ChatItem(kind: .error, text: msg))
+            onFinish?(AgentOutcome(text: msg, ok: false, steps: 0))   // the queue must move on
             return
         }
         agent.mode = mode
@@ -183,6 +208,8 @@ final class SessionController: AgentHost {
             if !outcome.changedFiles.isEmpty { self.app?.refreshGit() }
             self.saveNow()
             if NSApp != nil && !NSApp.isActive { self.notifyDone(outcome) }
+            self.afterRequest(goal: goal, outcome: outcome)
+            self.onFinish?(outcome)
             // Anything typed during the run that never reached the agent becomes the next request.
             if !self.steering.isEmpty {
                 let next = self.steering.joined(separator: "\n\n")
@@ -205,6 +232,9 @@ final class SessionController: AgentHost {
 
     private func notifyDone(_ o: AgentOutcome) {
         NSApp.requestUserAttention(.informationalRequest)
+        let files = o.changedFiles.isEmpty ? "" : " (\(o.changedFiles.count) file\(o.changedFiles.count == 1 ? "" : "s") changed)"
+        Notifier.shared.post(id: UUID().uuidString, title: o.ok ? "Done: \(session.title)" : "Stopped: \(session.title)",
+                             body: Fmt.line(o.text, 180) + files, category: "done", session: session.id.uuidString)
     }
 
     // MARK: Slash commands
@@ -239,6 +269,25 @@ final class SessionController: AgentHost {
             else { append(ChatItem(kind: .system, text: "Mode is \(mode.label). Use /mode ask, edits, plan or bypass.")) }
         case "undo":
             undoLast()
+        case "limit":
+            let parts = args.lowercased().split(separator: " ").map(String.init)
+            if parts.first == "off" {
+                session.costLimit = 0; session.stepLimit = nil
+                append(ChatItem(kind: .system, text: "No cost limit for this session's requests."))
+            } else if parts.isEmpty {
+                let c = session.costLimit ?? AppSettings.shared.maxTaskCost
+                append(ChatItem(kind: .system, text: "Each request stops at \(c > 0 ? Fmt.dollars(c) : "no cost limit") and \(session.stepLimit ?? AppSettings.shared.maxSteps) steps. Use /limit $0.02 40, or /limit off."))
+            } else {
+                for p in parts {
+                    if let v = Double(p.trimmingCharacters(in: CharacterSet(charactersIn: "$"))), p.contains("$") || p.contains(".") { session.costLimit = v }
+                    else if let n = Int(p) { session.stepLimit = max(3, n) }
+                }
+                append(ChatItem(kind: .system, text: "Each request in this session now stops at \((session.costLimit ?? 0) > 0 ? Fmt.dollars(session.costLimit!) : "no cost limit") or \(session.stepLimit ?? AppSettings.shared.maxSteps) steps. Free models never hit the cost limit."))
+            }
+            scheduleSave()
+        case "queue":
+            if args.isEmpty { append(ChatItem(kind: .system, text: "Use /queue <task> (or ⌥⏎ in the composer) to add a background task. It runs in its own git worktree.")) }
+            else { app?.enqueue(args) }
         case "commit":
             Task { await commitAll() }
         case "diff":
@@ -287,6 +336,114 @@ final class SessionController: AgentHost {
             self?.task = nil
             self?.saveNow()
         }
+    }
+
+    // MARK: Learning from the session
+
+    /// A follow-up that sounds like a lasting preference: offer to save it as a project convention.
+    private func noteCorrection(_ text: String) {
+        guard session.items.contains(where: { $0.kind == .user }), Conventions.looksLikeCorrection(text),
+              let brain = try? Brain.fromSettings(model: session.model) else { return }
+        brain.onUsage = { [weak self] u, _, cost in self?.session.usage.add(u, cost: cost) }
+        Task { [weak self] in
+            guard let line = try? await brain.oneShot(Conventions.prompt(text), effort: "low") else { return }
+            let clean = Fmt.plain(line.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "\"")))
+            guard !clean.uppercased().hasPrefix("NONE"), clean.count < 200, let self else { return }
+            self.append(ChatItem(kind: .suggestion, text: clean, suggestion: Suggestion(kind: .convention)))
+        }
+    }
+
+    func acceptSuggestion(_ id: UUID) {
+        guard let i = session.items.firstIndex(where: { $0.id == id }), let sug = session.items[i].suggestion else { return }
+        switch sug.kind {
+        case .convention:
+            do {
+                let file = try Conventions.save(session.items[i].text, root: root)
+                session.items[i].suggestion?.state = .accepted
+                append(ChatItem(kind: .system, text: "Saved to \(Paths.display(file, root: root)). New sessions in this project will follow it."))
+            } catch { append(ChatItem(kind: .error, text: "Couldn't save the convention: \(error.localizedDescription)")) }
+        }
+        scheduleSave()
+    }
+
+    func dismissSuggestion(_ id: UUID) {
+        guard let i = session.items.firstIndex(where: { $0.id == id }) else { return }
+        session.items[i].suggestion?.state = .dismissed
+        scheduleSave()
+    }
+
+    /// Mark a final answer worth saving as a skill when the request did real multi-step work.
+    private func afterRequest(goal: String, outcome: AgentOutcome) {
+        guard outcome.ok, let finalIdx = session.items.lastIndex(where: { $0.kind == .assistant && $0.final }) else { return }
+        let start = session.items[..<finalIdx].lastIndex(where: { $0.kind == .user }) ?? 0
+        let steps = session.items[start..<finalIdx].filter { $0.kind == .tool && $0.tool?.status == .ok }.count
+        if steps >= 3 { session.items[finalIdx].skillWorthy = true }
+    }
+
+    /// "Save as skill": a cheap call turns the request and its steps into .anvil/skills/<name>/SKILL.md.
+    func saveSkill(from finalID: UUID) {
+        guard let finalIdx = session.items.firstIndex(where: { $0.id == finalID }) else { return }
+        let start = session.items[..<finalIdx].lastIndex(where: { $0.kind == .user }) ?? 0
+        let request = session.items[start].text
+        let steps = session.items[start..<finalIdx].compactMap { $0.kind == .tool ? $0.text : nil }
+        let answer = session.items[finalIdx].text
+        guard let brain = try? Brain.fromSettings(model: session.model) else { return }
+        brain.onUsage = { [weak self] u, _, cost in self?.session.usage.add(u, cost: cost) }
+        session.items[finalIdx].skillWorthy = false
+        status = "Writing a skill"
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.status = "" }
+            do {
+                let raw = try await brain.oneShot(SkillBuilder.prompt(request: request, steps: steps, answer: answer), effort: "low")
+                let (body, _, _) = try ActionParser.extractJSON(raw)
+                guard let json = ActionParser.parseLenient(body) else { throw ToolFailure("no JSON in the reply") }
+                let file = try SkillBuilder.save(json: json, root: self.root)
+                self.append(ChatItem(kind: .system, text: "Saved skill \(json["name"]?.string ?? "") to \(Paths.display(file, root: self.root)). It's suggested when a request matches its description."))
+            } catch {
+                self.append(ChatItem(kind: .error, text: "Couldn't write the skill: \((error as? ToolFailure)?.message ?? error.localizedDescription)"))
+            }
+        }
+    }
+
+    // MARK: Rewind
+
+    /// Can the conversation itself go back to this message (not just the files)?
+    func canRewindConversation(_ item: ChatItem) -> Bool {
+        guard let h = item.historyIndex, h <= session.messages.count else { return false }
+        if let c = session.compactedAt, c > item.date { return false }
+        return true
+    }
+
+    /// Go back to before `itemID` (a user message): files restored to how they were then, the conversation cut there,
+    /// and the message put back in the composer to edit.
+    func rewind(to itemID: UUID) {
+        guard !running, let idx = session.items.firstIndex(where: { $0.id == itemID }), session.items[idx].kind == .user else { return }
+        let item = session.items[idx]
+        // Files: undo every request from this one on.
+        var restored: [String] = []
+        if let first = session.checkpoints.first(where: { $0.created >= item.date && !$0.restored }) {
+            restored = (try? Checkpoints.rewind(&session.checkpoints, to: first.id)) ?? []
+        }
+        // Conversation.
+        let conversationOK = canRewindConversation(item)
+        if conversationOK, let h = item.historyIndex {
+            session.messages = Array(session.messages.prefix(h))
+        } else {
+            session.messages = []
+            session.briefing = ""
+        }
+        session.items = Array(session.items.prefix(idx))
+        if !session.items.contains(where: { $0.kind == .plan }) { session.plan = nil; session.todos = [] }
+        agent?.messages = session.messages
+        agent?.briefing = session.briefing
+        draft = item.text
+        var note = "Rewound to before \u{201C}\(Fmt.line(item.text, 60))\u{201D}."
+        if !restored.isEmpty { note += " Restored \(restored.count) file(s)." }
+        if !conversationOK { note += " The conversation was compacted after that point, so the agent starts fresh (files are restored)." }
+        append(ChatItem(kind: .system, text: note))
+        app?.refreshGit()
+        saveNow()
     }
 
     func undoLast() {
@@ -419,7 +576,29 @@ final class SessionController: AgentHost {
         }
     }
 
+    /// A dev server printed its address: show it in the Preview tab.
+    private func noticeDevServer(_ chunk: String) {
+        guard let app, app.browser.followsDevServer,
+              let r = chunk.range(of: #"https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d+[^\s"'\x1b]*"#, options: .regularExpression) else { return }
+        let url = String(chunk[r]).trimmingCharacters(in: CharacterSet(charactersIn: ".,)"))
+        guard BrowserController.normalize(url)?.absoluteString != app.browser.url else { return }
+        Task { await app.browser.open(url) }
+        app.inspectorTab = .preview
+        if app.isWide && !app.inspectorDismissed { app.showInspector = true }
+    }
+
+    @ObservationIgnored private var reloadWork: DispatchWorkItem?
+    /// After an edit, reload a local preview (static servers don't hot-reload).
+    private func reloadPreviewSoon() {
+        guard let b = app?.browser, b.url.contains("localhost") || b.url.contains("127.0.0.1") else { return }
+        reloadWork?.cancel()
+        let w = DispatchWorkItem { b.reload() }
+        reloadWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: w)
+    }
+
     func agentStepOutput(_ id: UUID, chunk: String) {
+        noticeDevServer(chunk)
         if let i = terminal.lastIndex(where: { $0.stepID == id }) {
             terminal[i].text += chunk
             if terminal[i].text.count > 200_000 { terminal[i].text = String(terminal[i].text.suffix(150_000)) }
@@ -444,8 +623,10 @@ final class SessionController: AgentHost {
         if let d = diffs.first, status == .ok {
             app?.selectedDiff = d
             app?.previewFile = nil
-            app?.revealChanges()
+            if app?.inspectorTab != .preview { app?.revealChanges() }
+            reloadPreviewSoon()
         }
+        if diffs.isEmpty, status == .ok { noticeDevServer(output) }
         scheduleSave()
     }
 
@@ -453,12 +634,22 @@ final class SessionController: AgentHost {
         NSApp?.requestUserAttention(.criticalRequest)
         return await withCheckedContinuation { cont in
             var done = false
-            pendingPermission = PendingPermission(request: req) { [weak self] answer in
+            let pending = PendingPermission(request: req) { [weak self] answer in
                 guard !done else { return }
                 done = true
                 self?.pendingPermission = nil
                 cont.resume(returning: answer)
             }
+            pendingPermission = pending
+            let noteID = pending.id.uuidString
+            let what = req.command.map { "Run: \($0)" } ?? (req.diffs.count == 1 ? "Edit \(req.diffs[0].path) (\(req.diffs[0].statLabel))" : "Apply edits to \(req.diffs.count) files")
+            Notifier.shared.post(id: noteID, title: "Anvil needs your approval", body: "\(session.title): \(what)", category: "approval",
+                                 session: session.id.uuidString) { action, _ in
+                pending.resume(action == "allow" ? .allow : .deny(nil))
+            }
+            // Answered in the app: drop the notification.
+            let original = pending.resume
+            pendingPermission = PendingPermission(request: req) { answer in Notifier.shared.withdraw(noteID); original(answer) }
         }
     }
 
@@ -507,12 +698,18 @@ final class SessionController: AgentHost {
         append(ChatItem(kind: .assistant, text: question))
         return await withCheckedContinuation { cont in
             var done = false
+            let noteID = UUID().uuidString
             pendingQuestion = PendingQuestion(question: question) { [weak self] answer in
                 guard !done else { return }
                 done = true
+                Notifier.shared.withdraw(noteID)
                 self?.pendingQuestion = nil
                 if let answer { self?.append(ChatItem(kind: .user, text: answer)) }
                 cont.resume(returning: answer)
+            }
+            let pending = pendingQuestion
+            Notifier.shared.post(id: noteID, title: "Anvil has a question", body: question, category: "question", session: session.id.uuidString) { _, text in
+                pending?.resume(text)
             }
         }
     }

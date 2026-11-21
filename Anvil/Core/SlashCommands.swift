@@ -24,6 +24,8 @@ nonisolated enum SlashCommands {
         .init(name: "cost", summary: "token usage and cost for this session", source: "built-in"),
         .init(name: "mode", summary: "permission mode: ask, edits, plan or bypass", source: "built-in"),
         .init(name: "undo", summary: "undo the file changes of the last task", source: "built-in"),
+        .init(name: "queue", summary: "add a background task (runs in its own worktree)", source: "built-in"),
+        .init(name: "limit", summary: "stop each request at a cost or step limit: /limit $0.02 40", source: "built-in"),
         .init(name: "commit", summary: "stage all and commit with a generated message", source: "built-in"),
         .init(name: "diff", summary: "show the git diff in the inspector", source: "built-in"),
         .init(name: "skills", summary: "list available skills", source: "built-in"),

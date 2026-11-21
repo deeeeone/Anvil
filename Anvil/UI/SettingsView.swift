@@ -105,6 +105,14 @@ struct AgentSettings: View {
                 ForEach(PermissionMode.allCases) { Text($0.label).tag($0) }
             }
             Stepper("Max steps per request: \(s.maxSteps)", value: $s.maxSteps, in: 10...300, step: 10)
+            HStack {
+                Text("Stop a request above")
+                TextField("0", value: $s.maxTaskCost, format: .currency(code: "USD").precision(.fractionLength(2...4))).frame(width: 90)
+                Text(s.maxTaskCost > 0 ? "" : "(no limit)").foregroundStyle(.secondary)
+            }
+            Picker("Background queue tasks run in", selection: $s.queueMode) {
+                ForEach(PermissionMode.allCases) { Text($0.label).tag($0) }
+            }
             Stepper("Auto-compact above ~\(Fmt.tokens(s.autoCompactTokens)) tokens", value: $s.autoCompactTokens, in: 40_000...900_000, step: 20_000)
             Stepper("Shell timeout: \(Int(s.shellTimeout))s", value: $s.shellTimeout, in: 30...1800, step: 30)
             Section {

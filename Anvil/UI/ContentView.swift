@@ -165,7 +165,7 @@ struct WelcomeView: View {
     var body: some View {
         VStack(spacing: 20) {
             Spacer()
-            Text("✻").font(.system(size: 40, weight: .bold)).foregroundStyle(Theme.accent)
+            Image("Logo").resizable().scaledToFit().frame(width: 72, height: 72)
             Text("Welcome to \(AppInfo.name)").font(.system(size: 26, weight: .semibold))
             Text("Open a project folder to start coding with the agent.").foregroundStyle(Theme.text2)
             Button { app.chooseProject() } label: { Label("Open Folder", systemImage: "folder") }

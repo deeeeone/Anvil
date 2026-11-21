@@ -44,6 +44,8 @@ struct SidebarView: View {
             }
             .padding(.horizontal, 8)
 
+            if !app.queue.isEmpty { QueueSection() }
+
             Text("Recents")
                 .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.text3)
                 .padding(.horizontal, 18).padding(.top, 18).padding(.bottom, 6)
@@ -140,5 +142,50 @@ struct SessionRow: View {
         if s < 86400 { return "\(Int(s / 3600))h" }
         if s < 7 * 86400 { return "\(Int(s / 86400))d" }
         return d.formatted(.dateTime.month(.abbreviated).day())
+    }
+}
+
+
+struct QueueSection: View {
+    @Environment(AppState.self) private var app
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack {
+                Text("Queue").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.text3)
+                Spacer()
+                if app.queue.contains(where: { [.done, .failed, .cancelled].contains($0.state) }) {
+                    Button("Clear done") { app.clearFinishedQueue() }.buttonStyle(.plain).font(.system(size: 10.5)).foregroundStyle(Theme.text3)
+                }
+            }
+            .padding(.horizontal, 10).padding(.top, 18).padding(.bottom, 6)
+            ForEach(app.queue) { t in
+                Button { if let id = t.sessionID { app.select(id) } } label: {
+                    HoverRow(selected: t.sessionID != nil && app.current?.session.id == t.sessionID) {
+                        HStack(spacing: 8) {
+                            Group {
+                                switch t.state {
+                                case .queued: Image(systemName: "clock").foregroundStyle(Theme.text3)
+                                case .running: Spinner().scaleEffect(0.75)
+                                case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.green)
+                                case .failed: Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Theme.red)
+                                case .cancelled: Image(systemName: "minus.circle").foregroundStyle(Theme.text3)
+                                }
+                            }
+                            .font(.system(size: 11)).frame(width: 14)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(t.prompt).font(.system(size: 12.5)).foregroundStyle(Theme.text2).lineLimit(1)
+                                if let b = t.branch, t.state == .done { Text(b).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.text3).lineLimit(1) }
+                            }
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .help(t.summary ?? t.prompt)
+                .contextMenu {
+                    Button(t.state == .queued || t.state == .running ? "Cancel" : "Remove", role: .destructive) { app.cancelQueued(t.id) }
+                }
+            }
+        }
+        .padding(.horizontal, 8)
     }
 }

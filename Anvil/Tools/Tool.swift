@@ -108,6 +108,8 @@ final class ToolContext {
     var todos: [TodoItem] = []
     /// Files read this session (edit hints).
     var readFiles = Set<String>()
+    /// The embedded browser, when the app provides one (Preview tab).
+    var browser: AgentBrowser?
     /// Modification date of each file when the agent last read or wrote it (line-range edits need it unchanged).
     var readStamps: [String: Date] = [:]
     /// Extra text for the next edit result (line shifts after replace_lines).

@@ -26,7 +26,7 @@ nonisolated struct PlanCard: Codable, Equatable, Sendable {
 
 /// One row of the conversation as the owner sees it.
 nonisolated struct ChatItem: Codable, Equatable, Identifiable, Sendable {
-    enum Kind: String, Codable, Sendable { case user, assistant, thought, tool, plan, system, error }
+    enum Kind: String, Codable, Sendable { case user, assistant, thought, tool, plan, system, error, suggestion }
     var id = UUID()
     var kind: Kind
     var text: String
@@ -36,6 +36,19 @@ nonisolated struct ChatItem: Codable, Equatable, Identifiable, Sendable {
     var images = 0
     /// For an assistant reply: true when it is the final answer of a request.
     var final = false
+    /// For a user message that started a request: how many model messages existed before it (for rewinding).
+    var historyIndex: Int?
+    /// For a final answer: the request did enough work to be worth saving as a skill.
+    var skillWorthy = false
+    /// For a suggestion: what accepting it does.
+    var suggestion: Suggestion?
+}
+
+nonisolated struct Suggestion: Codable, Equatable, Sendable {
+    enum Kind: String, Codable, Sendable { case convention }
+    enum State: String, Codable, Sendable { case open, accepted, dismissed }
+    var kind: Kind
+    var state: State = .open
 }
 
 nonisolated struct SessionUsage: Codable, Equatable, Sendable {
@@ -78,6 +91,11 @@ nonisolated struct Session: Codable, Identifiable, Equatable, Sendable {
     var workdir: String?
     var branch: String?
     var baseBranch: String?
+    /// Per-session limits for each request (nil = the app-wide settings).
+    var costLimit: Double?
+    var stepLimit: Int?
+    /// When the conversation was last compacted (rewinding to before this can restore files but not the conversation).
+    var compactedAt: Date?
 
     /// Where the agent works: the worktree for worktree sessions, else the project.
     var root: URL { URL(fileURLWithPath: workdir ?? projectPath) }

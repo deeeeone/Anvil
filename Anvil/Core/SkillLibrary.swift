@@ -69,11 +69,12 @@ nonisolated enum SkillLibrary {
     }
 
     private static func skillFiles(under root: URL, maxDepth: Int) -> [URL] {
+        // Resolve symlinks first (/var vs /private/var), or the depth count is off by one.
+        let root = root.resolvingSymlinksInPath()
         guard let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsPackageDescendants]) else { return [] }
         var out: [URL] = []
-        let base = root.pathComponents.count
         for case let u as URL in e {
-            let depth = u.pathComponents.count - base
+            let depth = e.level
             if [".trash", "cache", "node_modules", ".git"].contains(u.lastPathComponent) || depth > maxDepth { e.skipDescendants(); continue }
             if u.lastPathComponent == "SKILL.md" { out.append(u) }
             if out.count > 300 { break }

@@ -7,6 +7,9 @@
 - **Persistent allow rules.** Project-level `.anvil/settings.json` allow and deny lists for commands (like Claude Code's permissions), on top of today's session allow list.
 - **Hooks.** Run user commands before and after tool calls (format on save, lint after edit, block patterns).
 
+## Recently shipped
+- Background queue, live preview with agent browser, rewind, cost limits, @-mentions, learned conventions, skill builder, notifications, app icon.
+
 ## Later
 - Worktree cleanup: remove merged worktrees and branches from the app.
 - A `gh` integration: PR creation, review comments into the chat, CI status.
