@@ -1,6 +1,7 @@
 import Foundation
 
-/// A request waiting for (or done in) the background queue. Each runs in its own git worktree, one at a time.
+/// A request waiting for (or done in) the background queue. Each runs in its own git worktree; up to
+/// `AppSettings.parallelTasks` run at once (sub-sessions count toward the same limit).
 nonisolated struct QueuedTask: Codable, Identifiable, Equatable, Sendable {
     enum State: String, Codable, Sendable { case queued, running, done, failed, cancelled }
     var id = UUID()
@@ -50,10 +51,18 @@ extension AppState {
         QueuedTask.save(queue, root: project)
     }
 
-    /// Starts the next queued task when nothing in the queue is running.
+    /// Background work running now: queue tasks plus sub-sessions.
+    var backgroundRunning: Int { queue.filter { $0.state == .running }.count + runningSubSessions }
+
+    /// Starts queued tasks while fewer than the parallel limit are running.
     func processQueue() {
-        guard let project, !queue.contains(where: { $0.state == .running }),
-              let i = queue.firstIndex(where: { $0.state == .queued }) else { return }
+        startWaitingSubSessions()
+        while startNextQueued() {}
+    }
+
+    private func startNextQueued() -> Bool {
+        guard let project, backgroundRunning < AppSettings.shared.parallelTasks,
+              let i = queue.firstIndex(where: { $0.state == .queued }) else { return false }
         queue[i].state = .running
         QueuedTask.save(queue, root: project)
         let task = queue[i]
@@ -93,6 +102,7 @@ extension AppState {
                 c.start(goal: task.prompt, display: task.prompt)
             }
         }
+        return true
     }
 
     func finishQueued(_ id: UUID, state: QueuedTask.State, summary: String) {
@@ -104,5 +114,34 @@ extension AppState {
         Notifier.shared.post(id: id.uuidString, title: state == .done ? "Queue: done" : "Queue: stopped", body: "\(Fmt.line(queue[i].prompt, 80)): \(summary)",
                              category: "done", session: queue[i].sessionID?.uuidString ?? "")
         processQueue()
+    }
+
+    /// With a label set in Settings, open issues carrying it become queue tasks (each once per project).
+    /// Every 5 minutes while the project is open; the task ends by opening a PR, which asks first.
+    func watchGitHubIssues() {
+        issueWatch?.cancel()
+        guard let project, GitHub.gh != nil else { return }
+        issueWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                let label = AppSettings.shared.githubIssueLabel.trimmingCharacters(in: .whitespaces)
+                if !label.isEmpty { await self?.pickUpIssues(project, label: label) }
+                try? await Task.sleep(for: .seconds(300))
+            }
+        }
+    }
+
+    func pickUpIssues(_ root: URL, label: String) async {
+        guard project == root, let repo = await GitHub.repo(root),
+              let raw = try? await GitHub.run(["issue", "list", "--label", label, "--state", "open", "--limit", "20", "--json", "number,title,body"], in: root),
+              let list = JSON.parse(raw)?.array else { return }
+        let key = "ghHandled." + SessionStore.projectKey(root)
+        var handled = Set(UserDefaults.standard.array(forKey: key) as? [Int] ?? [])
+        for issue in list.reversed() {
+            guard let n = issue["number"]?.int, !handled.contains(n) else { continue }
+            handled.insert(n)
+            enqueue(GitHub.issuePrompt(number: n, title: issue["title"]?.string ?? "", body: issue["body"]?.string ?? "", repo: repo))
+            Notifier.shared.post(id: "issue-\(n)", title: "Queued issue #\(n)", body: Fmt.line(issue["title"]?.string ?? "", 100), category: "done", session: "")
+        }
+        UserDefaults.standard.set(Array(handled), forKey: key)
     }
 }

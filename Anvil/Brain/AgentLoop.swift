@@ -47,6 +47,12 @@ final class Agent {
     var prefetch = true
     /// While a plan waits for approval, a read-only helper looks ahead at milestone 1.
     var prepareWhilePlanning = true
+    /// After a batch of edits, ask the project's language server for errors the edits introduced.
+    var lspChecks = false
+    /// Files edited in the current batch, with their text before the batch (nil = new file).
+    private var lspTouched: [URL: String?] = [:]
+    /// Each file's errors before Anvil first edited it (by message, not line).
+    private var lspBaseline: [String: Set<String>] = [:]
     /// The briefing built ahead of time (cache warming); reused if the request starts soon after.
     private var prepared: (text: String, at: Date)?
     // Approvals for the current request and batch.
@@ -107,7 +113,7 @@ final class Agent {
         if !subagent { specs += SimulatorTools.all() }
         if subagent { specs.removeAll { ["ask_user", "todo_write", "start_process", "stop_process"].contains($0.name) } }
         register(specs)
-        if !subagent { register([exploreTool()] + mcpTools()) }
+        if !subagent { register([exploreTool()] + mcpTools() + GitHub.tools()) }
         if ctx.browser != nil && !subagent { register(BrowserTools.all()) }
         knownToolNames = Set(tools.keys)
     }
@@ -485,6 +491,13 @@ final class Agent {
                 i = j
             }
             if Task.isCancelled { return finish("Stopped.", ok: false, steps: step) }
+            if !lspTouched.isEmpty {
+                let notes = await typeCheck()
+                if !notes.isEmpty {
+                    results.append("TYPE CHECK FAILED (the project's language server reports errors these edits introduced; fix them next):\n" + notes.joined(separator: "\n"))
+                    anyFailed = true
+                }
+            }
             lastBatchFailed = anyFailed
             if reply.done && !anyFailed { results.append("(you marked this done; check these results, then reply with done:true and the final answer in say)") }
 
@@ -497,7 +510,7 @@ final class Agent {
             }
             let steering = host?.agentDrainSteering() ?? []
             if !steering.isEmpty {
-                obs += "\nMESSAGE FROM THE OWNER (sent while you were working; take it into account now):\n" + steering.map { "- \($0)" }.joined(separator: "\n") + "\n"
+                obs += "\nMESSAGES SENT WHILE YOU WERE WORKING (from the owner unless marked [Message from ...]; take them into account now):\n" + steering.map { "- \($0)" }.joined(separator: "\n") + "\n"
             }
             if mode != lastMode {
                 obs += "\n(The owner switched the permission mode to \"\(mode.label)\".)\n" + PromptBuilder.modeNote(mode)
@@ -531,6 +544,30 @@ final class Agent {
             for await r in g { out.append(r) }
             return out.sorted { $0.0 < $1.0 }.map(\.1)
         }
+    }
+
+    /// Type-checks the files the last batch edited. Returns one line per new error.
+    func typeCheck() async -> [String] {
+        let touched = lspTouched
+        lspTouched = [:]
+        var out: [String] = []
+        host?.agentStatus("Type-checking")
+        for (url, old) in touched.sorted(by: { $0.key.path < $1.key.path }).prefix(8) {
+            guard let server = LSP.server(for: url, root: ctx.root),
+                  let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            let path = ctx.rel(url)
+            if lspBaseline[url.path] == nil {
+                if let old {
+                    guard let before = await LSP.errors(url, text: old, root: ctx.root, server: server) else { continue }
+                    lspBaseline[url.path] = Set(before.map(\.key))
+                } else {
+                    lspBaseline[url.path] = []
+                }
+            }
+            guard let after = await LSP.errors(url, text: text, root: ctx.root, server: server) else { continue }
+            out += LSP.introduced(after: after, baseline: lspBaseline[url.path] ?? [], path: path)
+        }
+        return out
     }
 
     /// A passing test or build command is remembered for this project (and re-run automatically before "done").
@@ -710,6 +747,7 @@ final class Agent {
             }
             do {
                 for c in changes {
+                    if lspChecks, lspTouched.index(forKey: c.url) == nil { lspTouched[c.url] = .some(c.old) }
                     checkpoint.record(c.url, before: c.old)
                     try c.apply()
                     ctx.readFiles.insert(c.url.standardizedFileURL.path)

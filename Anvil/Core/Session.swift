@@ -91,6 +91,10 @@ nonisolated struct Session: Codable, Identifiable, Equatable, Sendable {
     var workdir: String?
     var branch: String?
     var baseBranch: String?
+    /// Set for a sub-session started by another session's agent (spawn_session).
+    var parentID: UUID?
+    /// The short name the parent uses for this sub-session.
+    var subName: String?
     /// Per-session limits for each request (nil = the app-wide settings).
     var costLimit: Double?
     var stepLimit: Int?

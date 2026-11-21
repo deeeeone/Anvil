@@ -89,7 +89,7 @@ final class SessionController: AgentHost {
         ctx.browser = app?.browser
         ctx.shellTimeout = AppSettings.shared.shellTimeout
         ctx.todos = session.todos
-        let a = Agent(ctx: ctx, brain: brain, extraTools: MCPManager.shared.toolSpecs)
+        let a = Agent(ctx: ctx, brain: brain, extraTools: MCPManager.shared.toolSpecs + (app?.subSessionTools(for: self) ?? []))
         a.toolProvider = { MCPManager.shared.toolSpecs }
         a.messages = session.messages
         a.briefing = session.briefing
@@ -130,6 +130,7 @@ final class SessionController: AgentHost {
         a.adaptiveEffort = s.adaptiveEffort
         a.prefetch = s.prefetch
         a.prepareWhilePlanning = s.prepareWhilePlanning
+        a.lspChecks = s.lspChecks
     }
 
     @ObservationIgnored private var lastWarm = Date.distantPast
@@ -175,6 +176,18 @@ final class SessionController: AgentHost {
             return
         }
         start(goal: text, display: text, images: images)
+    }
+
+    /// A message from another session (a parent or a sub-session): reaches the agent with its next step,
+    /// or starts a request when it's idle.
+    func deliver(_ text: String, from sender: String) {
+        let line = "[Message from \(sender)] \(text)"
+        if running {
+            steering.append(line)
+            append(ChatItem(kind: .user, text: line))
+        } else {
+            start(goal: line, display: line)
+        }
     }
 
     func start(goal: String, display: String, images: [(Data, String)] = []) {
@@ -292,6 +305,9 @@ final class SessionController: AgentHost {
             else { app?.enqueue(args) }
         case "commit":
             Task { await commitAll() }
+        case "pr":
+            let goal = "Open a GitHub pull request for the work in this session. If you're on main or master, create a descriptive branch first (git switch -c ...). Commit any uncommitted work with a clear message, then call gh_pr_create with a concise title and a body that says what changed, why, and how it was verified." + (args.isEmpty ? "" : " Notes from the owner: \(args)")
+            start(goal: goal, display: raw)
         case "diff":
             app?.inspectorTab = .git
             app?.showInspector = true
@@ -504,6 +520,11 @@ final class SessionController: AgentHost {
         let st = await Git.status(root)
         if !st.files.isEmpty { return "Commit the session's changes first (\(st.files.count) uncommitted)." }
         let project = URL(fileURLWithPath: session.projectPath)
+        if let conflicts = await Git.mergeConflicts(project, branch: branch), !conflicts.isEmpty {
+            let msg = "Not merged: \(branch) conflicts with \(session.baseBranch ?? "the project's branch") in \(conflicts.prefix(8).joined(separator: ", "))\(conflicts.count > 8 ? " and \(conflicts.count - 8) more" : ""). Ask the agent here to merge \(session.baseBranch ?? "it") into this branch and resolve the conflicts, then merge again."
+            append(ChatItem(kind: .error, text: msg))
+            return msg
+        }
         let r = await Git.mergeBranch(project, branch: branch, message: "Merge \(branch): \(session.title)")
         app?.refreshGit()
         let msg = r.status == 0 ? "Merged \(branch) into \(session.baseBranch ?? "the project's branch")." : "Merge failed: \(Fmt.line(r.combined, 400))"

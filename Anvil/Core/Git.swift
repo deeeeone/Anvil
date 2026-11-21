@@ -134,6 +134,36 @@ nonisolated enum Git {
         await run(["merge", "--no-ff", branch, "-m", message], in: root, timeout: 120)
     }
 
+    /// Files that would conflict if `branch` were merged into the checkout at `root` (empty = merges cleanly).
+    /// nil when git can't tell (git older than 2.38, or the branch doesn't exist).
+    static func mergeConflicts(_ root: URL, branch: String) async -> [String]? {
+        let r = await run(["merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", branch], in: root, timeout: 60)
+        if r.status == 0 { return [] }
+        guard r.status == 1 else { return nil }
+        return parseMergeTreeConflicts(r.stdout)
+    }
+
+    /// `git merge-tree --write-tree --name-only --no-messages` prints the tree id, then one conflicted path per line.
+    static func parseMergeTreeConflicts(_ out: String) -> [String] {
+        let lines = out.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var seen = Set<String>()
+        return lines.dropFirst().compactMap { l in
+            let p = l.trimmingCharacters(in: .whitespaces)
+            guard !p.isEmpty, seen.insert(p).inserted else { return nil }
+            return p
+        }
+    }
+
+    /// The short commit id at HEAD.
+    static func head(_ root: URL) async -> String {
+        await run(["rev-parse", "--short", "HEAD"], in: root).stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Files changed on `branch` since it left `base`.
+    static func changedFiles(_ root: URL, base: String, branch: String) async -> [String] {
+        await run(["diff", "--name-only", "\(base)...\(branch)"], in: root).stdout.split(separator: "\n").map(String.init)
+    }
+
     static func initRepo(_ root: URL) async -> ProcessOutput { await run(["init"], in: root) }
 
     static func commitPrompt(diff: String) -> String {

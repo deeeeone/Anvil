@@ -28,6 +28,7 @@ nonisolated enum SlashCommands {
         .init(name: "limit", summary: "stop each request at a cost or step limit: /limit $0.02 40", source: "built-in"),
         .init(name: "commit", summary: "stage all and commit with a generated message", source: "built-in"),
         .init(name: "diff", summary: "show the git diff in the inspector", source: "built-in"),
+        .init(name: "pr", summary: "open a GitHub pull request for this work (optional notes)", source: "built-in"),
         .init(name: "skills", summary: "list available skills", source: "built-in"),
         .init(name: "mcp", summary: "MCP server status", source: "built-in"),
         .init(name: "effort", summary: "thinking effort: low, medium, high or max", source: "built-in"),

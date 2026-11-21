@@ -40,6 +40,10 @@ final class AppState {
     @ObservationIgnored private var controllers: [UUID: SessionController] = [:]
     /// Background tasks for this project (see TaskQueue.swift).
     var queue: [QueuedTask] = []
+    /// Sessions started by other sessions' agents (see SubSessions.swift).
+    var subSessions: [SubSession] = []
+    /// Polls GitHub for labeled issues to queue (see TaskQueue.swift).
+    @ObservationIgnored var issueWatch: Task<Void, Never>?
     /// The embedded browser (live preview, and the agent's browser tools).
     let browser = BrowserController()
     /// The Device tab's live simulator view.
@@ -74,6 +78,7 @@ final class AppState {
                     _ = sem.wait(timeout: .now() + 60)
                 }
                 MCPManager.shared.stopAll()
+                LSP.stopAll()
                 self?.controllers.values.forEach { $0.saveNow() }
             }
         }
@@ -106,6 +111,7 @@ final class AppState {
         current?.saveNow()
         processes.stopAll()
         controllers = [:]
+        subSessions = []
         project = root
         RecentProjects.add(root)
         queue = QueuedTask.load(root)
@@ -115,6 +121,7 @@ final class AppState {
         refreshGit()
         refreshBrief(root)
         processQueue()
+        watchGitHubIssues()
     }
 
     /// Keep the project brief current in the background (one cheap call only when the project's shape changed).

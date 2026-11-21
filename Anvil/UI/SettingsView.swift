@@ -108,6 +108,13 @@ struct AgentSettings: View {
             Picker("Background queue tasks run in", selection: $s.queueMode) {
                 ForEach(PermissionMode.allCases) { Text($0.label).tag($0) }
             }
+            Stepper("Run up to \(s.parallelTasks) queue task\(s.parallelTasks == 1 ? "" : "s") and sub-sessions at once", value: $s.parallelTasks, in: 1...4)
+            HStack {
+                Text("Queue GitHub issues labeled")
+                TextField("anvil", text: $s.githubIssueLabel).frame(width: 120)
+                Text(s.githubIssueLabel.isEmpty ? "(off)" : "checked every 5 min").font(.caption).foregroundStyle(.secondary)
+            }
+            .help("Open issues with this label in the project's GitHub repo become queue tasks that end in a pull request. Needs the gh CLI signed in.")
             Stepper("Auto-compact above ~\(Fmt.tokens(s.autoCompactTokens)) tokens", value: $s.autoCompactTokens, in: 40_000...900_000, step: 20_000)
             Stepper("Shell timeout: \(Int(s.shellTimeout))s", value: $s.shellTimeout, in: 30...1800, step: 30)
             Section {
@@ -116,6 +123,7 @@ struct AgentSettings: View {
                 Toggle("Stream replies", isOn: $s.streaming)
                 Toggle("Adaptive effort (lighter thinking on routine turns; your effort setting is the ceiling)", isOn: $s.adaptiveEffort)
                 Toggle("Attach the code an error points to", isOn: $s.prefetch)
+                Toggle("Type-check edits with the project's language server (LSP)", isOn: $s.lspChecks)
                 Toggle("Look ahead while a plan waits for approval", isOn: $s.prepareWhilePlanning)
                 Toggle("Warm the prompt cache while you type", isOn: $s.warmCache)
                 Toggle("Keep a project brief (one cheap call when the project changes)", isOn: $s.projectBrief)
@@ -133,7 +141,7 @@ struct AgentSettings: View {
                     ForEach(ModelCatalog.shared.choices) { Text($0.id).tag($0.id) }
                 }
             } header: { Text("Accuracy and speed") } footer: {
-                Text("Every edit is syntax-checked. The exploration model handles explore helpers and turns that only read and search.").font(.caption)
+                Text("Every edit is syntax-checked. With type checks on, Anvil also asks the language server it finds (typescript-language-server, pyright, gopls, rust-analyzer, sourcekit-lsp for Swift packages) for errors your edits introduced. The exploration model handles explore helpers and turns that only read and search.").font(.caption)
             }
             Section("Permission modes") {
                 Text("Ask before edits: shows each diff and command for approval (one card can cover every edit in a reply, and an approved plan covers its edits). Auto-accept edits: file changes apply without asking, commands still ask. Plan only: read-only until you approve a plan. Bypass: nothing asks, ever; edits still get checkpoints you can undo. Dangerous commands (rm -rf, sudo, git push, git reset --hard...) ask in every mode except Bypass.")

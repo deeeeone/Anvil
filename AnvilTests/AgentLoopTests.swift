@@ -156,7 +156,7 @@ final class AgentLoopTests: XCTestCase {
             fence(#"{"say": "ok", "done": true}"#),
         ])
         _ = await agent.run(goal: "x")
-        XCTAssertTrue(sent[1].last!.text.contains("MESSAGE FROM THE OWNER"))
+        XCTAssertTrue(sent[1].last!.text.contains("MESSAGES SENT WHILE YOU WERE WORKING"))
         XCTAssertTrue(sent[1].last!.text.contains("also update the docstring"))
     }
 

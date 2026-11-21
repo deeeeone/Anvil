@@ -25,6 +25,12 @@ final class AppSettings {
     var keepAwake: Bool { didSet { d.set(keepAwake, forKey: "keepAwake") } }
     /// Permission mode for background queue tasks.
     var queueMode: PermissionMode { didSet { d.set(queueMode.rawValue, forKey: "queueMode") } }
+    /// How many queue tasks and sub-sessions run at the same time (each in its own worktree).
+    var parallelTasks: Int { didSet { d.set(parallelTasks, forKey: "parallelTasks") } }
+    /// After a batch of edits, ask the project's language server for type errors the edits introduced.
+    var lspChecks: Bool { didSet { d.set(lspChecks, forKey: "lspChecks") } }
+    /// Poll the project's GitHub repo for open issues with this label and queue them ("" = off).
+    var githubIssueLabel: String { didSet { d.set(githubIssueLabel, forKey: "githubIssueLabel") } }
     /// Before accepting "done" after edits, run the project's test command (or ask the agent to verify).
     var autoVerify: Bool { didSet { d.set(autoVerify, forKey: "autoVerify") } }
     /// A second model call reads the final diff and flags real problems before the agent finishes.
@@ -83,6 +89,9 @@ final class AppSettings {
         maxTaskCost = d.object(forKey: "maxTaskCost") as? Double ?? 0
         keepAwake = d.object(forKey: "keepAwake") as? Bool ?? true
         queueMode = PermissionMode(rawValue: d.string(forKey: "queueMode") ?? "") ?? .acceptEdits
+        parallelTasks = min(4, max(1, d.object(forKey: "parallelTasks") as? Int ?? 2))
+        lspChecks = d.object(forKey: "lspChecks") as? Bool ?? true
+        githubIssueLabel = d.string(forKey: "githubIssueLabel") ?? ""
         autoVerify = d.object(forKey: "autoVerify") as? Bool ?? true
         selfReview = d.object(forKey: "selfReview") as? Bool ?? true
         escalationModel = d.string(forKey: "escalationModel") ?? "auto"
