@@ -52,6 +52,9 @@ final class AppSettings {
     @ObservationIgnored private var inMemoryKey = false
     /// Your Luna API (keyless, OpenAI-compatible).
     var lunaURL: String { didSet { d.set(lunaURL, forKey: "lunaURL") } }
+    /// The local ChatGPT web proxy (zhaees/chatgpt-proxy) and, optionally, the folder it's cloned in (Anvil can start it).
+    var chatgptURL: String { didSet { d.set(chatgptURL, forKey: "chatgptURL") } }
+    var chatgptProxyFolder: String { didSet { d.set(chatgptProxyFolder, forKey: "chatgptProxyFolder") } }
     /// The self-hosted Gemini web proxy.
     var geminiURL: String { didSet { d.set(geminiURL, forKey: "geminiURL") } }
     var geminiKey: String {
@@ -90,6 +93,8 @@ final class AppSettings {
         projectBrief = d.object(forKey: "projectBrief") as? Bool ?? true
         lunaURL = d.string(forKey: "lunaURL") ?? Providers.defaultLunaURL
         geminiURL = d.string(forKey: "geminiURL") ?? Providers.defaultGeminiURL
+        chatgptURL = d.string(forKey: "chatgptURL") ?? Providers.defaultChatGPTURL
+        chatgptProxyFolder = d.string(forKey: "chatgptProxyFolder") ?? ""
         if let env = ProcessInfo.processInfo.environment["ANVIL_GEMINI_KEY"], !env.isEmpty {
             inMemoryGemini = true
             geminiKey = env
@@ -121,6 +126,7 @@ final class AppSettings {
         case .experiential: return !apiKey.isEmpty
         case .luna: return URL(string: lunaURL) != nil
         case .gemini: return !geminiKey.isEmpty && URL(string: geminiURL) != nil
+        case .chatgpt: return URL(string: chatgptURL) != nil
         }
     }
 

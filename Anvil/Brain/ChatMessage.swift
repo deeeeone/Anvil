@@ -59,6 +59,7 @@ nonisolated struct BrainError: Error, LocalizedError, Sendable {
         case "server_busy": return "The provider is rate limiting (HTTP 429). Try again in a moment."
         case "upstream_timeout": return "The model took too long to answer."
         case "network": return "Couldn't reach the provider: \(message)"
+        case "too_long": return message
         case "no_key": return message.isEmpty ? "No API key yet for this model's provider. Add one in Settings (or import keys from Peep)." : message
         default: return "Provider error \(status): \(Fmt.line(message, 200))"
         }

@@ -60,6 +60,7 @@ final class ModelCatalog {
     private(set) var models: [ModelInfo] = []
     private(set) var lunaModels: [String] = Providers.defaultLunaModels
     private(set) var geminiModels: [String] = Providers.defaultGeminiModels
+    private(set) var chatgptModels: [String] = Providers.defaultChatGPTModels
     private(set) var error: String?
     private(set) var loading = false
     private var cacheURL: URL { Paths.support.appendingPathComponent("models-cache.json") }
@@ -69,6 +70,7 @@ final class ModelCatalog {
             models = Self.parseList(j["experiential"] ?? j)
             if let l = j["luna"]?.array?.compactMap(\.string), !l.isEmpty { lunaModels = l }
             if let g = j["gemini"]?.array?.compactMap(\.string), !g.isEmpty { geminiModels = g }
+            if let c = j["chatgpt"]?.array?.compactMap(\.string), !c.isEmpty { chatgptModels = c }
         }
     }
 
@@ -81,7 +83,8 @@ final class ModelCatalog {
         }
         let luna = lunaModels.map { ModelChoice(id: $0, provider: .luna, detail: "free") }
         let gem = geminiModels.map { ModelChoice(id: $0, provider: .gemini, detail: "free, via your proxy") }
-        return exp + luna + gem
+        let cg = chatgptModels.map { ModelChoice(id: $0, provider: .chatgpt, detail: "your ChatGPT plan, via the local proxy") }
+        return exp + luna + gem + cg
     }
 
     /// Kept for older call sites: the offered Experiential models.
@@ -95,6 +98,12 @@ final class ModelCatalog {
     nonisolated static func lunaList(_ j: JSON) -> [String] {
         let ids = (j["data"]?.array ?? j.array ?? []).compactMap { $0["id"]?.string ?? $0.string }
         return ids.sorted { a, b in a == "gpt-6-luna" ? true : b == "gpt-6-luna" ? false : a < b }
+    }
+
+    /// The proxy also lists its upstream's models: keep only the chatgpt/* ones, auto first.
+    nonisolated static func chatgptList(_ j: JSON) -> [String] {
+        let ids = (j["data"]?.array ?? j.array ?? []).compactMap { $0["id"]?.string ?? $0.string }.filter { $0.hasPrefix("chatgpt/") }
+        return ids.sorted { a, b in a == "chatgpt/auto" ? true : b == "chatgpt/auto" ? false : a < b }
     }
 
     func refresh() async {
@@ -124,6 +133,14 @@ final class ModelCatalog {
             if let l = try? await GeminiWebClient(baseURL: base, apiKey: s.geminiKey).models(), !l.isEmpty { geminiModels = l }
             else { problems.append("Gemini proxy") }
         }
+        if let base = URL(string: s.chatgptURL), await ChatGPTProxy.shared.check() {
+            var req = URLRequest(url: base.appendingPathComponent("v1/models"))
+            req.timeoutInterval = 10
+            if let (data, _) = try? await URLSession.shared.data(for: req), let j = JSON.parse(String(decoding: data, as: UTF8.self)) {
+                let l = Self.chatgptList(j)
+                if !l.isEmpty { chatgptModels = l }
+            }
+        }
         error = problems.isEmpty ? nil : "Couldn't reach: " + problems.joined(separator: ", ")
         cache["experiential"] = ["data": models.map { m -> [String: Any] in
             var o: [String: Any] = ["id": m.id]
@@ -137,6 +154,7 @@ final class ModelCatalog {
         }]
         cache["luna"] = lunaModels
         cache["gemini"] = geminiModels
+        cache["chatgpt"] = chatgptModels
         if let data = try? JSONSerialization.data(withJSONObject: cache) { try? data.write(to: cacheURL) }
     }
 }

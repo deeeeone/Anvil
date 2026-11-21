@@ -69,6 +69,29 @@ struct ProviderSettings: View {
             } header: { Label("Gemini (web proxy)", systemImage: Provider.gemini.symbol) }
 
             Section {
+                TextField("URL", text: $s.chatgptURL)
+                HStack {
+                    TextField("Folder you cloned zhaees/chatgpt-proxy into (optional)", text: $s.chatgptProxyFolder)
+                    Button("Choose…") {
+                        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
+                        if panel.runModal() == .OK, let u = panel.url { s.chatgptProxyFolder = u.path }
+                    }
+                }
+                HStack {
+                    let proxy = ChatGPTProxy.shared
+                    Label(proxy.running ? "Running" : (proxy.status.isEmpty ? "Not checked" : proxy.status), systemImage: proxy.running ? "checkmark.circle.fill" : "circle")
+                        .font(.caption).foregroundStyle(proxy.running ? .green : .secondary)
+                    Spacer()
+                    Button("Check") { Task { _ = await proxy.check(); await catalog.refresh() } }
+                    if !s.chatgptProxyFolder.isEmpty {
+                        Button(proxy.running ? "Stop" : "Start") { Task { if proxy.running { proxy.stop() } else { await proxy.ensureRunning(); await catalog.refresh() } } }
+                    }
+                }
+            } header: { Label("ChatGPT (web proxy)", systemImage: Provider.chatgpt.symbol) } footer: {
+                Text("Uses your ChatGPT plan through a local copy of github.com/zhaees/chatgpt-proxy (it needs your chatgpt.com cookies in its .env). With its folder set, Anvil starts it when a chatgpt/ model is used. Unofficial: it can break when ChatGPT changes, and OpenAI may not allow it on your account.").font(.caption)
+            }
+
+            Section {
                 HStack {
                     Button("Import keys from Peep") {
                         let got = s.importKeyFromPeep()

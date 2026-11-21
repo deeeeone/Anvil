@@ -10,6 +10,7 @@ final class Brain {
     let experiential: OpenAIClient?
     let luna: OpenAIClient?
     let gemini: GeminiWebClient?
+    let chatgpt: OpenAIClient?
     /// Called after every call with the usage and the cost (provider figure, else catalog estimate; free providers cost 0).
     var onUsage: ((ChatUsage, String, Double?) -> Void)?
     /// Test hook: replaces the network call.
@@ -23,7 +24,7 @@ final class Brain {
     private var geminiSession: (id: String, seen: Int)?
 
     init(model: String, visionModel: String, effort: String, visionEffort: String,
-         experiential: OpenAIClient? = nil, luna: OpenAIClient? = nil, gemini: GeminiWebClient? = nil) {
+         experiential: OpenAIClient? = nil, luna: OpenAIClient? = nil, gemini: GeminiWebClient? = nil, chatgpt: OpenAIClient? = nil) {
         self.model = model
         self.visionModel = visionModel
         self.effort = effort
@@ -31,6 +32,7 @@ final class Brain {
         self.experiential = experiential
         self.luna = luna
         self.gemini = gemini
+        self.chatgpt = chatgpt
     }
 
     /// Test convenience (keeps the old shape).
@@ -48,9 +50,10 @@ final class Brain {
         let exp = s.hasKey ? URL(string: s.baseURL).map { OpenAIClient(baseURL: $0, apiKey: s.apiKey) } : nil
         let luna = URL(string: s.lunaURL).map { OpenAIClient(baseURL: $0, apiKey: "") }
         let gem = s.geminiKey.isEmpty ? nil : URL(string: s.geminiURL).map { GeminiWebClient(baseURL: $0, apiKey: s.geminiKey) }
+        let cg = URL(string: s.chatgptURL).map { OpenAIClient(baseURL: $0, apiKey: "") }
         // A vision model is only usable when its provider is set up.
         let vision = s.ready(Providers.provider(for: s.visionModel)) ? s.visionModel : ""
-        return Brain(model: m, visionModel: vision, effort: s.effort, visionEffort: s.visionEffort, experiential: exp, luna: luna, gemini: gem)
+        return Brain(model: m, visionModel: vision, effort: s.effort, visionEffort: s.visionEffort, experiential: exp, luna: luna, gemini: gem, chatgpt: cg)
     }
 
     /// Which model a history goes to, and whether to send its images.
@@ -69,7 +72,7 @@ final class Brain {
     /// A Brain for a helper agent: same providers and usage accounting, its own Gemini session.
     func fork(model m: String? = nil) -> Brain {
         let b = Brain(model: m ?? model, visionModel: visionModel, effort: effort, visionEffort: visionEffort,
-                      experiential: experiential, luna: luna, gemini: gemini)
+                      experiential: experiential, luna: luna, gemini: gemini, chatgpt: chatgpt)
         b.onUsage = onUsage
         b.override = override
         b.effort = "low"   // helpers only read and search
@@ -146,6 +149,24 @@ final class Brain {
                                                              maxTokens: maxTokens, onText: stream, shouldStop: Self.replyComplete)
             } else {
                 (text, usage) = try await luna.chat(history, model: m, sendImages: images, effort: e.isEmpty ? nil : e, stop: stop, maxTokens: maxTokens)
+            }
+            if agent { lastFinishReason = usage?.finishReason }
+            record(usage, model: m, history: history, reply: text, free: true)
+            return text
+        case .chatgpt:
+            guard let chatgpt else { throw BrainError(status: 0, code: "network", message: "Set the ChatGPT proxy URL in Settings.") }
+            if let problem = await ChatGPTProxy.shared.ensureRunning() { throw BrainError(status: 0, code: "no_key", message: problem) }
+            let text: String, usage: ChatUsage?
+            do {
+                if let stream {
+                    // Like Luna: no stop-sequence support, so end the stream once the JSON block is complete.
+                    (text, usage, _) = try await chatgpt.chatStream(history, model: m, sendImages: false, effort: nil, stop: nil,
+                                                                    maxTokens: nil, onText: stream, shouldStop: Self.replyComplete)
+                } else {
+                    (text, usage) = try await chatgpt.chat(history, model: m, sendImages: false, stop: nil)
+                }
+            } catch let e as BrainError where e.status == 413 || e.message.contains("message_length") {
+                throw BrainError(status: 413, code: "too_long", message: "ChatGPT's web app rejects messages this long. Use /compact, or a different model for big sessions.")
             }
             if agent { lastFinishReason = usage?.finishReason }
             record(usage, model: m, history: history, reply: text, free: true)
