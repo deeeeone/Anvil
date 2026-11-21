@@ -249,3 +249,19 @@ final class ProviderPluginTests: XCTestCase {
         XCTAssertEqual(sent["body"]?["max_completion_tokens"]?.int, 50)
     }
 }
+
+extension ProviderPluginTests {
+    /// Fetches the Z.ai example from this repository on GitHub (needs network, and git access if the repo is private).
+    func testFetchFromGitHubLive() async throws {
+        let pending: PendingProvider
+        do { pending = try await ProviderPlugins.shared.fetch("https://github.com/deeeeone/Anvil/tree/main/examples/providers/zai") }
+        catch { throw XCTSkip("couldn't reach GitHub: \(error)") }
+        XCTAssertEqual(pending.spec.id, "zai")
+        XCTAssertNotNil(pending.commit)
+        XCTAssertTrue(pending.source.hasPrefix("github.com/deeeeone/Anvil@main/examples/providers/zai @ "), pending.source)
+        try ProviderPlugins.shared.confirm(pending)
+        let installed = try XCTUnwrap(ProviderPlugins.shared.provider("zai"))
+        XCTAssertTrue(installed.fromGitHub)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: installed.folder.appendingPathComponent(".git").path))
+    }
+}
