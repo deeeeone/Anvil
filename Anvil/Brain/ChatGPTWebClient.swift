@@ -207,7 +207,8 @@ nonisolated final class ChatGPTWebClient: @unchecked Sendable {
             if parsed["o"]?.string == "append" {
                 if let p = parsed["p"]?.string { lastPath = p }
                 if lastPath == "/message/content/parts/0", let v = parsed["v"]?.string { emit(v) }
-            } else if parsed["o"]?.string == "patch", let ops = parsed["v"]?.array {
+            } else if let ops = parsed["v"]?.array, parsed["p"] == nil, parsed["type"] == nil {
+                // Patch batches arrive with a top-level "patch", and later deltas as a bare v array.
                 for op in ops where op["o"]?.string == "append" && op["p"]?.string == "/message/content/parts/0" {
                     if let v = op["v"]?.string { emit(v) }
                 }

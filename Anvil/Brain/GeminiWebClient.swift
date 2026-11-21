@@ -97,7 +97,7 @@ nonisolated final class GeminiWebClient: @unchecked Sendable {
         inner[61] = []
         inner[68] = 1
         inner[79] = 1
-        inner[80] = 1
+        inner[80] = model.lowercased().contains("thinking") ? 2 : 1
 
         var modelHeaders: [String: String] = [:]
         if let header = Self.modelHeader(model) {
