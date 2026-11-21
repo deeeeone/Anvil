@@ -877,7 +877,8 @@ final class Agent {
     }
 
     private func finish(_ raw: String, ok: Bool, steps: Int, silent: Bool = false, verifiedBy: String? = nil) -> AgentOutcome {
-        let text = Fmt.plain(raw)
+        var text = Fmt.plain(raw)
+        if ok && checkpoint.files.isEmpty && !isSubagent { text = Self.trimFiller(text) }
         if !checkpoint.files.isEmpty { onCheckpoint?(checkpoint) }
         let changed = checkpoint.files.map { Paths.display(URL(fileURLWithPath: $0.path), root: ctx.root) }
         // Remember what broke, so the next session in this project doesn't walk into it again.
@@ -888,6 +889,54 @@ final class Agent {
         if !silent { host?.agentSay(text, final: true) }
         host?.agentStatus("")
         return AgentOutcome(text: text, ok: ok, steps: steps, changedFiles: changed, verifiedBy: verifiedBy)
+    }
+
+    /// Drops the stock closing sentences models tack onto answers that changed nothing: "No changes were made",
+    /// "the folder is not a git repo", "let me know if you want…". Only whole sentences at the very end are
+    /// removed, and never the whole answer.
+    static func trimFiller(_ text: String) -> String {
+        let filler = [
+            #"^no (files|changes|code|edits)( (were|have been))? (made|changed|modified|edited|touched)\b"#,
+            #"^(i )?(made|did not make|didn't make) no (changes|edits)\b"#,
+            #"^nothing (was|has been) (changed|modified|edited)\b"#,
+            #"^(and )?(the|this) (folder|directory|workspace|project|repository|repo) (is not|isn't) a git repo"#,
+            #"^(let me know|feel free to|if you('d| would)? (like|want)|would you like|want me to|happy to|i can also)\b"#,
+        ]
+        func isFiller(_ sentence: String) -> Bool {
+            let s = sentence.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return !s.isEmpty && filler.contains { s.range(of: $0, options: .regularExpression) != nil }
+        }
+        var paragraphs = text.components(separatedBy: "\n\n")
+        while var last = paragraphs.last {
+            // Split the final paragraph into sentences and drop filler from its end.
+            var sentences = Self.sentences(last)
+            var dropped = false
+            while let tail = sentences.last, isFiller(tail) { sentences.removeLast(); dropped = true }
+            guard dropped else { break }
+            last = sentences.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+            if last.isEmpty { paragraphs.removeLast() } else { paragraphs[paragraphs.count - 1] = last; break }
+            if paragraphs.isEmpty { return text }
+        }
+        let out = paragraphs.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return out.isEmpty ? text : out
+    }
+
+    /// Sentences with their trailing punctuation and spacing, so joining them restores the text.
+    private static func sentences(_ paragraph: String) -> [String] {
+        var out: [String] = []
+        var current = ""
+        let chars = Array(paragraph)
+        for (i, c) in chars.enumerated() {
+            current.append(c)
+            let next = i + 1 < chars.count ? chars[i + 1] : " "
+            if ".!?".contains(c), next == " " || next == "\n" {
+                // Keep "e.g." and "v1.2" together: only split before a space.
+                out.append(current)
+                current = ""
+            }
+        }
+        if !current.isEmpty { out.append(current) }
+        return out
     }
 
     /// The args as logged in the observation: big contents are summarised so history stays small.

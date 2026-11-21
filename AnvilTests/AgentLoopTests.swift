@@ -562,4 +562,23 @@ final class AgentLoopTests: XCTestCase {
         _ = await agent.run(goal: "rename foo to bar in calc.py")
         XCTAssertEqual(models.first, "quick-m")
     }
+
+    func testFillerClosersAreTrimmedFromAnswersThatChangedNothing() {
+        let answer = """
+        The workspace contains four projects:
+        - a: a web app.
+        - b: a bot.
+
+        No changes were made, and the repository is not a git repo. If you want to explore a specific project, let me know which one to focus on.
+        """
+        let trimmed = Agent.trimFiller(answer)
+        XCTAssertTrue(trimmed.hasSuffix("- b: a bot."), trimmed)
+        XCTAssertFalse(trimmed.contains("No changes"))
+        // Real content in the last paragraph stays; only the filler sentence goes.
+        XCTAssertEqual(Agent.trimFiller("It uses SwiftUI. Let me know if you want more."), "It uses SwiftUI.")
+        // Mid-answer mentions aren't touched, and an answer that is only filler is kept.
+        XCTAssertEqual(Agent.trimFiller("Let me know if this helps, it reads config.toml first."), "Let me know if this helps, it reads config.toml first.")
+        XCTAssertEqual(Agent.trimFiller("No changes were made."), "No changes were made.")
+        XCTAssertEqual(Agent.trimFiller("Version 1.2 is used. See e.g. main.swift."), "Version 1.2 is used. See e.g. main.swift.")
+    }
 }

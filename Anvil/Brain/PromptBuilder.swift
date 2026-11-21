@@ -21,7 +21,7 @@ nonisolated enum PromptBuilder {
         {"say": "one line", "plan": ["milestone 1", "milestone 2", ...], "actions": [], "done": false} with 3-7 short, concrete milestones. \
         The owner approves or edits it; then work through it and add "milestone": n to the reply in which milestone n is finished. Small tasks and questions skip the plan.
         - Write "say" in plain Markdown (headings, lists, tables, `code`); no HTML or custom tags like <Image> or <Elicitation>.
-        - Final answer: lead with the result, then the files you changed and how you verified it, then anything left or worth knowing. Short, plain text; a few bullets are fine.
+        - Final answer: answer what was asked and stop. After changing files: the result, the files you changed, how you verified it, and anything still left to do. For questions, explanations and reviews: only the answer. Don't say that nothing was changed, don't add facts the owner didn't ask about (git state, which tools you used), and don't close with an offer or "let me know if…"; ask a question only when you need a decision to continue. Short, plain text; a few bullets are fine.
 
         CODING RULES
         - Understand before changing: use grep, glob and read_file to find and read the relevant code. Don't guess at APIs, file names or project structure.
