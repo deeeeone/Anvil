@@ -87,6 +87,12 @@ protocol AgentHost: AnyObject {
     /// Messages the owner sent while the agent was working (delivered with the next observation).
     func agentDrainSteering() -> [String]
     func agentError(_ text: String)
+    /// The reply as it streams in (optional).
+    func agentStream(_ text: String)
+}
+
+extension AgentHost {
+    func agentStream(_ text: String) {}
 }
 
 /// What tools can reach while running.

@@ -111,6 +111,15 @@ nonisolated final class GeminiWebClient: Sendable {
         return text
     }
 
+    func chatStream(_ messages: [ChatMessage], model: String?, sessionID: String?, temporary: Bool = true,
+                    onText: @escaping (String) -> Void, shouldStop: @escaping (String) -> Bool) async throws -> (text: String, cut: Bool) {
+        var body: [String: Any] = ["messages": OpenAIClient.messagesJSON(messages, images: true), "stream": true, "temporary": temporary]
+        if let model { body["model"] = model }
+        if let sessionID { body["session_id"] = sessionID }
+        let r = try await OpenAIClient.consumeSSE(session: session, request: try request("v1/chat/completions", json: body), onText: onText, shouldStop: shouldStop)
+        return (r.text, r.cut)
+    }
+
     func models() async throws -> [String] {
         let data = try await send(try request("v1/models", method: "GET"), attempts: 1)
         return (JSON.parse(String(decoding: data, as: UTF8.self))?["data"]?.array ?? []).compactMap { $0["id"]?.string }

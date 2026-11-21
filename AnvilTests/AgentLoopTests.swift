@@ -46,16 +46,23 @@ final class AgentLoopTests: XCTestCase {
 
     override func tearDownWithError() throws { try? FileManager.default.removeItem(at: dir) }
 
-    func makeAgent(_ replies: [String], mode: PermissionMode = .acceptEdits) -> Agent {
+    var models: [String] = []
+
+    func makeAgent(_ replies: [String], mode: PermissionMode = .acceptEdits, verify: Bool = false, review: Bool = false) -> Agent {
         var queue = replies
         let brain = Brain(client: OpenAIClient(baseURL: URL(string: "http://localhost:1")!, apiKey: ""), model: "m", visionModel: "", effort: "high", visionEffort: "low")
-        brain.override = { [weak self] history, _ in
+        brain.override = { [weak self] history, model in
             self?.sent.append(history)
+            self?.models.append(model)
             return queue.isEmpty ? #"{"say": "out of script", "done": true}"# : queue.removeFirst()
         }
         let ctx = ToolContext(root: dir, processes: ProcessManager(), host: host)
         let a = Agent(ctx: ctx, brain: brain)
         a.mode = mode
+        a.autoVerify = verify
+        a.selfReview = review
+        a.streaming = false
+        a.memory = ProjectMemory()
         return a
     }
 
@@ -269,5 +276,151 @@ final class AgentLoopTests: XCTestCase {
         let agent = makeAgent([fence(#"{"actions": [{"tool": "todo_write", "args": {"todos": [{"content": "a", "status": "completed"}, {"content": "b", "status": "in_progress"}]}}]}"#), fence(#"{"say": "ok", "done": true}"#)])
         _ = await agent.run(goal: "x")
         XCTAssertEqual(host.todos.map(\.status), [.completed, .inProgress])
+    }
+
+    // MARK: Accuracy and speed features
+
+    func testSyntaxCheckFlagsBrokenEdit() async {
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "write_file", "args": {"path": "broken.py", "content": "def f(:\n    pass\n"}}, {"tool": "list_dir", "args": {}}]}"#),
+            fence(#"{"say": "ok", "done": true}"#),
+        ], mode: .bypass)
+        _ = await agent.run(goal: "x")
+        let obs = sent[1].last!.text
+        XCTAssertTrue(obs.contains("SYNTAX CHECK FAILED"), obs)
+        XCTAssertTrue(obs.contains("remaining 1 action"), "a broken file stops the batch")
+    }
+
+    func testGoodEditSaysSyntaxOK() async {
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "edit_file", "args": {"path": "calc.py", "find": "a - b", "replace": "a + b"}}]}"#),
+            fence(#"{"say": "ok", "done": true}"#),
+        ], mode: .bypass)
+        _ = await agent.run(goal: "x")
+        XCTAssertTrue(sent[1].last!.text.contains("(syntax ok)"))
+    }
+
+    func testParallelReadsKeepOrder() async throws {
+        for n in ["a", "b", "c"] { try "file \(n)\n".write(to: dir.appendingPathComponent("\(n).txt"), atomically: true, encoding: .utf8) }
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "read_file", "args": {"path": "a.txt"}}, {"tool": "read_file", "args": {"path": "b.txt"}}, {"tool": "read_file", "args": {"path": "c.txt"}}]}"#),
+            fence(#"{"say": "ok", "done": true}"#),
+        ])
+        _ = await agent.run(goal: "x")
+        let obs = sent[1].last!.text
+        let ia = obs.range(of: "file a")!.lowerBound, ib = obs.range(of: "file b")!.lowerBound, ic = obs.range(of: "file c")!.lowerBound
+        XCTAssertTrue(ia < ib && ib < ic)
+    }
+
+    func testRereadOfUnchangedFileIsDeduplicated() async {
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "read_file", "args": {"path": "calc.py"}}]}"#),
+            fence(#"{"actions": [{"tool": "read_file", "args": {"path": "calc.py"}}]}"#),
+            fence(#"{"say": "ok", "done": true}"#),
+        ])
+        _ = await agent.run(goal: "x")
+        XCTAssertTrue(sent[2].last!.text.contains("unchanged since you read it at step 1"))
+    }
+
+    func testDoneGateRunsKnownTestCommand() async {
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "edit_file", "args": {"path": "calc.py", "find": "a - b", "replace": "a + b"}}]}"#),
+            fence(#"{"say": "Fixed add.", "done": true}"#),
+        ], mode: .bypass, verify: true)
+        agent.memory.testCommand = "python3 -c 'import calc; assert calc.add(2, 3) == 5'"
+        let out = await agent.run(goal: "fix add")
+        XCTAssertTrue(out.ok)
+        XCTAssertNotNil(out.verifiedBy)
+        XCTAssertTrue(out.text.contains("Verified"))
+        XCTAssertEqual(sent.count, 2, "a passing auto-test costs no extra model turn")
+    }
+
+    func testDoneGateSendsFailuresBack() async {
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "edit_file", "args": {"path": "calc.py", "find": "a - b", "replace": "a * b"}}]}"#),
+            fence(#"{"say": "Done.", "done": true}"#),
+            fence(#"{"actions": [{"tool": "edit_file", "args": {"path": "calc.py", "find": "a * b", "replace": "a + b"}}]}"#),
+            fence(#"{"say": "Really done.", "done": true}"#),
+        ], mode: .bypass, verify: true)
+        agent.memory.testCommand = "python3 -c 'import calc; assert calc.add(2, 3) == 5'"
+        let out = await agent.run(goal: "fix add")
+        XCTAssertTrue(sent[2].last!.text.contains("FAILED"))
+        XCTAssertNotNil(out.verifiedBy)
+    }
+
+    func testDoneGateAsksToVerifyWithoutTestCommand() async {
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "write_file", "args": {"path": "notes.md", "content": "hi"}}]}"#),
+            fence(#"{"say": "Done.", "done": true}"#),
+            fence(#"{"say": "Docs only, nothing to run.", "done": true}"#),
+        ], mode: .bypass, verify: true)
+        let out = await agent.run(goal: "write notes")
+        XCTAssertTrue(sent[2].last!.text.contains("Verify the change"))
+        XCTAssertEqual(out.text, "Docs only, nothing to run.")
+    }
+
+    func testShellRunAfterEditCountsAsVerification() async {
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "edit_file", "args": {"path": "calc.py", "find": "a - b", "replace": "a + b"}}, {"tool": "shell", "args": {"command": "python3 -c 'import calc; print(calc.add(1,1))'"}}]}"#),
+            fence(#"{"say": "Done.", "done": true}"#),
+        ], mode: .bypass, verify: true)
+        _ = await agent.run(goal: "x")
+        XCTAssertEqual(sent.count, 2, "already verified: no gate turn")
+    }
+
+    func testSelfReviewSendsIssuesBack() async {
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "write_file", "args": {"path": "a.py", "content": "x = 1\ny = 2\nprint('debug')\n"}}]}"#),
+            fence(#"{"say": "Done.", "done": true}"#),
+            "- a.py: leftover debug print",
+            fence(#"{"say": "Removed it.", "done": true}"#),
+        ], mode: .bypass, review: true)
+        let out = await agent.run(goal: "make a.py")
+        XCTAssertTrue(sent[3].last!.text.contains("leftover debug print"), sent[3].last!.text)
+        XCTAssertEqual(out.text, "Removed it.")
+    }
+
+    func testReviewLGTMFinishes() async {
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "write_file", "args": {"path": "a.py", "content": "x = 1\ny = 2\nz = 3\n"}}]}"#),
+            fence(#"{"say": "Done.", "done": true}"#),
+            "LGTM",
+        ], mode: .bypass, review: true)
+        let out = await agent.run(goal: "make a.py")
+        XCTAssertEqual(out.text, "Done.")
+    }
+
+    func testEscalatesAfterRepeatedFailure() async {
+        let bad = fence(#"{"actions": [{"tool": "edit_file", "args": {"path": "calc.py", "find": "nope", "replace": "x"}}]}"#)
+        let agent = makeAgent([bad, bad, fence(#"{"say": "ok", "done": true}"#)])
+        agent.escalationModel = "deepseek-v4.1-flash-uncensored"
+        _ = await agent.run(goal: "x")
+        XCTAssertEqual(models[2], "deepseek-v4.1-flash-uncensored")
+        XCTAssertTrue(sent[2].last!.text.contains("A different model takes the next step"))
+        XCTAssertEqual(models[1], "m")
+    }
+
+    func testExploreHelperReportsBack() async {
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "explore", "args": {"question": "where is add defined?"}}]}"#),
+            fence(#"{"actions": [{"tool": "grep", "args": {"pattern": "def add"}}]}"#),
+            fence(#"{"say": "add is defined in calc.py line 1.", "done": true}"#),
+            fence(#"{"say": "Found it.", "done": true}"#),
+        ])
+        let out = await agent.run(goal: "find add")
+        XCTAssertEqual(out.text, "Found it.")
+        XCTAssertTrue(sent[3].last!.text.contains("explore report:\nadd is defined in calc.py line 1."), sent[3].last!.text)
+        XCTAssertTrue(sent[1][0].text.contains("read-only research helper"), "the helper starts its own conversation")
+        XCTAssertFalse(sent[1][0].text.contains("- explore {"), "no nested helpers")
+    }
+
+    func testPassingTestCommandIsRemembered() async throws {
+        try "import unittest\nclass T(unittest.TestCase):\n    def test_a(self):\n        self.assertTrue(True)\n".write(to: dir.appendingPathComponent("test_x.py"), atomically: true, encoding: .utf8)
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "shell", "args": {"command": "python3 -m unittest -q"}}]}"#),
+            fence(#"{"say": "ok", "done": true}"#),
+        ], mode: .bypass)
+        _ = await agent.run(goal: "x")
+        XCTAssertEqual(agent.memory.testCommand, "python3 -m unittest -q")
     }
 }

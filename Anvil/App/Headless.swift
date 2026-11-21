@@ -58,6 +58,12 @@ enum Headless {
         agent.briefing = session.briefing
         agent.mode = mode
         agent.maxSteps = Int(value("--max-steps") ?? "") ?? 60
+        let args = CommandLine.arguments
+        agent.autoVerify = !args.contains("--no-verify")
+        agent.selfReview = !args.contains("--no-review")
+        agent.streaming = !args.contains("--no-stream")
+        agent.escalationModel = args.contains("--no-escalate") ? "" : (value("--escalate") ?? AppSettings.shared.escalation(for: brain.model))
+        agent.exploreModel = value("--explore-model") ?? ""
         var checkpoints = session.checkpoints
         agent.onCheckpoint = { cp in
             if let i = checkpoints.firstIndex(where: { $0.id == cp.id }) { checkpoints[i] = cp } else { checkpoints.append(cp) }
@@ -65,7 +71,11 @@ enum Headless {
         host.items.append(ChatItem(kind: .user, text: prompt))
         print("▶︎ \(prompt)\n  project: \(root.path), mode: \(mode.label), model: \(brain.model) (\(Providers.provider(for: brain.model).label)), effort: \(brain.effort)")
         let start = Date()
-        let outcome = await agent.run(goal: prompt)
+        let work = Task { await agent.run(goal: prompt) }
+        if let t = Double(value("--timeout") ?? "") {
+            Task { try? await Task.sleep(for: .seconds(t)); work.cancel() }
+        }
+        let outcome = await work.value
         processes.stopAll()
         session.items += host.items
         session.messages = agent.messages
@@ -77,6 +87,12 @@ enum Headless {
         print("\n■ \(outcome.ok ? "done" : "stopped") in \(outcome.steps) steps, \(Int(Date().timeIntervalSince(start)))s, \(Fmt.dollars(usage.cost)) (\(usage.calls) calls)")
         if !outcome.changedFiles.isEmpty { print("  changed: \(outcome.changedFiles.joined(separator: ", "))") }
         print("  session: \(session.id.uuidString)")
+        if let path = value("--json-summary") {
+            let o: [String: Any] = ["ok": outcome.ok, "steps": outcome.steps, "seconds": Date().timeIntervalSince(start), "cost": usage.cost,
+                                    "calls": usage.calls, "prompt": usage.prompt, "completion": usage.completion, "cached": usage.cached,
+                                    "model": brain.model, "changed": outcome.changedFiles, "verified": outcome.verifiedBy ?? "", "answer": outcome.text]
+            if let d = try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys]) { try? d.write(to: URL(fileURLWithPath: path)) }
+        }
         return outcome.ok ? 0 : 1
     }
 }

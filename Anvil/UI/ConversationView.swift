@@ -481,6 +481,7 @@ struct StatusLine: View {
     let controller: SessionController
     var body: some View {
         if controller.running {
+          VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
                 Spinner()
                 Text((controller.status.isEmpty ? "Working" : controller.status) + "…")
@@ -495,6 +496,14 @@ struct StatusLine: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 6)
+            if !controller.liveText.isEmpty {
+                Text(controller.liveText).font(.system(size: 12.5)).italic().foregroundStyle(Theme.text3)
+                    .lineLimit(2).truncationMode(.head)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 30).padding(.trailing, 6)
+                    .transition(.opacity)
+            }
+          }
         }
     }
 }

@@ -37,6 +37,8 @@ final class SessionController: AgentHost {
 
     private(set) var running = false
     private(set) var status = ""
+    /// The reply as it streams in: the model's reasoning so far (shown under the spinner).
+    private(set) var liveText = ""
     private(set) var startedAt: Date?
     var pendingPermission: PendingPermission?
     var pendingPlan: PendingPlan?
@@ -84,8 +86,7 @@ final class SessionController: AgentHost {
         a.briefing = session.briefing
         a.mode = mode
         a.allowedCommands = Set(session.allowedCommands)
-        a.maxSteps = AppSettings.shared.maxSteps
-        a.autoCompactTokens = AppSettings.shared.autoCompactTokens
+        applySettings(a)
         a.onModeChange = { [weak self] m in self?.session.mode = m; self?.scheduleSave() }
         a.onHistory = { [weak self, weak a] in
             guard let self, let a else { return }
@@ -101,6 +102,17 @@ final class SessionController: AgentHost {
         }
         agent = a
         return a
+    }
+
+    private func applySettings(_ a: Agent) {
+        let s = AppSettings.shared
+        a.maxSteps = s.maxSteps
+        a.autoCompactTokens = s.autoCompactTokens
+        a.autoVerify = s.autoVerify
+        a.selfReview = s.selfReview
+        a.streaming = s.streaming
+        a.escalationModel = s.escalation(for: model)
+        a.exploreModel = s.exploreModel.isEmpty || !s.ready(Providers.provider(for: s.exploreModel)) ? "" : s.exploreModel
     }
 
     /// Drops the cached agent so new settings (key, effort, MCP tools) apply on the next request.
@@ -137,6 +149,7 @@ final class SessionController: AgentHost {
             return
         }
         agent.mode = mode
+        applySettings(agent)
         running = true
         startedAt = Date()
         status = "Thinking"
@@ -146,6 +159,7 @@ final class SessionController: AgentHost {
             guard let self else { return }
             self.running = false
             self.status = ""
+            self.liveText = ""
             self.startedAt = nil
             self.task = nil
             self.pendingPermission = nil
@@ -351,6 +365,13 @@ final class SessionController: AgentHost {
     // MARK: AgentHost
 
     func agentStatus(_ text: String) { status = text }
+
+    func agentStream(_ text: String) {
+        // Show the reasoning part (before the json block), last line or two.
+        let thought = text.components(separatedBy: "```").first ?? ""
+        let t = thought.trimmingCharacters(in: .whitespacesAndNewlines)
+        liveText = t.count > 220 ? "…" + String(t.suffix(220)) : t
+    }
 
     func agentThought(_ text: String) {
         guard !text.isEmpty else { return }

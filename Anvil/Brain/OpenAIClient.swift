@@ -76,4 +76,62 @@ nonisolated final class OpenAIClient: Sendable {
         }
         throw last ?? BrainError(status: 0, code: "network", message: "request failed")
     }
+
+    /// Streaming chat. `onText` gets the accumulated text; return true from `shouldStop` to end the stream early
+    /// (the reply is complete, the model would only keep talking). Usage comes from the final chunk when the stream runs out.
+    func chatStream(_ messages: [ChatMessage], model: String, sendImages: Bool = false, effort: String? = nil, stop: [String]? = nil,
+                    onText: @escaping (String) -> Void, shouldStop: @escaping (String) -> Bool) async throws -> (text: String, usage: ChatUsage?, cut: Bool) {
+        var req = URLRequest(url: baseURL.appendingPathComponent("v1/chat/completions"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !apiKey.isEmpty { req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
+        var body: [String: Any] = ["model": model, "messages": Self.messagesJSON(messages, images: sendImages), "stream": true,
+                                   "stream_options": ["include_usage": true]]
+        if let effort, !effort.isEmpty { body["reasoning_effort"] = effort }
+        if let stop, !stop.isEmpty { body["stop"] = stop }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return try await Self.consumeSSE(session: session, request: req, onText: onText, shouldStop: shouldStop)
+    }
+
+    /// Reads an OpenAI-style SSE stream. Shared with the Gemini proxy client.
+    static func consumeSSE(session: URLSession, request: URLRequest, onText: @escaping (String) -> Void,
+                           shouldStop: @escaping (String) -> Bool) async throws -> (text: String, usage: ChatUsage?, cut: Bool) {
+        let bytes: URLSession.AsyncBytes, resp: URLResponse
+        do { (bytes, resp) = try await session.bytes(for: request) } catch {
+            if (error as? URLError)?.code == .cancelled { throw CancellationError() }
+            throw BrainError(status: 0, code: (error as? URLError)?.code == .timedOut ? "upstream_timeout" : "network", message: error.localizedDescription)
+        }
+        let http = resp as? HTTPURLResponse
+        let status = http?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            var data = Data()
+            for try await b in bytes { data.append(b); if data.count > 8000 { break } }
+            let msg = JSON.parse(String(decoding: data, as: UTF8.self))?["error"]?["message"]?.string ?? String(decoding: data.prefix(300), as: UTF8.self)
+            let code = status == 429 ? "server_busy" : status == 401 || status == 403 ? "unauthorized" : "upstream_error"
+            throw BrainError(status: status, code: code, message: msg, retryAfter: http?.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init))
+        }
+        var text = ""
+        var usage: ChatUsage?
+        var lastEmit = Date.distantPast
+        for try await line in bytes.lines {
+            try Task.checkCancellation()
+            guard line.hasPrefix("data:") else { continue }
+            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            if payload == "[DONE]" { break }
+            guard let j = JSON.parse(payload) else { continue }
+            if let e = j["error"] { throw BrainError(status: 200, code: e["code"]?.string ?? "stream_error", message: e["message"]?.string ?? "stream error") }
+            if let u = j["usage"], u != .null {
+                usage = ChatUsage(prompt: u["prompt_tokens"]?.int ?? 0, completion: u["completion_tokens"]?.int ?? 0,
+                                  cached: u["prompt_tokens_details"]?["cached_tokens"]?.int ?? 0, cost: u["cost"]?.double)
+            }
+            if let d = j["choices"]?.array?.first?["delta"]?["content"]?.string, !d.isEmpty {
+                text += d
+                if Date().timeIntervalSince(lastEmit) > 0.08 { onText(text); lastEmit = Date() }
+                if d.contains("`") && shouldStop(text) { onText(text); return (text, usage, true) }
+            }
+        }
+        onText(text)
+        if text.isEmpty { throw BrainError(status: status, code: "bad_response", message: "empty reply") }
+        return (text, usage, false)
+    }
 }

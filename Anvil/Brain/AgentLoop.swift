@@ -5,6 +5,8 @@ struct AgentOutcome {
     var ok: Bool
     var steps: Int
     var changedFiles: [String] = []
+    /// The command the app ran to verify the change, when it passed.
+    var verifiedBy: String?
 }
 
 /// Observe, think, act loop over the text action protocol (ported from Peep, specialised for coding).
@@ -13,6 +15,8 @@ final class Agent {
     var brain: Brain
     private(set) var tools: [String: ToolSpec] = [:]
     private var ordered: [ToolSpec] = []
+    /// A read-only helper started by `explore` (no memory writes, no verification, no nested helpers).
+    let isSubagent: Bool
 
     /// The model conversation. Saved with the session, so it can be resumed.
     var messages: [ChatMessage] = []
@@ -22,9 +26,30 @@ final class Agent {
     var allowedCommands = Set<String>()
     var maxSteps = 80
     var autoCompactTokens = 160_000
+    /// Run the project's tests (or ask the model to verify) before accepting "done" after edits.
+    var autoVerify = true
+    /// Have a second call review the final diff.
+    var selfReview = true
+    /// Model for a turn after the same action failed twice ("" = never escalate).
+    var escalationModel = ""
+    /// Model for exploration turns and explore helpers ("" = the session model).
+    var exploreModel = ""
+    /// Stream replies to the host (live text; early stop for providers that ignore stop sequences).
+    var streaming = true
+    /// What this project taught earlier sessions: test/build commands and lessons.
+    var memory: ProjectMemory
     /// A turn that never reached the model (network failure), re-sent with the next request.
     private var unsent: String?
     private var checkpoint = Checkpoint(label: "")
+
+    // Per-request state.
+    private var currentStep = 0
+    private var editedSinceVerify = false
+    private var failureCounts: [String: Int] = [:]
+    private var escalateNext = false
+    private var lastFailure: String?
+    /// read_file results recently shown to the model: path|offset|limit → (modification date, step).
+    private var readCache: [String: (Date, Int)] = [:]
 
     var onModeChange: ((PermissionMode) -> Void)?
     var onCheckpoint: ((Checkpoint) -> Void)?
@@ -32,10 +57,15 @@ final class Agent {
     var onHistory: (() -> Void)?
     var onCompacted: ((String) -> Void)?
 
-    init(ctx: ToolContext, brain: Brain, extraTools: [ToolSpec] = []) {
+    init(ctx: ToolContext, brain: Brain, extraTools: [ToolSpec] = [], subagent: Bool = false) {
         self.ctx = ctx
         self.brain = brain
-        register(FileTools.all() + ShellTools.all() + WorkTools.all() + extraTools)
+        self.isSubagent = subagent
+        self.memory = subagent ? ProjectMemory() : ProjectMemory.load(ctx.root)
+        var specs = FileTools.all() + ShellTools.all() + WorkTools.all() + [Self.repoMapTool] + extraTools
+        if subagent { specs.removeAll { ["ask_user", "todo_write", "start_process", "stop_process"].contains($0.name) } }
+        register(specs)
+        if !subagent { register([exploreTool()]) }
     }
 
     var host: AgentHost? { ctx.host }
@@ -58,9 +88,17 @@ final class Agent {
     func projectInfo() async -> PromptBuilder.ProjectInfo {
         let root = ctx.root
         let skills = SkillLibrary.all(project: root)
-        return PromptBuilder.ProjectInfo(root: root, git: await Git.status(root), layout: ProjectContext.layout(root),
-                                         memory: ProjectContext.memory(root), skills: [], skillCount: skills.count)
+        var info = PromptBuilder.ProjectInfo(root: root, git: await Git.status(root), layout: ProjectContext.layout(root),
+                                             memory: ProjectContext.memory(root), skills: [], skillCount: skills.count)
+        info.repoMap = await Task.detached { RepoMap.build(root) }.value
+        if let t = memory.testCommand { info.testCommand = t; info.testCommandProven = true }
+        else { info.testCommand = ProjectMemory.guessTestCommand(root) }
+        info.buildCommand = memory.buildCommand
+        info.lessons = memory.lessons
+        return info
     }
+
+    static let reanchorText = "You do have access. This app executes the actions you list in the json block, on the owner's project, with their permission, and sends you the results. You never need the owner to paste files or run commands."
 
     // MARK: Run
 
@@ -69,6 +107,12 @@ final class Agent {
         defer { ProcessInfo.processInfo.endActivity(activity) }
         let taskStart = Date()
         checkpoint = Checkpoint(label: Fmt.line(goal, 80))
+        editedSinceVerify = false
+        failureCounts = [:]
+        escalateNext = false
+        lastFailure = nil
+        if streaming && !isSubagent { brain.onStream = host.map { h in { [weak h] text in h?.agentStream(text) } } }
+        defer { brain.onStream = nil; host?.agentStream("") }
 
         var intro: String
         if messages.isEmpty {
@@ -79,18 +123,25 @@ final class Agent {
         } else {
             intro = PromptBuilder.followUp(goal, attachments: attachmentsNote)
         }
-        var userText = (unsent.map { $0 + "\n\n" } ?? "") + intro + PromptBuilder.modeNote(mode) + PromptBuilder.formatReminder
+        var userText = (unsent.map { $0 + "\n\n" } ?? "") + intro + (isSubagent ? "" : PromptBuilder.modeNote(mode)) + PromptBuilder.formatReminder
         unsent = nil
         var pendingImages = images
         var parseFailures = 0
         var reanchors = 0
         var actedThisRequest = false
+        var editedThisRequest = false
+        var lastBatchExploratory = false
+        var verifyRuns = 0
+        var askedToVerify = false
+        var reviewed = false
+        var verifiedBy: String?
         var planApproved = false
         var planShown = false
         var lastMode = mode
         let maxSteps = max(3, self.maxSteps)
 
         for step in 1...maxSteps {
+            currentStep = step
             if Task.isCancelled { return finish("Stopped.", ok: false, steps: step) }
             host?.agentStatus(step == 1 ? "Thinking" : "Thinking (step \(step))")
 
@@ -104,12 +155,22 @@ final class Agent {
                 }
             }
 
+            // Which model thinks this turn: escalation after repeated failures, a fast model while only exploring.
+            var turnModel: String?
+            if escalateNext && !escalationModel.isEmpty && escalationModel != brain.model {
+                turnModel = escalationModel
+                host?.agentStatus("Thinking harder (\(escalationModel))")
+            } else if !exploreModel.isEmpty && lastBatchExploratory && !editedThisRequest && step > 1 {
+                turnModel = exploreModel
+            }
+            escalateNext = false
+
             Compactor.slim(&messages)
             messages.append(.user(userText, images: pendingImages))
             onHistory?()
             let raw: String
             do {
-                raw = try await brain.reply(messages)
+                raw = try await brain.reply(messages, model: turnModel)
             } catch is CancellationError {
                 messages.removeLast()
                 onHistory?()
@@ -120,6 +181,7 @@ final class Agent {
                 host?.agentError(msg)
                 return finish(msg, ok: false, steps: step, silent: true)
             }
+            host?.agentStream("")
             messages.append(.assistant(raw))
             onHistory?()
             pendingImages = []
@@ -133,7 +195,7 @@ final class Agent {
                 // Chat-tuned models sometimes say they "can't access files". They can: re-anchor them (twice at most).
                 if Self.looksLikeCantAct(raw) && reanchors < 2 {
                     reanchors += 1
-                    userText = "<observation step=\(step)>You do have access. This app executes the actions you list in the json block, on the owner's project, with their permission, and sends you the results. You never need the owner to paste files or run commands. Continue with the request: \"\(Fmt.line(goal, 300))\". Start by reading or searching the relevant files. \(PromptBuilder.formatReminder)</observation>"
+                    userText = "<observation step=\(step)>\(Self.reanchorText) Continue with the request: \"\(Fmt.line(goal, 300))\". Start by reading or searching the relevant files. \(PromptBuilder.formatReminder)</observation>"
                     continue
                 }
                 // Plain-text answer with no JSON at all: treat it as the final reply.
@@ -141,6 +203,7 @@ final class Agent {
                     return finish(raw.trimmingCharacters(in: .whitespacesAndNewlines), ok: true, steps: step)
                 }
                 if parseFailures > 2 { return finish("I couldn't produce a usable reply three times in a row and stopped. Try rephrasing.", ok: false, steps: step) }
+                if parseFailures == 2 && !escalationModel.isEmpty { escalateNext = true }
                 userText = "<observation step=\(step)>Your last reply couldn't be used: \(error). If a file's content contains ``` fences, keep the JSON valid by escaping newlines and quotes. \(PromptBuilder.formatReminder)</observation>"
                 continue
             }
@@ -149,7 +212,7 @@ final class Agent {
             if let m = reply.milestone { host?.agentMilestone(m) }
 
             // Plan first for big jobs: the owner approves (or edits) before anything runs.
-            if !reply.plan.isEmpty && !planApproved && !planShown {
+            if !reply.plan.isEmpty && !planApproved && !planShown && !isSubagent {
                 if let say = reply.say, !say.isEmpty { host?.agentSay(Fmt.plain(say), final: false) }
                 let decision = await host?.agentPlan(reply.plan.map(Fmt.plain)) ?? .approve
                 if Task.isCancelled { return finish("Stopped.", ok: false, steps: step) }
@@ -176,33 +239,83 @@ final class Agent {
                 // A "final answer" that says it can't touch the project, before doing anything: re-anchor instead.
                 if !actedThisRequest && reanchors < 2 && Self.looksLikeCantAct((reply.say ?? "") + " " + reply.thought) {
                     reanchors += 1
-                    userText = "<observation step=\(step)>You do have access. This app executes the actions you list in the json block, on the owner's project, with their permission, and sends you the results. You never need the owner to paste files or run commands. Continue with the request: \"\(Fmt.line(goal, 300))\". Start with an action such as read_file or list_dir. \(PromptBuilder.formatReminder)</observation>"
+                    userText = "<observation step=\(step)>\(Self.reanchorText) Continue with the request: \"\(Fmt.line(goal, 300))\". Start with an action such as read_file or list_dir. \(PromptBuilder.formatReminder)</observation>"
                     continue
                 }
                 if reply.done || reply.say != nil {
-                    return finish(reply.say ?? reply.thought, ok: true, steps: step)
+                    // Done gate: changed files must be verified, then reviewed, before the answer is accepted.
+                    if !isSubagent && editedThisRequest {
+                        if autoVerify && editedSinceVerify && verifyRuns < 2 {
+                            verifyRuns += 1
+                            if let cmd = memory.testCommand ?? (verifyRuns == 1 ? ProjectMemory.guessTestCommand(ctx.root) : nil) {
+                                host?.agentStatus("Verifying")
+                                let r = await execute(AgentAction(tool: "shell", args: .object(["command": .string(cmd)])), label: "Verify: \(cmd)")
+                                if r.result.ok {
+                                    editedSinceVerify = false
+                                    verifiedBy = cmd
+                                    remember(command: cmd)
+                                } else if !r.line.contains("DECLINED") {
+                                    userText = "<observation step=\(step)>Before accepting done, the app ran the project's tests and they FAILED:\n\(r.line)\nFix the problem and verify (or explain why the failure has nothing to do with your change), then finish.</observation>\n\(PromptBuilder.formatReminder)"
+                                    continue
+                                }
+                            } else if !askedToVerify {
+                                askedToVerify = true
+                                userText = "<observation step=\(step)>You changed files after your last successful build or test run. Verify the change works (run the tests, build, or execute the code) before finishing, or reply done:true again with one line on why it can't be verified.</observation>\n\(PromptBuilder.formatReminder)"
+                                continue
+                            }
+                        }
+                        if selfReview && !reviewed {
+                            reviewed = true
+                            if let issues = await review(goal) {
+                                userText = "<observation step=\(step)>A reviewer read your diff for this request and flagged:\n\(issues)\nFix the real problems and verify again, or reply done:true if none of these are real problems (say why in one line).</observation>\n\(PromptBuilder.formatReminder)"
+                                continue
+                            }
+                        }
+                    }
+                    var answer = reply.say ?? reply.thought
+                    if let v = verifiedBy, !answer.contains(v) { answer += "\n\nVerified: `\(v)` passed." }
+                    return finish(answer, ok: true, steps: step, verifiedBy: verifiedBy)
                 }
                 userText = "<observation step=\(step)>No actions were given. If the request is complete, reply with \"done\": true and the answer in \"say\". \(PromptBuilder.formatReminder)</observation>"
                 continue
             }
             if let say = reply.say, !say.isEmpty, !reply.done { host?.agentSay(Fmt.plain(say), final: false) }
 
-            // Execute the batch.
+            // Execute the batch: runs of read-only actions go in parallel, everything else in order.
             var results: [String] = []
             var images: [(Data, String)] = []
             var anyFailed = false
             actedThisRequest = true
-            for (i, action) in reply.actions.enumerated() {
+            lastBatchExploratory = reply.actions.allSatisfy { isParallelSafe($0) }
+            let actions = reply.actions
+            var i = 0
+            batch: while i < actions.count {
                 if Task.isCancelled { break }
-                let r = await execute(action)
-                results.append(r.line)
-                if let img = r.result.image { images.append(img) }
-                if let end = r.result.endTask { return finish(end, ok: false, steps: step) }
-                if !r.result.ok || r.result.stopBatch {
-                    anyFailed = anyFailed || !r.result.ok
-                    if i < reply.actions.count - 1 { results.append("(the remaining \(reply.actions.count - i - 1) action(s) in this batch were skipped)") }
-                    break
+                var j = i
+                while j < actions.count, isParallelSafe(actions[j]) { j += 1 }
+                if j - i < 2 { j = i + 1 }
+                let group = Array(actions[i..<j])
+                let executed = group.count > 1 ? await executeParallel(group) : [await execute(group[0])]
+                var stop = false
+                for r in executed {
+                    results.append(r.line)
+                    if let img = r.result.image { images.append(img) }
+                    if let end = r.result.endTask { return finish(end, ok: false, steps: step) }
+                    if r.edited { editedThisRequest = true; editedSinceVerify = true }
+                    if r.verified { editedSinceVerify = false }
+                    if !r.result.ok {
+                        let key = "\(r.action.tool) \(r.action.args["path"]?.string ?? r.command ?? "")"
+                        failureCounts[key, default: 0] += 1
+                        if failureCounts[key]! >= 2 && !escalationModel.isEmpty { escalateNext = true }
+                        lastFailure = "\(r.action.tool) \(Fmt.line(Self.argsForLog(r.action), 100)) failed: \(Fmt.line(r.result.output, 140))"
+                    }
+                    if !r.result.ok || r.result.stopBatch { anyFailed = anyFailed || !r.result.ok; stop = true }
                 }
+                if stop {
+                    if j < actions.count { results.append("(the remaining \(actions.count - j) action(s) in this batch were skipped)") }
+                    break batch
+                }
+                i = j
             }
             if Task.isCancelled { return finish("Stopped.", ok: false, steps: step) }
             if reply.done && !anyFailed { results.append("(you marked this done; check these results, then reply with done:true and the final answer in say)") }
@@ -210,6 +323,9 @@ final class Agent {
             var obs = "<observation step=\(step)>\nresults of your actions:\n" + results.joined(separator: "\n") + "\n"
             if reply.ignoredBlocks > 0 {
                 obs += "\n(Your reply contained \(reply.ignoredBlocks + 1) json blocks; only the first ran. Write exactly one block per reply, then stop: the app sends the real results. Never write an observation yourself.)\n"
+            }
+            if escalateNext && !escalationModel.isEmpty && escalationModel != brain.model {
+                obs += "\n(The same action failed twice. A different model takes the next step: re-read the relevant code and try a different approach.)\n"
             }
             let steering = host?.agentDrainSteering() ?? []
             if !steering.isEmpty {
@@ -226,19 +342,160 @@ final class Agent {
         return finish("I reached the step limit (\(maxSteps)) before finishing. Say \"continue\" to keep going.", ok: false, steps: maxSteps)
     }
 
+    /// Read-only actions that can run at the same time as their neighbours.
+    func isParallelSafe(_ a: AgentAction) -> Bool {
+        guard let spec = tools[a.tool], spec.prepare == nil else { return false }
+        if ["wait", "wait_until", "ask_user", "todo_write"].contains(a.tool) { return false }
+        let k = spec.effectiveKind(a.args)
+        return k == .read || k == .network
+    }
+
+    func executeParallel(_ group: [AgentAction]) async -> [Executed] {
+        await withTaskGroup(of: (Int, Executed).self) { g in
+            for (k, a) in group.enumerated() {
+                g.addTask { @MainActor in (k, await self.execute(a)) }
+            }
+            var out: [(Int, Executed)] = []
+            for await r in g { out.append(r) }
+            return out.sorted { $0.0 < $1.0 }.map(\.1)
+        }
+    }
+
+    /// A passing test or build command is remembered for this project (and re-run automatically before "done").
+    private func remember(command cmd: String) {
+        guard !isSubagent else { return }
+        if ProjectMemory.isTestCommand(cmd), memory.testCommand != cmd { memory.testCommand = cmd; memory.save(ctx.root) }
+        else if !ProjectMemory.isTestCommand(cmd), ProjectMemory.isBuildCommand(cmd), memory.buildCommand != cmd { memory.buildCommand = cmd; memory.save(ctx.root) }
+    }
+
+    /// Commands that exercise the code (count as verifying an edit).
+    static func exercisesCode(_ cmd: String) -> Bool {
+        if ProjectMemory.isTestCommand(cmd) || ProjectMemory.isBuildCommand(cmd) { return true }
+        if Permissions.isReadOnly(cmd) { return false }
+        let c = cmd.lowercased()
+        return [#"\bpython3?\b"#, #"\bnode\b"#, #"\bruby\b"#, #"\bgo\s+run\b"#, #"\bcargo\s+run\b"#, #"\bswift\b"#, #"(^|\s)\./"#, #"\bbash\b"#,
+                #"\bdeno\b"#, #"\bbun\b"#, #"\bnpx\b"#, #"\bnpm\s+run\b"#, #"\bcurl\b"#, #"\bphp\b"#, #"\bjava\b"#].contains { c.range(of: $0, options: .regularExpression) != nil }
+    }
+
+    // MARK: Review
+
+    /// A second model call reads the request's diff and returns concrete problems, or nil if it looks right.
+    func review(_ goal: String) async -> String? {
+        var diff = ""
+        var changed = 0
+        for f in checkpoint.files {
+            let url = URL(fileURLWithPath: f.path)
+            let now = try? String(contentsOf: url, encoding: .utf8)
+            let rel = Paths.display(url, root: ctx.root)
+            let u = DiffEngine.unified(old: f.original ?? "", new: now ?? "", path: rel)
+            let st = DiffEngine.stats(old: f.original ?? "", new: now ?? "")
+            changed += st.added + st.removed
+            diff += u.isEmpty ? "" : u + "\n"
+        }
+        guard changed >= 3, !diff.isEmpty else { return nil }
+        let id = UUID()
+        host?.agentStepBegan(id, tool: "review", summary: "Review the changes")
+        host?.agentStatus("Reviewing the changes")
+        let start = Date()
+        let prompt = """
+        You are reviewing a code change another engineer made for this request:
+        "\(Fmt.line(goal, 600))"
+
+        DIFF
+        \(Fmt.clip(diff, max: 24000))
+
+        List only concrete, important problems: bugs, parts of the request that are missing, edge cases the request clearly implies, \
+        leftover debug code, or changes unrelated to the request. Don't comment on style or naming, don't suggest optional improvements. \
+        Be brief: at most 5 bullet points, each with the file and what is wrong. If there are no important problems, reply with exactly: LGTM
+        """
+        let text = (try? await brain.oneShot(prompt, effort: "low")) ?? "LGTM"
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ok = clean.uppercased().hasPrefix("LGTM") || (clean.count < 80 && clean.uppercased().contains("LGTM"))
+        host?.agentStepEnded(id, status: .ok, output: ok ? "No problems found" : Fmt.plain(clean), diffs: [], duration: Date().timeIntervalSince(start))
+        return ok ? nil : Fmt.clip(Fmt.plain(clean), max: 2500)
+    }
+
+    // MARK: Helpers for tools that need the agent
+
+    static let repoMapTool = ToolSpec(
+        name: "repo_map", kind: .read,
+        signature: #"{optional "path": folder}"#,
+        summary: "outline of source files and their top-level functions, classes and types (to find where things live)",
+        group: .search
+    ) { a, ctx in
+        let root = ctx.resolve(a["path"]?.string ?? ".")
+        let map = await Task.detached { RepoMap.build(root, limit: 14000) }.value
+        return .ok(map.isEmpty ? "no source files with known languages under \(ctx.rel(root))" : map)
+    }
+
+    func exploreTool() -> ToolSpec {
+        ToolSpec(name: "explore", kind: .read,
+                 signature: #"{"question": str}"#,
+                 summary: "a read-only helper investigates a question about the codebase in its own context and returns a short report with file paths and line numbers",
+                 group: .search) { [weak self] a, _ in
+            guard let self else { return .fail("unavailable") }
+            guard let q = a["question"]?.string ?? a["task"]?.string ?? a["query"]?.string ?? a["value"]?.string, !q.isEmpty else { return .fail("missing question") }
+            return await self.runExplorer(q)
+        }
+    }
+
+    func runExplorer(_ question: String) async -> ToolResult {
+        let subHost = SubagentHost(parent: host, stepID: ctx.stepID)
+        let subCtx = ToolContext(root: ctx.root, processes: ctx.processes, host: subHost)
+        subCtx.shellTimeout = 120
+        let sub = Agent(ctx: subCtx, brain: brain.fork(model: exploreModel.isEmpty ? nil : exploreModel), subagent: true)
+        sub.mode = .ask
+        sub.maxSteps = 14
+        sub.autoVerify = false
+        sub.selfReview = false
+        sub.escalationModel = ""
+        let goal = """
+        You are a read-only research helper for another coding agent. Investigate and answer: \(question)
+        Use read and search tools (read_file, grep, glob, list_dir, repo_map, read-only shell commands). Edits and commands that change \
+        anything will be declined. Don't propose a plan. Batch reads and searches. Finish with done:true and a concise report in say: \
+        the direct answer, the key files with line numbers, short relevant snippets, and anything you're unsure of. At most ~300 words.
+        """
+        let out = await sub.run(goal: goal)
+        return out.ok ? .ok("explore report:\n" + out.text) : ToolResult(ok: false, output: "explore helper stopped: " + out.text)
+    }
+
     // MARK: One action
 
-    struct Executed { var line: String; var result: ToolResult }
+    struct Executed {
+        var line: String
+        var result: ToolResult
+        var action: AgentAction
+        var command: String? = nil
+        /// Files were changed.
+        var edited = false
+        /// A command that exercises the code succeeded.
+        var verified = false
+    }
 
-    func execute(_ action: AgentAction) async -> Executed {
+    func execute(_ action: AgentAction, label: String? = nil) async -> Executed {
         let argsShort = Fmt.line(action.args.compact, 160)
         guard let spec = tools[action.tool] else {
-            return Executed(line: "- \(action.tool) → FAILED: unknown action. Use only the listed actions.", result: .fail("unknown"))
+            return Executed(line: "- \(action.tool) → FAILED: unknown action. Use only the listed actions.", result: .fail("unknown"), action: action)
         }
         let id = UUID()
         ctx.stepID = id
-        let summary = Self.describe(action, root: ctx.root)
+        let summary = label ?? Self.describe(action, root: ctx.root)
         let start = Date()
+
+        // Re-reading a file the model saw a moment ago, unchanged: point back to it instead of resending it.
+        var readKey: String?
+        var readDate: Date?
+        if action.tool == "read_file", let p = action.args["path"]?.string ?? action.args["file"]?.string {
+            let url = ctx.resolve(p)
+            readKey = "\(url.path)|\(action.args["offset"]?.int ?? 1)|\(action.args["limit"]?.int ?? 400)"
+            readDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            if let key = readKey, let d = readDate, let (seenDate, seenStep) = readCache[key], seenDate == d, seenStep < currentStep, currentStep - seenStep <= 3 {
+                let msg = "unchanged since you read it at step \(seenStep) (same lines); use that output"
+                host?.agentStepBegan(id, tool: action.tool, summary: summary)
+                host?.agentStepEnded(id, status: .ok, output: msg, diffs: [], duration: 0)
+                return Executed(line: "- read_file \(argsShort) → ok: \(msg)", result: .ok(msg), action: action)
+            }
+        }
 
         if let prepare = spec.prepare {
             host?.agentStepBegan(id, tool: action.tool, summary: summary)
@@ -247,13 +504,13 @@ final class Agent {
             do { changes = try await prepare(action.args, ctx) } catch {
                 let msg = (error as? ToolFailure)?.message ?? error.localizedDescription
                 host?.agentStepEnded(id, status: .failed, output: msg, diffs: [], duration: Date().timeIntervalSince(start))
-                return Executed(line: "- \(action.tool) \(argsShort) → FAILED: \(msg)", result: .fail(msg))
+                return Executed(line: "- \(action.tool) \(argsShort) → FAILED: \(msg)", result: .fail(msg), action: action)
             }
             let diffs = changes.map { $0.diff(root: ctx.root) }
             let decision = Permissions.decide(mode: mode, kind: .edit, paths: changes.map(\.url), root: ctx.root, allowed: allowedCommands)
             if let denied = await gate(decision, tool: action.tool, command: nil, diffs: diffs) {
                 host?.agentStepEnded(id, status: .denied, output: denied, diffs: diffs, duration: 0)
-                return Executed(line: "- \(action.tool) \(argsShort) → DECLINED: \(denied)", result: .fail(denied))
+                return Executed(line: "- \(action.tool) \(argsShort) → DECLINED: \(denied)", result: .fail(denied), action: action)
             }
             do {
                 for c in changes {
@@ -263,14 +520,27 @@ final class Agent {
                 }
             } catch {
                 host?.agentStepEnded(id, status: .failed, output: error.localizedDescription, diffs: diffs, duration: Date().timeIntervalSince(start))
-                return Executed(line: "- \(action.tool) \(argsShort) → FAILED: \(error.localizedDescription)", result: .fail(error.localizedDescription))
+                return Executed(line: "- \(action.tool) \(argsShort) → FAILED: \(error.localizedDescription)", result: .fail(error.localizedDescription), action: action)
             }
             onCheckpoint?(checkpoint)
             let desc = zip(changes, diffs).map { c, d in
                 c.new == nil ? "deleted \(d.path)" : c.old == nil ? "created \(d.path) (\(DiffEngine.lines(c.new ?? "").count) lines)" : "edited \(d.path) (+\(d.added) -\(d.removed))"
             }.joined(separator: "; ")
+            // Syntax-check what was written, so a broken file shows up now rather than a turn later.
+            var problems: [String] = []
+            for (c, d) in zip(changes, diffs) where c.new != nil {
+                if let e = await Diagnostics.check(c.url) { problems.append("\(d.path): \(e)") }
+            }
+            if !problems.isEmpty {
+                let msg = desc + "\nSYNTAX CHECK FAILED (the edit was written; fix it next):\n" + problems.joined(separator: "\n")
+                host?.agentStepEnded(id, status: .failed, output: msg, diffs: diffs, duration: Date().timeIntervalSince(start))
+                var r = ToolResult.ok(msg)
+                r.stopBatch = true
+                return Executed(line: "- \(action.tool) \(Self.argsForLog(action)) → ok, but \(msg)", result: r, action: action, edited: true)
+            }
             host?.agentStepEnded(id, status: .ok, output: desc, diffs: diffs, duration: Date().timeIntervalSince(start))
-            return Executed(line: "- \(action.tool) \(Self.argsForLog(action)) → ok: \(desc)", result: .ok(desc))
+            let checked = changes.contains { Diagnostics.command(for: $0.url) != nil } ? " (syntax ok)" : ""
+            return Executed(line: "- \(action.tool) \(Self.argsForLog(action)) → ok: \(desc)\(checked)", result: .ok(desc), action: action, edited: true)
         }
 
         let kind = spec.effectiveKind(action.args)
@@ -279,7 +549,7 @@ final class Agent {
         if let denied = await gate(decision, tool: action.tool, command: command, diffs: []) {
             host?.agentStepBegan(id, tool: action.tool, summary: summary)
             host?.agentStepEnded(id, status: .denied, output: denied, diffs: [], duration: 0)
-            return Executed(line: "- \(action.tool) \(argsShort) → DECLINED: \(denied)", result: .fail(denied))
+            return Executed(line: "- \(action.tool) \(argsShort) → DECLINED: \(denied)", result: .fail(denied), action: action, command: command)
         }
         host?.agentStepBegan(id, tool: action.tool, summary: summary)
         host?.agentStatus(summary)
@@ -293,7 +563,13 @@ final class Agent {
             r = .fail((error as? ToolFailure)?.message ?? "error: \(error.localizedDescription)")
         }
         host?.agentStepEnded(id, status: r.ok ? .ok : .failed, output: r.output, diffs: [], duration: Date().timeIntervalSince(start))
-        return Executed(line: "- \(action.tool) \(argsShort) → \(r.ok ? "ok" : "FAILED"): \(Fmt.clip(r.output, max: 16000))", result: r)
+        if r.ok, let key = readKey, let d = readDate { readCache[key] = (d, currentStep) }
+        var verified = false
+        if action.tool == "shell", r.ok, let cmd = command, Self.exercisesCode(cmd) {
+            verified = true
+            remember(command: cmd)
+        }
+        return Executed(line: "- \(action.tool) \(argsShort) → \(r.ok ? "ok" : "FAILED"): \(Fmt.clip(r.output, max: 16000))", result: r, action: action, command: command, verified: verified)
     }
 
     /// Applies the permission decision, asking the owner when needed. Returns the refusal text, or nil to proceed.
@@ -327,6 +603,7 @@ final class Agent {
         let clean = summary.replacingOccurrences(of: #"```json[\s\S]*?```"#, with: "", options: .regularExpression)
         let base = briefing.isEmpty ? (messages.first?.text ?? "") : briefing
         messages = Compactor.compacted(briefing: base, summary: clean)
+        readCache = [:]
         onHistory?()
         onCompacted?(clean)
     }
@@ -342,13 +619,18 @@ final class Agent {
         unsent = "(The previous request, \"\(Fmt.line(goal, 200))\", was interrupted at step \(step) because the app couldn't reach you. This is what you hadn't seen yet:)\n" + Fmt.clip(last.text, max: 6000)
     }
 
-    private func finish(_ raw: String, ok: Bool, steps: Int, silent: Bool = false) -> AgentOutcome {
+    private func finish(_ raw: String, ok: Bool, steps: Int, silent: Bool = false, verifiedBy: String? = nil) -> AgentOutcome {
         let text = Fmt.plain(raw)
         if !checkpoint.files.isEmpty { onCheckpoint?(checkpoint) }
         let changed = checkpoint.files.map { Paths.display(URL(fileURLWithPath: $0.path), root: ctx.root) }
+        // Remember what broke, so the next session in this project doesn't walk into it again.
+        if !ok && !isSubagent && text != "Stopped.", let f = lastFailure {
+            memory.addLesson(f)
+            memory.save(ctx.root)
+        }
         if !silent { host?.agentSay(text, final: true) }
         host?.agentStatus("")
-        return AgentOutcome(text: text, ok: ok, steps: steps, changedFiles: changed)
+        return AgentOutcome(text: text, ok: ok, steps: steps, changedFiles: changed, verifiedBy: verifiedBy)
     }
 
     /// The args as logged in the observation: big contents are summarised so history stays small.
@@ -384,6 +666,8 @@ final class Agent {
         case "web_search": return "Search the web: \(Fmt.line(args["query"]?.string ?? "", 80))"
         case "fetch_url": return "Fetch \(Fmt.line(args["url"]?.string ?? "", 100))"
         case "todo_write": return "Update todos"
+        case "repo_map": return "Map " + (path.isEmpty ? "the repo" : path)
+        case "explore": return "Explore: \(Fmt.line(args["question"]?.string ?? args["task"]?.string ?? "", 110))"
         case "use_skill": return "Use skill \(args["name"]?.string ?? "")"
         case "ask_user": return "Ask: \(Fmt.line(args["question"]?.string ?? "", 100))"
         default: return "\(a.tool) \(Fmt.line(args.compact, 100))"
@@ -410,4 +694,27 @@ final class Agent {
         if left <= 6 { return "(Budget: \(left) steps left. Prioritise and wrap up soon.)\n" }
         return ""
     }
+}
+
+/// Host for an explore helper: its steps show as output lines under the parent's explore step; it can't ask for anything.
+final class SubagentHost: AgentHost {
+    weak var parent: AgentHost?
+    let stepID: UUID?
+    init(parent: AgentHost?, stepID: UUID?) { self.parent = parent; self.stepID = stepID }
+
+    func agentStatus(_ text: String) {}
+    func agentThought(_ text: String) {}
+    func agentSay(_ text: String, final: Bool) {}
+    func agentStepBegan(_ id: UUID, tool: String, summary: String) {
+        if let stepID { parent?.agentStepOutput(stepID, chunk: "↳ \(summary)\n") }
+    }
+    func agentStepOutput(_ id: UUID, chunk: String) {}
+    func agentStepEnded(_ id: UUID, status: ToolStep.Status, output: String, diffs: [FileDiff], duration: Double) {}
+    func agentPermission(_ req: PermissionRequest) async -> PermissionAnswer { .deny("this is a read-only helper; report what you found instead") }
+    func agentPlan(_ steps: [String]) async -> PlanDecision { .approve }
+    func agentMilestone(_ index: Int) {}
+    func agentTodos(_ todos: [TodoItem]) {}
+    func agentAsk(_ question: String) async -> String? { nil }
+    func agentDrainSteering() -> [String] { [] }
+    func agentError(_ text: String) {}
 }

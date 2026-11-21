@@ -59,5 +59,7 @@ schemes:
         AnvilTests: [test]
     test:
       targets: [AnvilTests]
+      environmentVariables:
+        ANVIL_SUPPORT_DIR: /tmp/anvil-test-support
     run:
       config: Debug

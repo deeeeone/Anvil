@@ -107,6 +107,22 @@ struct AgentSettings: View {
             Stepper("Max steps per request: \(s.maxSteps)", value: $s.maxSteps, in: 10...300, step: 10)
             Stepper("Auto-compact above ~\(Fmt.tokens(s.autoCompactTokens)) tokens", value: $s.autoCompactTokens, in: 40_000...900_000, step: 20_000)
             Stepper("Shell timeout: \(Int(s.shellTimeout))s", value: $s.shellTimeout, in: 30...1800, step: 30)
+            Section {
+                Toggle("Verify before finishing (run the project's tests after edits)", isOn: $s.autoVerify)
+                Toggle("Review the diff before finishing (one extra model call)", isOn: $s.selfReview)
+                Toggle("Stream replies", isOn: $s.streaming)
+                Picker("After repeated failures, switch to", selection: $s.escalationModel) {
+                    Text("Off").tag("")
+                    Text("Auto (the other model family)").tag("auto")
+                    ForEach(ModelCatalog.shared.choices) { Text($0.id).tag($0.id) }
+                }
+                Picker("Exploration model", selection: $s.exploreModel) {
+                    Text("Same as the session").tag("")
+                    ForEach(ModelCatalog.shared.choices) { Text($0.id).tag($0.id) }
+                }
+            } header: { Text("Accuracy and speed") } footer: {
+                Text("Every edit is syntax-checked. The exploration model handles explore helpers and turns that only read and search.").font(.caption)
+            }
             Section("Permission modes") {
                 Text("Ask before edits: shows each diff and command for approval. Auto-accept edits: file changes apply without asking, commands still ask. Plan only: read-only until you approve a plan. Bypass: everything runs. Dangerous commands (rm -rf, sudo, git push, git reset --hard...) always ask, in every mode.")
                     .font(.callout).foregroundStyle(.secondary)

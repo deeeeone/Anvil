@@ -14,6 +14,8 @@ final class Brain {
     var onUsage: ((ChatUsage, String, Double?) -> Void)?
     /// Test hook: replaces the network call.
     var override: (([ChatMessage], String) async throws -> String)?
+    /// Live text while a reply streams in (nil = don't stream).
+    var onStream: ((String) -> Void)?
 
     /// The Gemini proxy keeps history server-side: the session id and how many messages it already holds.
     private var geminiSession: (id: String, seen: Int)?
@@ -57,10 +59,38 @@ final class Brain {
         return (model, false)
     }
 
-    func reply(_ history: [ChatMessage]) async throws -> String {
-        let (m, images) = Self.route(history, model: model, vision: visionModel)
+    /// A Brain for a helper agent: same providers and usage accounting, its own Gemini session.
+    func fork(model m: String? = nil) -> Brain {
+        let b = Brain(model: m ?? model, visionModel: visionModel, effort: effort, visionEffort: visionEffort,
+                      experiential: experiential, luna: luna, gemini: gemini)
+        b.onUsage = onUsage
+        b.override = override
+        return b
+    }
+
+    /// The reply is finished once its first JSON block closes: anything after it is the model running ahead.
+    nonisolated static func replyComplete(_ text: String) -> Bool {
+        guard let open = text.range(of: "```json") ?? text.range(of: "```JSON") else { return false }
+        let rest = text[open.upperBound...]
+        guard let close = rest.range(of: "\n```") else { return false }
+        let body = rest[..<close.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        return body.hasPrefix("{") && ActionParser.parseLenient(String(body), repair: false) != nil
+    }
+
+    /// One agent turn. `model` overrides the session model for this turn (escalation, exploration routing).
+    func reply(_ history: [ChatMessage], model requested: String? = nil) async throws -> String {
+        let (m, images) = Self.route(history, model: requested ?? model, vision: visionModel)
         if let override { return try await override(history, m) }
-        return try await call(history, model: m, images: images, effort: images ? visionEffort : effort, stop: OpenAIClient.agentStops, agent: true)
+        // Streaming has no built-in retry: retry transient failures here.
+        var attempt = 0
+        while true {
+            do {
+                return try await call(history, model: m, images: images, effort: images ? visionEffort : effort, stop: OpenAIClient.agentStops, agent: true)
+            } catch let e as BrainError where attempt < 2 && ["network", "upstream_error", "server_busy", "upstream_timeout", "bad_response"].contains(e.code) {
+                attempt += 1
+                try await Task.sleep(for: .seconds(min(10, e.retryAfter ?? Double(2 * attempt))))
+            }
+        }
     }
 
     /// A single side question (commit messages, summaries) at low effort.
@@ -71,15 +101,30 @@ final class Brain {
     }
 
     private func call(_ history: [ChatMessage], model m: String, images: Bool, effort e: String, stop: [String]?, agent: Bool) async throws -> String {
+        let stream = agent ? onStream : nil
         switch Providers.provider(for: m) {
         case .experiential:
             guard let experiential else { throw BrainError(status: 0, code: "no_key", message: "") }
-            let (text, usage) = try await experiential.chat(history, model: m, sendImages: images, effort: e.isEmpty ? nil : e, stop: stop)
+            let text: String, usage: ChatUsage?
+            if let stream {
+                // Runs to the end (stop sequences end it) so the provider's exact usage and cost arrive.
+                (text, usage, _) = try await experiential.chatStream(history, model: m, sendImages: images, effort: e.isEmpty ? nil : e, stop: stop,
+                                                                     onText: stream, shouldStop: { _ in false })
+            } else {
+                (text, usage) = try await experiential.chat(history, model: m, sendImages: images, effort: e.isEmpty ? nil : e, stop: stop)
+            }
             record(usage, model: m, history: history, reply: text, free: false)
             return text
         case .luna:
             guard let luna else { throw BrainError(status: 0, code: "network", message: "Set the Luna API URL in Settings.") }
-            let (text, usage) = try await luna.chat(history, model: m, sendImages: images, effort: e.isEmpty ? nil : e, stop: stop)
+            let text: String, usage: ChatUsage?
+            if let stream {
+                // Luna ignores stop sequences: end the stream as soon as the JSON block is complete.
+                (text, usage, _) = try await luna.chatStream(history, model: m, sendImages: images, effort: e.isEmpty ? nil : e, stop: stop,
+                                                             onText: stream, shouldStop: Self.replyComplete)
+            } else {
+                (text, usage) = try await luna.chat(history, model: m, sendImages: images, effort: e.isEmpty ? nil : e, stop: stop)
+            }
             record(usage, model: m, history: history, reply: text, free: true)
             return text
         case .gemini:
@@ -94,7 +139,12 @@ final class Brain {
                 message = Self.fold(history)
                 id = "anvil-\(UUID().uuidString.prefix(12))"
             }
-            let text = try await gemini.chat([message], model: m, sessionID: agent ? id : nil)
+            let text: String
+            if let stream {
+                text = try await gemini.chatStream([message], model: m, sessionID: id, onText: stream, shouldStop: Self.replyComplete).text
+            } else {
+                text = try await gemini.chat([message], model: m, sessionID: agent ? id : nil)
+            }
             if agent { geminiSession = (id, history.count + 1) }   // + the reply the agent appends
             record(nil, model: m, history: [message], reply: text, free: true)
             return text

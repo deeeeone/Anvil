@@ -19,6 +19,16 @@ final class AppSettings {
     var autoCompactTokens: Int { didSet { d.set(autoCompactTokens, forKey: "autoCompactTokens") } }
     var defaultMode: PermissionMode { didSet { d.set(defaultMode.rawValue, forKey: "defaultMode") } }
     var shellTimeout: Double { didSet { d.set(shellTimeout, forKey: "shellTimeout") } }
+    /// Before accepting "done" after edits, run the project's test command (or ask the agent to verify).
+    var autoVerify: Bool { didSet { d.set(autoVerify, forKey: "autoVerify") } }
+    /// A second model call reads the final diff and flags real problems before the agent finishes.
+    var selfReview: Bool { didSet { d.set(selfReview, forKey: "selfReview") } }
+    /// After the same action fails twice, the next turn goes to this model ("auto" picks the other family, "" = off).
+    var escalationModel: String { didSet { d.set(escalationModel, forKey: "escalationModel") } }
+    /// Exploration turns (only reads and searches so far) and explore helpers use this model ("" = the session model).
+    var exploreModel: String { didSet { d.set(exploreModel, forKey: "exploreModel") } }
+    /// Stream replies (live text, and early stop for providers that ignore stop sequences).
+    var streaming: Bool { didSet { d.set(streaming, forKey: "streaming") } }
     /// Experiential Labs key.
     var apiKey: String {
         didSet { if !inMemoryKey { Keychain.set(apiKey, for: "apiKey") } }
@@ -48,6 +58,11 @@ final class AppSettings {
         autoCompactTokens = d.object(forKey: "autoCompactTokens") as? Int ?? 160_000
         defaultMode = PermissionMode(rawValue: d.string(forKey: "defaultMode") ?? "") ?? .ask
         shellTimeout = d.object(forKey: "shellTimeout") as? Double ?? 300
+        autoVerify = d.object(forKey: "autoVerify") as? Bool ?? true
+        selfReview = d.object(forKey: "selfReview") as? Bool ?? true
+        escalationModel = d.string(forKey: "escalationModel") ?? "auto"
+        exploreModel = d.string(forKey: "exploreModel") ?? ""
+        streaming = d.object(forKey: "streaming") as? Bool ?? true
         lunaURL = d.string(forKey: "lunaURL") ?? Providers.defaultLunaURL
         geminiURL = d.string(forKey: "geminiURL") ?? Providers.defaultGeminiURL
         if let env = ProcessInfo.processInfo.environment["ANVIL_GEMINI_KEY"], !env.isEmpty {
@@ -66,6 +81,14 @@ final class AppSettings {
     }
 
     var hasKey: Bool { !apiKey.isEmpty }
+
+    /// The model to escalate to from `model` ("" = none available).
+    func escalation(for model: String) -> String {
+        if escalationModel.isEmpty { return "" }
+        if escalationModel != "auto" { return ready(Providers.provider(for: escalationModel)) && escalationModel != model ? escalationModel : "" }
+        guard ready(.experiential) else { return "" }
+        return model.hasPrefix("deepseek") ? "glm-5.3-flash-uncensored" : "deepseek-v4.1-flash-uncensored"
+    }
 
     /// Can requests to this provider go out?
     func ready(_ p: Provider) -> Bool {
