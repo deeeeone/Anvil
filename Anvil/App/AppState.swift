@@ -42,7 +42,10 @@ final class AppState {
     /// Background tasks for this project (see TaskQueue.swift).
     var queue: [QueuedTask] = []
     /// Sessions started by other sessions' agents (see SubSessions.swift).
-    var subSessions: [SubSession] = [] { didSet { persistSubSessions() } }
+    var subSessions: [SubSession] = []
+    /// Instructions waiting for their time (see Schedule.swift).
+    var schedules: [ScheduledTask] = []
+    @ObservationIgnored var scheduleTimer: Task<Void, Never>? { didSet { persistSubSessions() } }
     /// True while a project's saved links are being loaded (so loading doesn't write them back).
     @ObservationIgnored var restoringSubSessions = false
     /// Polls GitHub for labeled issues to queue (see TaskQueue.swift).
@@ -124,6 +127,8 @@ final class AppState {
         refreshBrief(root)
         processQueue()
         watchGitHubIssues()
+        loadSchedules()
+        startScheduleTimer()
     }
 
     /// Keep the project brief current in the background (one cheap call only when the project's shape changed).

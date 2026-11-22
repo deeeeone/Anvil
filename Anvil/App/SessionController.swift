@@ -52,6 +52,10 @@ final class SessionController: AgentHost {
     @ObservationIgnored var onFinish: ((AgentOutcome) -> Void)?
     /// Runs unattended (a queue task or a sub-session): never stops to wait for a plan approval.
     var background = false
+    /// /goal: run to completion without asking the owner anything (see runCommand).
+    private(set) var goalMode = false
+    @ObservationIgnored private var goalContinues = 0
+    @ObservationIgnored private var goalSaved: (mode: PermissionMode?, steps: Int?)?
 
     @ObservationIgnored private var agent: Agent?
     @ObservationIgnored private var task: Task<Void, Never>?
@@ -155,7 +159,7 @@ final class SessionController: AgentHost {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !images.isEmpty else { return }
         if images.isEmpty, let (name, args) = SlashCommands.split(text) {
-            if running && !["cost", "help", "mode", "queue", "limit"].contains(name) { append(ChatItem(kind: .system, text: "Wait for the current request to finish (or Stop it) before running /\(name).")); return }
+            if running && !["cost", "help", "mode", "queue", "limit", "schedule"].contains(name) { append(ChatItem(kind: .system, text: "Wait for the current request to finish (or Stop it) before running /\(name).")); return }
             runCommand(name, args: args, raw: text)
             return
         }
@@ -231,6 +235,7 @@ final class SessionController: AgentHost {
             if !outcome.changedFiles.isEmpty { self.app?.refreshGit() }
             self.saveNow()
             if NSApp != nil && !NSApp.isActive { self.notifyDone(outcome) }
+            if self.continueGoal(after: outcome) { return }
             self.afterRequest(goal: goal, outcome: outcome)
             self.onFinish?(outcome)
             // Anything typed during the run that never reached the agent becomes the next request.
@@ -315,6 +320,25 @@ final class SessionController: AgentHost {
             else { app?.enqueue(args) }
         case "commit":
             Task { await commitAll() }
+        case "goal":
+            guard !args.isEmpty else { append(ChatItem(kind: .system, text: "/goal <task> runs until the task is completely finished and verified, without asking you questions or for plan approval. It switches to Auto-accept edits for the run (dangerous commands still ask) and gets up to 300 steps. Esc stops it.")); return }
+            startGoal(args, display: raw)
+        case "grill-me":
+            let topic = args.isEmpty ? "whatever the owner has been describing in this conversation" : args
+            start(goal: Self.grillPrompt(topic), display: raw)
+        case "schedule":
+            guard let app else { return }
+            switch ScheduleParser.parse(args) {
+            case .list: append(ChatItem(kind: .system, text: app.scheduleSummary()))
+            case .invalid(let why): append(ChatItem(kind: .system, text: why))
+            case .cancel(let n):
+                if let t = app.cancelSchedule(number: n) { append(ChatItem(kind: .system, text: "Cancelled: \(Fmt.line(t.prompt, 80))")) }
+                else { append(ChatItem(kind: .system, text: "No scheduled task number \(n). See /schedule list.")) }
+            case .add(let t):
+                app.addSchedule(t)
+                let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short
+                append(ChatItem(kind: .system, text: "Scheduled (\(t.repeatLabel)), first run \(f.string(from: t.next)): \(Fmt.line(t.prompt, 80)). It runs in the background queue, in its own worktree, while Anvil is open."))
+            }
         case "pr":
             let goal = "Open a GitHub pull request for the work in this session. If you're on main or master, create a descriptive branch first (git switch -c ...). Commit any uncommitted work with a clear message, then call gh_pr_create with a concise title and a body that says what changed, why, and how it was verified." + (args.isEmpty ? "" : " Notes from the owner: \(args)")
             start(goal: goal, display: raw)
@@ -432,6 +456,67 @@ final class SessionController: AgentHost {
                 self.append(ChatItem(kind: .error, text: "Couldn't write the skill: \((error as? ToolFailure)?.message ?? error.localizedDescription)"))
             }
         }
+    }
+
+    // MARK: Goal and grill-me
+
+    static func grillPrompt(_ topic: String) -> String {
+        """
+        GRILL ME. Before anything is built, interview the owner until the plan is clear. Topic: \(topic)
+
+        Rules:
+        - You may read code first (read-only) so you don't ask what the code already answers. Do NOT edit files or run anything that changes things until the plan is agreed.
+        - Ask ONE question at a time with ask_user, most important first. Put your recommended answer in the question ("I'd do X because Y. OK?") so they can just say yes.
+        - Cover what matters for this topic: the goal and who it's for, scope and non-goals, edge cases, constraints and existing conventions, technical choices, and how we'll know it works.
+        - Stop when no important ambiguity is left (usually 3 to 8 questions). Then reply with a "plan" of 3-7 milestones that reflects what was agreed, so the owner can approve it, and only then start.
+        """
+    }
+
+    static func goalPrompt(_ goal: String) -> String {
+        """
+        GOAL MODE. Work until this is COMPLETELY finished and verified, without asking the owner anything: \(goal)
+
+        - Nobody will answer questions or approve a plan. When something is ambiguous, pick the most reasonable option, note the assumption, and keep going.
+        - Don't stop at a first draft or a partial result. Run the build or tests and look at the real output (use the browser for UI work), fix what you find, and check again.
+        - Finish with done:true only when the goal is fully met. Your final answer says what was done, how it was verified, and any assumptions you made.
+        """
+    }
+
+    func startGoal(_ goal: String, display: String) {
+        enterGoalMode()
+        start(goal: Self.goalPrompt(goal), display: display)
+    }
+
+    private func enterGoalMode() {
+        goalSaved = (session.mode, session.stepLimit)
+        goalMode = true
+        goalContinues = 0
+        session.stepLimit = 300
+        if mode == .ask || mode == .plan {
+            mode = .acceptEdits
+            append(ChatItem(kind: .system, text: "Goal mode: switched to Auto-accept edits so nothing waits for you. Dangerous commands still ask. Esc stops it."))
+        }
+    }
+
+    func runCommandStateOnly() { enterGoalMode() }
+
+    /// After a goal-mode request: keep going when it only ran out of steps; otherwise end goal mode.
+    /// Returns true when it started another request (the caller must not treat the goal as over).
+    private func continueGoal(after outcome: AgentOutcome) -> Bool {
+        guard goalMode else { return false }
+        if !outcome.ok, outcome.text.contains("step limit"), goalContinues < 3 {
+            goalContinues += 1
+            append(ChatItem(kind: .system, text: "Goal mode: hit the step limit, continuing (\(goalContinues) of 3)."))
+            start(goal: "Continue toward the goal. Don't repeat finished work: check what's already done, then finish the rest.", display: "(goal mode: continuing)")
+            return true
+        }
+        goalMode = false
+        if let saved = goalSaved {
+            session.stepLimit = saved.steps
+            if let m = saved.mode { session.mode = m; agent?.mode = m }
+            goalSaved = nil
+        }
+        return false
     }
 
     // MARK: Rewind
@@ -691,13 +776,13 @@ final class SessionController: AgentHost {
     func agentPlan(_ steps: [String]) async -> PlanDecision {
         var card = PlanCard(steps: steps)
         // Bypass means no prompts: the plan is shown and tracked, but approved right away.
-        if mode == .bypass || background { card.state = .approved }
+        if mode == .bypass || background || goalMode { card.state = .approved }
         let item = ChatItem(kind: .plan, text: "", plan: card)
         append(item)
         session.plan = card
         session.todos = []
         if app?.showInspector == true { app?.inspectorTab = .todo }
-        if mode == .bypass || background { return .approve }
+        if mode == .bypass || background || goalMode { return .approve }
         return await withCheckedContinuation { cont in
             var done = false
             pendingPlan = PendingPlan(itemID: item.id) { [weak self] decision in
@@ -733,6 +818,9 @@ final class SessionController: AgentHost {
     }
 
     func agentAsk(_ question: String) async -> String? {
+        if goalMode {
+            return "(Goal mode: nobody is available to answer. Choose the most reasonable option yourself, state the assumption in your final answer, and continue.)"
+        }
         append(ChatItem(kind: .assistant, text: question))
         return await withCheckedContinuation { cont in
             var done = false
