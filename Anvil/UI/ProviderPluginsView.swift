@@ -394,6 +394,7 @@ private struct PasteProviderSessionView: View {
         var session = ProviderPlugins.Session()
         session.cookies = cookies
         if let token = cookies["token"], !token.isEmpty { session.localStorage["token"] = token }
+        if let token = cookies["access_token"] ?? cookies["kimi-auth"], !token.isEmpty { session.localStorage["access_token"] = token }
         ProviderPlugins.shared.setSession(provider.id, session)
         onSaved()
         dismiss()

@@ -64,7 +64,7 @@ Many community projects turn a chat website into an OpenAI-style API that runs a
 - `baseURL` and `ready` must be localhost. Make the server listen on `127.0.0.1` only, so nobody else on the network can use it.
 - `body` adds request fields the server understands (for example `{"enable_thinking": false}`), and `"editableBaseURL": true` lets people point the plugin at a copy they host elsewhere instead.
 
-[deeeeone/anvil-provider-qwen2api](https://github.com/deeeeone/anvil-provider-qwen2api) and [deeeeone/anvil-provider-zai-proxy](https://github.com/deeeeone/anvil-provider-zai-proxy) are complete examples. They download the upstream project during setup instead of copying it, which keeps the plugin small and respects the upstream's license.
+[deeeeone/anvil-provider-qwen2api](https://github.com/deeeeone/anvil-provider-qwen2api), [deeeeone/anvil-provider-zai-proxy](https://github.com/deeeeone/anvil-provider-zai-proxy) and [deeeeone/anvil-provider-kimi](https://github.com/deeeeone/anvil-provider-kimi) are complete examples. They download the upstream project during setup instead of copying it, which keeps the plugin small and respects the upstream's license.
 
 To try it, save the file in a folder and pick **Add provider → From a folder**. Edit, then click **Reload**.
 
