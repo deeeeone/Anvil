@@ -246,6 +246,7 @@ final class Agent {
         var editedThisRequest = false
         var sentBackForNoAction = false
         var askedForPlan = false
+        var askedForSummary = false
         var lastBatchExploratory = false
         var lastBatchFailed = false
         var verifyRuns = 0
@@ -461,6 +462,15 @@ final class Agent {
                                 continue
                             }
                         }
+                    }
+                    // After real work, a one-liner ("Fixed the issues.") leaves the owner to ask what exists, where it is and
+                    // how to use it. Ask for a proper summary once.
+                    if !isSubagent && editedThisRequest && !askedForSummary && size != .simple
+                        && goal.split(whereSeparator: \.isWhitespace).count >= 6
+                        && Self.isThinAnswer(reply.say ?? reply.thought) {
+                        askedForSummary = true
+                        userText = "<observation step=\(step)>Your final answer is too thin for the work you did. Reply again with done:true and a complete answer for the owner: what you built or changed (and why, if it matters), exactly where it is (file paths), how to run or use it (the exact command or steps, with a short example), how you verified it and what the real output showed, and any known limits or follow-ups. Plain prose or a few bullets, no filler.</observation>\n\(PromptBuilder.formatReminder)"
+                        continue
                     }
                     var answer = reply.say ?? reply.thought
                     if let v = verifiedBy, !answer.contains(v) { answer += "\n\nVerified: `\(v)` passed." }
@@ -971,6 +981,15 @@ final class Agent {
     /// Drops the stock closing sentences models tack onto answers that changed nothing: "No changes were made",
     /// "the folder is not a git repo", "let me know if you want…". Only whole sentences at the very end are
     /// removed, and never the whole answer.
+    /// A final answer too short to tell the owner what exists, where it is and how to use it.
+    static func isThinAnswer(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.count < 100 { return true }
+        // A real summary names something concrete: a path, a command or a file.
+        let concrete = t.contains("/") || t.contains("`") || [".py", ".ts", ".tsx", ".swift", ".js", ".rs", ".go", ".md", ".json"].contains { t.contains($0) }
+        return !concrete && t.count < 320 && !t.contains("\n")
+    }
+
     /// "Answered above: it's a flash loan…" → "It's a flash loan…". A pointer to text that isn't there reads as broken.
     static func stripLeadingPointer(_ text: String) -> String {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -751,4 +751,23 @@ final class AgentLoopTests: XCTestCase {
         XCTAssertEqual(Agent.stripLeadingPointer("See below: the build fails in parseWeek because of an off-by-one."), "The build fails in parseWeek because of an off-by-one.")
         XCTAssertEqual(Agent.stripLeadingPointer("Based on the search results, it is a loan."), "Based on the search results, it is a loan.")
     }
+
+    func testOneLineAnswerAfterBuildingSomethingIsSentBack() async {
+        let goal = "make a scraper in python that can resolve tmdb ids into playable streams"
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "write_file", "args": {"path": "scraper.py", "content": "print(1)\n"}}]}"#),
+            fence(#"{"say": "Fixed the issues and re-verified.", "done": true}"#),
+            fence(#"{"say": "I wrote scraper.py in the project root. Run it with `python3 scraper.py --tmdb 1396 --season 1 --episode 1`; I verified it against the live site and it printed three playable m3u8 URLs.", "done": true}"#),
+        ], mode: .bypass)
+        agent.autoVerify = false
+        agent.selfReview = false
+        let out = await agent.run(goal: goal)
+        XCTAssertTrue(out.text.contains("python3 scraper.py"), out.text)
+        XCTAssertTrue(sent[2].last!.text.contains("too thin"), "the one-liner was sent back once")
+    }
+
+    func testThinAnswerDetection() {
+        XCTAssertTrue(Agent.isThinAnswer("Fixed the four real issues and re-verified against the live site."))
+        XCTAssertFalse(Agent.isThinAnswer("I added vidora_scraper.py. Run `python3 vidora_scraper.py --tmdb 1396 --season 1 --episode 1`; verified live, it printed 1080p m3u8 URLs."))
+    }
 }
