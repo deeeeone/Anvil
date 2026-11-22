@@ -424,7 +424,7 @@ final class SessionController: AgentHost {
             defer { self.status = "" }
             do {
                 let raw = try await brain.oneShot(SkillBuilder.prompt(request: request, steps: steps, answer: answer), effort: "low")
-                let (body, _, _) = try ActionParser.extractJSON(raw)
+                let (body, _, _, _) = try ActionParser.extractJSON(raw)
                 guard let json = ActionParser.parseLenient(body) else { throw ToolFailure("no JSON in the reply") }
                 let file = try SkillBuilder.save(json: json, root: self.root)
                 self.append(ChatItem(kind: .system, text: "Saved skill \(json["name"]?.string ?? "") to \(Paths.display(file, root: self.root)). It's suggested when a request matches its description."))

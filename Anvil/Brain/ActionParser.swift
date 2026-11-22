@@ -38,7 +38,7 @@ nonisolated enum ActionParser {
     static let completionNames: Set<String> = ["done", "finish", "final_answer", "answer", "complete", "attempt_completion"]
 
     static func parse(_ raw: String) throws -> AgentReply {
-        let (jsonText, before, extra) = try extractJSON(raw)
+        let (jsonText, before, after, extra) = try extractJSON(raw)
         guard let json = parseLenient(jsonText) else { throw ParseError.invalid(diagnose(escapeNewlinesInStrings(jsonText))) }
         var reply = AgentReply(thought: before, say: nil, actions: [], done: false)
         reply.ignoredBlocks = extra
@@ -74,7 +74,22 @@ nonisolated enum ActionParser {
             reply.explicitDone = true
         }
         if reply.actions.isEmpty && reply.say != nil && json["done"] == nil && reply.plan.isEmpty { reply.done = true }
+        // The model wrote its answer as prose after the json block (say was empty or just "answered below").
+        // For a final answer with no actions, that prose is the real answer; keep it instead of the pointer.
+        if reply.actions.isEmpty, !after.isEmpty, after.count > 40, isPointer(reply.say) {
+            reply.say = after
+            if json["done"] == nil { reply.done = true }
+        }
         return reply
+    }
+
+    /// A `say` that's empty or just points elsewhere ("answered below", "see below", "as follows:").
+    static func isPointer(_ say: String?) -> Bool {
+        let t = (say ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if t.isEmpty { return true }
+        guard t.count <= 40 else { return false }
+        let pointers = ["answered below", "see below", "below", "as follows", "here you go", "here it is", "response below", "answer below", "details below", "here's the answer", "here is the answer"]
+        return pointers.contains { t.hasPrefix($0) || t == $0 || t == $0 + "." || t == $0 + ":" }
     }
 
     static func action(from j: JSON) -> AgentAction? {
@@ -117,7 +132,8 @@ nonisolated enum ActionParser {
     /// Finds the JSON payload: the FIRST fence holding valid JSON (anything after it is the model running ahead of
     /// its turn, e.g. imagining the observation), else the last ```json fence, else the outermost {...}.
     /// Returns the JSON text, the reasoning before it, and how many further JSON blocks were ignored.
-    static func extractJSON(_ raw: String) throws -> (String, String, Int) {
+    /// Returns (jsonText, text before the block, text after the block, count of extra blocks ignored).
+    static func extractJSON(_ raw: String) throws -> (String, String, String, Int) {
         let fence = try! NSRegularExpression(pattern: "```(?:json|JSON|javascript)?[ \\t]*\\n?([\\s\\S]*?)```")
         let ns = raw as NSString
         let matches = fence.matches(in: raw, range: NSRange(location: 0, length: ns.length))
@@ -130,7 +146,11 @@ nonisolated enum ActionParser {
             }
         }
         if let first = valid.first {
-            return (first.0, ns.substring(to: first.1).trimmingCharacters(in: .whitespacesAndNewlines), valid.count - 1)
+            let before = ns.substring(to: first.1).trimmingCharacters(in: .whitespacesAndNewlines)
+            // Text after the first block's closing fence (an answer the model wrote outside the json).
+            let firstMatch = matches.first { $0.range.location == first.1 }
+            let after = firstMatch.map { ns.substring(from: $0.range.location + $0.range.length).trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+            return (first.0, before, after, valid.count - 1)
         }
         // The JSON fence may contain nested ``` (markdown inside a write_file content) or be slightly broken:
         // take everything from the first "```json" opener to the closing fence and let the repairs handle it.
@@ -139,19 +159,19 @@ nonisolated enum ActionParser {
             if let close = body.range(of: "\n```", options: .backwards) ?? body.range(of: "```", options: .backwards) { body = String(body[..<close.lowerBound]) }
             body = body.trimmingCharacters(in: .whitespacesAndNewlines)
             if body.hasPrefix("{") || body.hasPrefix("[") {
-                return (body, String(raw[..<r.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines), 0)
+                return (body, String(raw[..<r.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines), "", 0)
             }
         }
         if matches.count == 1 {
             let body = ns.substring(with: matches[0].range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
-            if body.hasPrefix("{") { return (body, ns.substring(to: matches[0].range.location).trimmingCharacters(in: .whitespacesAndNewlines), 0) }
+            if body.hasPrefix("{") { return (body, ns.substring(to: matches[0].range.location).trimmingCharacters(in: .whitespacesAndNewlines), "", 0) }
         }
         // No fence: take the outermost object.
         if let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"), start < end {
-            return (String(raw[start...end]), String(raw[..<start]).trimmingCharacters(in: .whitespacesAndNewlines), 0)
+            return (String(raw[start...end]), String(raw[..<start]).trimmingCharacters(in: .whitespacesAndNewlines), "", 0)
         }
         if let start = raw.firstIndex(of: "{") {   // cut off before the closing brace
-            return (String(raw[start...]), String(raw[..<start]).trimmingCharacters(in: .whitespacesAndNewlines), 0)
+            return (String(raw[start...]), String(raw[..<start]).trimmingCharacters(in: .whitespacesAndNewlines), "", 0)
         }
         throw ParseError.noJSON
     }

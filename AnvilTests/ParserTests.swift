@@ -127,4 +127,27 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(Fmt.plain("Done — tests pass"), "Done, tests pass")
         XCTAssertEqual(Fmt.plain("1–2"), "1-2")
     }
+
+    func testAnswerWrittenAfterTheJSONBlockIsUsed() throws {
+        let raw = "```json\n{\"say\": \"Answered below.\", \"actions\": [], \"done\": true}\n```\n\nShort answer: No, that's not an ExpressVPN credential set. The string is an email login plus OpenVPN and PPTP credentials and plan metadata."
+        let reply = try ActionParser.parse(raw)
+        XCTAssertTrue(reply.done)
+        XCTAssertTrue(reply.actions.isEmpty)
+        XCTAssertTrue(reply.say?.hasPrefix("Short answer: No") ?? false, reply.say ?? "nil")
+        XCTAssertFalse(reply.say?.contains("Answered below") ?? false)
+    }
+
+    func testPointerDetection() {
+        XCTAssertTrue(ActionParser.isPointer("Answered below."))
+        XCTAssertTrue(ActionParser.isPointer(""))
+        XCTAssertTrue(ActionParser.isPointer("See below:"))
+        XCTAssertFalse(ActionParser.isPointer("The file imports globals.css but the layout is incomplete."))
+    }
+
+    func testRealAnswerInSayIsKeptEvenWithTrailingProse() throws {
+        // A normal reply: say has the answer, trailing text is leftover chatter — don't swap it in.
+        let raw = "```json\n{\"say\": \"The bug is an off-by-one in parseWeek; I fixed it.\", \"done\": true}\n```\nLet me know if you want more."
+        let reply = try ActionParser.parse(raw)
+        XCTAssertEqual(reply.say, "The bug is an off-by-one in parseWeek; I fixed it.")
+    }
 }
