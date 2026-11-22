@@ -32,7 +32,10 @@ struct ConversationView: View {
             VStack(spacing: 0) {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 20) {
+                        // Not lazy: when a task finishes, its steps collapse into one line and the content shrinks a lot
+                        // at once. A LazyVStack then mis-estimates the heights of rows it hasn't measured and leaves the
+                        // view past the end (a blank screen until you scroll). Finished work is collapsed, so this stays cheap.
+                        VStack(alignment: .leading, spacing: 20) {
                             let segments = Segment.build(controller.session.items)
                             ForEach(Array(segments.enumerated()), id: \.element.id) { idx, seg in
                                 switch seg {
