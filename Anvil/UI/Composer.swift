@@ -13,6 +13,7 @@ struct Composer: View {
     @Environment(AppState.self) private var app
     let controller: SessionController
     var prominent = false
+    @State private var textHeight: CGFloat = 18
     @State private var text = ""
     @State private var images: [AttachedImage] = []
     @State private var history: [String] = []
@@ -36,15 +37,10 @@ struct Composer: View {
             VStack(alignment: .leading, spacing: 10) {
                 if !images.isEmpty { attachments }
                 // A TextEditor, not a vertical TextField: past its line limit a TextField clips its first lines and
-                // ignores the scroll wheel. This grows with the text up to a cap, then scrolls normally.
+                // ignores the scroll wheel.
+                // The box is exactly as tall as the text (measured from an invisible copy of it), capped; past the cap
+                // the editor scrolls. A min/max frame would instead stretch to whatever space the window offers.
                 ZStack(alignment: .topLeading) {
-                    Text(text.isEmpty ? " " : text + "\n")
-                        .font(.system(size: 14.5))
-                        .padding(.horizontal, 5)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .opacity(0)
-                        .accessibilityHidden(true)
                     if text.isEmpty {
                         Text(controller.running ? "Add a note for the agent, it arrives with the next step" : "Ask for a change. @ to attach files, / for commands, ⌥⏎ to queue")
                             .font(.system(size: 14.5))
@@ -55,10 +51,18 @@ struct Composer: View {
                     TextEditor(text: $text)
                         .font(.system(size: 14.5))
                         .scrollContentBackground(.hidden)
-                        .scrollIndicators(.automatic)
                         .focused($focused)
                 }
-                .frame(minHeight: prominent ? 62 : 20, maxHeight: prominent ? 300 : 240)
+                .frame(height: min(max(textHeight, prominent ? 54 : 18), prominent ? 300 : 240))
+                .background(alignment: .topLeading) {
+                    Text(text.isEmpty ? " " : text + " ")
+                        .font(.system(size: 14.5))
+                        .padding(.horizontal, 5)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .hidden()
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { textHeight = $0 }
+                }
                     .onKeyPress(.return, phases: .down) { press in
                         if press.modifiers.contains(.shift) { return .ignored }   // the editor inserts the newline at the cursor
                         if press.modifiers.contains(.option) {
