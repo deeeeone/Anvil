@@ -3,13 +3,14 @@ import Foundation
 /// Keeps long sessions inside the context window: slims old turns in batches (prompt-cache friendly) and,
 /// past a threshold, replaces the history with a model-written summary.
 nonisolated enum Compactor {
-    /// Rough token estimate (code averages ~3.5 characters per token).
-    static func estimateTokens(_ messages: [ChatMessage]) -> Int {
-        messages.reduce(0) { $0 + $1.charCount } * 2 / 7
+    /// Token estimate for a conversation. Uses the characters-per-token ratio measured for `model` from the provider's own
+    /// usage figures (see TokenCalibrator), 3.5 until a call has been measured.
+    static func estimateTokens(_ messages: [ChatMessage], model: String? = nil, calibrator: TokenCalibrator = .shared) -> Int {
+        calibrator.tokens(chars: messages.reduce(0) { $0 + $1.charCount }, model: model)
     }
 
-    static func shouldCompact(_ messages: [ChatMessage], limit: Int) -> Bool {
-        messages.count > 6 && estimateTokens(messages) > limit
+    static func shouldCompact(_ messages: [ChatMessage], limit: Int, model: String? = nil) -> Bool {
+        messages.count > 6 && estimateTokens(messages, model: model) > limit
     }
 
     /// Before appending a user turn: drop images from earlier turns, and every 10 messages clip big text parts in all

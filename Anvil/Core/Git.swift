@@ -164,6 +164,56 @@ nonisolated enum Git {
         await run(["diff", "--name-only", "\(base)...\(branch)"], in: root).stdout.split(separator: "\n").map(String.init)
     }
 
+    /// A checked-out worktree of the repository (the main checkout is the first one).
+    struct Worktree: Equatable, Sendable {
+        var path: String
+        var branch: String?   // short name; nil for a detached HEAD
+    }
+
+    /// Parses `git worktree list --porcelain`.
+    static func parseWorktrees(_ text: String) -> [Worktree] {
+        var out: [Worktree] = []
+        var cur: Worktree?
+        for raw in text.components(separatedBy: "\n") {
+            if raw.hasPrefix("worktree ") {
+                if let c = cur { out.append(c) }
+                cur = Worktree(path: String(raw.dropFirst("worktree ".count)), branch: nil)
+            } else if raw.hasPrefix("branch ") {
+                let ref = String(raw.dropFirst("branch ".count))
+                cur?.branch = ref.hasPrefix("refs/heads/") ? String(ref.dropFirst("refs/heads/".count)) : ref
+            }
+        }
+        if let c = cur { out.append(c) }
+        return out
+    }
+
+    static func worktrees(_ root: URL) async -> [Worktree] {
+        let r = await run(["worktree", "list", "--porcelain"], in: root)
+        return r.status == 0 ? parseWorktrees(r.stdout) : []
+    }
+
+    /// Whether every commit on `branch` is already in the checkout at `root` (so deleting the branch loses nothing).
+    static func isMerged(_ root: URL, branch: String) async -> Bool {
+        await run(["merge-base", "--is-ancestor", branch, "HEAD"], in: root).status == 0
+    }
+
+    /// Commits on `branch` that the checkout at `root` doesn't have.
+    static func commitsAhead(_ root: URL, branch: String) async -> Int {
+        Int(await run(["rev-list", "--count", "HEAD..\(branch)"], in: root).stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
+    /// Removes a linked worktree's folder. Without `force`, git refuses when it has uncommitted changes.
+    static func removeWorktree(_ root: URL, path: String, force: Bool) async -> ProcessOutput {
+        await run(["worktree", "remove"] + (force ? ["--force"] : []) + [path], in: root, timeout: 120)
+    }
+
+    /// Deletes a local branch. Without `force`, git refuses when it isn't merged.
+    static func deleteBranch(_ root: URL, branch: String, force: Bool) async -> ProcessOutput {
+        await run(["branch", force ? "-D" : "-d", branch], in: root)
+    }
+
+    static func pruneWorktrees(_ root: URL) async { _ = await run(["worktree", "prune"], in: root) }
+
     static func initRepo(_ root: URL) async -> ProcessOutput { await run(["init"], in: root) }
 
     static func commitPrompt(diff: String) -> String {

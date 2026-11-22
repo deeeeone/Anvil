@@ -42,7 +42,8 @@ On the default model, a typical small coding task costs a fraction of a cent.
 - Plans for big jobs: approve, revise or cancel before anything runs
 - Follow-ups typed mid-run reach the agent at its next step
 - `explore` helpers investigate in their own context, in parallel
-- Sub-sessions in their own worktrees for independent parts of a feature
+- Sub-sessions in their own worktrees for independent parts of a feature, nested under their parent in the sidebar and kept across restarts
+- Worktree cleanup removes merged worktrees and their branches from the app
 - Background queue: line tasks up and they run on their own branches
 
 </td>
@@ -77,6 +78,7 @@ On the default model, a typical small coding task costs a fraction of a cent.
 - Line-range edits that halve output tokens
 - Prefetches the code an error points to
 - Adaptive reasoning effort and prompt-cache warming
+- A context bar with cache hits, and token estimates calibrated to each model's own usage reports
 
 </td>
 </tr>

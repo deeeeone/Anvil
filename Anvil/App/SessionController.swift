@@ -194,6 +194,11 @@ final class SessionController: AgentHost {
     }
 
     func start(goal: String, display: String, images: [(Data, String)] = []) {
+        if session.worktreeRemoved {
+            append(ChatItem(kind: .error, text: "This session's worktree and branch were removed by Worktree cleanup, so it can't run anymore. Fork it to continue the conversation in your project."))
+            onFinish?(AgentOutcome(text: "worktree removed", ok: false, steps: 0))
+            return
+        }
         append(ChatItem(kind: .user, text: display, images: images.count, historyIndex: agent?.messages.count ?? session.messages.count))
         if session.items.filter({ $0.kind == .user }).count == 1 && (session.title == "New session" || session.title.hasPrefix("New session on ")) {
             session.title = Session.title(from: display)
@@ -278,7 +283,9 @@ final class SessionController: AgentHost {
         case "cost":
             let u = session.usage
             var t = "This session: \(Fmt.dollars(u.cost)) over \(u.calls) model calls. \(Fmt.tokens(u.prompt)) prompt tokens (\(Fmt.tokens(u.cached)) from cache), \(Fmt.tokens(u.completion)) output."
-            t += " Context now: about \(Fmt.tokens(max(u.lastPrompt, Compactor.estimateTokens(session.messages)))) tokens."
+            t += " Context now: about \(Fmt.tokens(max(u.lastPrompt, Compactor.estimateTokens(session.messages, model: model)))) tokens."
+            if u.lastCached > 0, u.lastPrompt > 0 { t += " The last request was \(Int((Double(u.lastCached) / Double(u.lastPrompt) * 100).rounded()))% cache hits." }
+            if TokenCalibrator.shared.sampleCount(for: model) > 0 { t += " Estimates use \(String(format: "%.1f", TokenCalibrator.shared.ratio(for: model))) characters per token, measured from this model's own usage." }
             append(ChatItem(kind: .system, text: t))
         case "mode":
             let m: PermissionMode? = ["ask": .ask, "edits": .acceptEdits, "accept": .acceptEdits, "acceptedits": .acceptEdits, "auto": .acceptEdits,
@@ -343,11 +350,11 @@ final class SessionController: AgentHost {
         guard agent.messages.count >= 2 else { append(ChatItem(kind: .system, text: "Nothing to compact yet.")); return }
         running = true
         status = "Compacting"
-        let before = Compactor.estimateTokens(agent.messages)
+        let before = Compactor.estimateTokens(agent.messages, model: model)
         task = Task { [weak self] in
             do {
                 try await agent.compact(focus: focus)
-                let after = Compactor.estimateTokens(agent.messages)
+                let after = Compactor.estimateTokens(agent.messages, model: model)
                 self?.append(ChatItem(kind: .system, text: "Compacted the conversation: about \(Fmt.tokens(before)) to \(Fmt.tokens(after)) tokens."))
             } catch {
                 self?.append(ChatItem(kind: .error, text: "Compacting failed: \(error.localizedDescription)"))

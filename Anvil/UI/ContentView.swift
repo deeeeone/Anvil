@@ -69,6 +69,7 @@ struct ContentView: View {
         .sheet(isPresented: $app.showModelPicker) {
             if let c = app.current { ModelPickerSheet(controller: c) }
         }
+        .sheet(isPresented: $app.showWorktreeCleanup) { WorktreeCleanupView() }
     }
 
     func overlayScrim(_ close: @escaping () -> Void) -> some View {

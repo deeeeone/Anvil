@@ -335,9 +335,13 @@ final class Brain {
 
     private func record(_ usage: ChatUsage?, model: String, history: [ChatMessage], reply: String, free: Bool) {
         var u = usage ?? ChatUsage()
+        let chars = history.reduce(0) { $0 + $1.charCount }
         if usage == nil {
-            u.prompt = history.reduce(0) { $0 + $1.charCount } / 4
-            u.completion = reply.count / 4
+            u.prompt = TokenCalibrator.shared.tokens(chars: chars, model: model)
+            u.completion = Int((Double(reply.count) / TokenCalibrator.shared.ratio(for: model)).rounded())
+        } else {
+            // The provider counted this prompt: learn what a character of this conversation is worth for this model.
+            TokenCalibrator.shared.learn(model: model, chars: chars, tokens: u.prompt)
         }
         var cost: Double? = free ? 0 : (u.cost ?? ModelCatalog.shared.info(model)?.cost(prompt: u.prompt, completion: u.completion, cached: u.cached))
         if !free, u.cost == nil, let m = ProviderPlugins.shared.modelInfo(model), m.input != nil || m.output != nil {

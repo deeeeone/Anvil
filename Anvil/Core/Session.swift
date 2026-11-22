@@ -58,9 +58,10 @@ nonisolated struct SessionUsage: Codable, Equatable, Sendable {
     var cached = 0
     var cost = 0.0
     var lastPrompt = 0     // size of the most recent request (how full the context is)
+    var lastCached = 0     // how much of the most recent request the provider served from its cache
 
     mutating func add(_ u: ChatUsage, cost c: Double?) {
-        calls += 1; prompt += u.prompt; completion += u.completion; cached += u.cached; cost += c ?? 0; lastPrompt = u.prompt
+        calls += 1; prompt += u.prompt; completion += u.completion; cached += u.cached; cost += c ?? 0; lastPrompt = u.prompt; lastCached = u.cached
     }
     var line: String {
         guard calls > 0 else { return "no calls yet" }
@@ -102,6 +103,8 @@ nonisolated struct Session: Codable, Identifiable, Equatable, Sendable {
     var briefedTools: [String]?
     /// When the conversation was last compacted (rewinding to before this can restore files but not the conversation).
     var compactedAt: Date?
+    /// The worktree and branch were removed by Worktree cleanup; the conversation stays as history.
+    var worktreeRemoved = false
 
     /// Where the agent works: the worktree for worktree sessions, else the project.
     var root: URL { URL(fileURLWithPath: workdir ?? projectPath) }
@@ -122,6 +125,10 @@ nonisolated struct SessionSummary: Identifiable, Equatable, Sendable {
     var updated: Date
     var cost: Double
     var branch: String? = nil
+    /// Set for a sub-session: the session whose agent started it.
+    var parentID: UUID? = nil
+    var workdir: String? = nil
+    var worktreeRemoved = false
 }
 
 /// Sessions are JSON files under Application Support/Anvil/projects/<project-key>/sessions.
@@ -159,10 +166,11 @@ nonisolated enum SessionStore {
         let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
-        struct Head: Decodable { var id: UUID; var title: String; var updated: Date; var usage: SessionUsage?; var branch: String? }
+        struct Head: Decodable { var id: UUID; var title: String; var updated: Date; var usage: SessionUsage?; var branch: String?; var parentID: UUID?; var workdir: String?; var worktreeRemoved: Bool? }
         return files.filter { $0.pathExtension == "json" }.compactMap { f in
             guard let d = try? Data(contentsOf: f), let h = try? dec.decode(Head.self, from: d) else { return nil }
-            return SessionSummary(id: h.id, title: h.title, updated: h.updated, cost: h.usage?.cost ?? 0, branch: h.branch)
+            return SessionSummary(id: h.id, title: h.title, updated: h.updated, cost: h.usage?.cost ?? 0, branch: h.branch,
+                                  parentID: h.parentID, workdir: h.workdir, worktreeRemoved: h.worktreeRemoved ?? false)
         }.sorted { $0.updated > $1.updated }
     }
 

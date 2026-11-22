@@ -3,8 +3,8 @@ import Foundation
 /// A session another session's agent started to do one part of a bigger change. It works in its own
 /// git worktree on its own branch, runs in the background like a queue task, reports back when it
 /// finishes, and the parent merges its branch. The owner can open any sub-session and steer it.
-nonisolated struct SubSession: Identifiable, Equatable, Sendable {
-    enum State: String, Sendable { case waiting, running, finished, failed, merged }
+nonisolated struct SubSession: Identifiable, Equatable, Sendable, Codable {
+    enum State: String, Sendable, Codable { case waiting, running, finished, failed, merged }
     var id: UUID              // the sub-session's session id
     var parentID: UUID
     var name: String
@@ -21,7 +21,58 @@ nonisolated struct SubSession: Identifiable, Equatable, Sendable {
     var reportCollected = false
 }
 
+extension SubSession {
+    static func file(_ root: URL) -> URL {
+        Paths.dir(Paths.sub("projects").appendingPathComponent(SessionStore.projectKey(root))).appendingPathComponent("subsessions.json")
+    }
+
+    /// Links saved for this project. Work that was still going when Anvil quit did not finish, and links whose
+    /// session is gone are dropped. Mutates nothing on disk.
+    static func load(_ root: URL, sessionExists: ((UUID) -> Bool)? = nil) -> [SubSession] {
+        let exists = sessionExists ?? { SessionStore.load($0, root: root) != nil }
+        guard let d = try? Data(contentsOf: file(root)), let list = try? JSONDecoder().decode([SubSession].self, from: d) else { return [] }
+        return list.filter { exists($0.id) }.map { var s = $0
+            if s.state == .running || s.state == .waiting {
+                s.state = .failed
+                s.report = (s.report.isEmpty ? "" : s.report + "\n") + "Interrupted (Anvil quit). Message it to continue, or merge what it committed."
+                s.reportCollected = false
+            }
+            return s
+        }
+    }
+
+    static func save(_ list: [SubSession], root: URL) {
+        if let d = try? JSONEncoder().encode(list) { try? d.write(to: file(root), options: .atomic) }
+    }
+}
+
 extension AppState {
+    /// Writes the sub-session links next to the project's sessions (called on every change).
+    func persistSubSessions() {
+        guard let project, !restoringSubSessions else { return }
+        SubSession.save(subSessions, root: project)
+    }
+
+    /// The sub-session's controller, loading its saved session when Anvil was restarted since it ran.
+    func subSessionController(_ id: UUID) -> SessionController? {
+        if let c = controller(for: id) { return c }
+        guard let project, let s = SessionStore.load(id, root: project) else { return nil }
+        let c = SessionController(session: s, root: s.root, processes: processes)
+        c.app = self
+        registerController(c)
+        wireSubSession(c)
+        return c
+    }
+
+    /// Background mode and the finish hook every sub-session controller needs, whether it was just spawned or reloaded.
+    func wireSubSession(_ c: SessionController) {
+        c.background = true
+        c.onFinish = { [weak self, weak c] outcome in
+            guard let self, let c else { return }
+            Task { await self.subSessionFinished(c, outcome: outcome) }
+        }
+    }
+
     var runningSubSessions: Int { subSessions.filter { $0.state == .running }.count }
 
     func subSessions(of parent: UUID) -> [SubSession] { subSessions.filter { $0.parentID == parent } }
@@ -53,14 +104,10 @@ extension AppState {
             s.model = model ?? parent.session.model
             let c = SessionController(session: s, root: dir, processes: processes)
             c.app = self
-            c.background = true
             registerController(c)
             let info = SubSession(id: s.id, parentID: pid, name: String(clean), task: task, branch: branch, base: base, dir: dir.path)
             subSessions.append(info)
-            c.onFinish = { [weak self, weak c] outcome in
-                guard let self, let c else { return }
-                Task { await self.subSessionFinished(c, outcome: outcome) }
-            }
+            wireSubSession(c)
             c.saveNow()
             refreshSessions()
             startWaitingSubSessions()
@@ -72,7 +119,7 @@ extension AppState {
     func startWaitingSubSessions() {
         while backgroundRunning < AppSettings.shared.parallelTasks,
               let i = subSessions.firstIndex(where: { $0.state == .waiting }),
-              let c = controller(for: subSessions[i].id) {
+              let c = subSessionController(subSessions[i].id) {
             subSessions[i].state = .running
             c.start(goal: Self.subSessionBrief(subSessions[i]), display: subSessions[i].task)
         }
@@ -92,7 +139,7 @@ extension AppState {
         """
     }
 
-    fileprivate func subSessionFinished(_ c: SessionController, outcome: AgentOutcome) async {
+    func subSessionFinished(_ c: SessionController, outcome: AgentOutcome) async {
         guard let i = subSessions.firstIndex(where: { $0.id == c.session.id }) else { return }
         let dir = URL(fileURLWithPath: subSessions[i].dir)
         var report = outcome.text
@@ -212,7 +259,7 @@ extension AppState {
                                group: .work) { [weak self, weak c] a, _ in
             guard let self, let c else { return .fail("unavailable") }
             guard let name = a["name"]?.string, let text = a["text"]?.string ?? a["message"]?.string, !text.isEmpty else { return .fail("need name and text") }
-            guard let i = self.sub(c.session.id, named: name), let child = self.controller(for: self.subSessions[i].id) else { return .fail("no sub-session named \(name)") }
+            guard let i = self.sub(c.session.id, named: name), let child = self.subSessionController(self.subSessions[i].id) else { return .fail("no sub-session named \(name)") }
             if self.subSessions[i].state == .merged { return .fail("\(name) was already merged; spawn a new sub-session for more work") }
             if self.subSessions[i].state == .waiting { self.subSessions[i].task += "\n\nAlso: \(text)"; return .ok("added to \(name)'s task (it hasn't started yet)") }
             if !child.running { self.subSessions[i].state = .running; self.subSessions[i].reportCollected = false }

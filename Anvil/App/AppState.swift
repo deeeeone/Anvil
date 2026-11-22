@@ -30,6 +30,7 @@ final class AppState {
     /// The owner closed the inspector this session: don't pop it open again on every edit.
     var inspectorDismissed = false
     var showModelPicker = false
+    var showWorktreeCleanup = false
     var selectedDiff: FileDiff?
     var previewFile: URL?
     private(set) var git = Git.Status(isRepo: false)
@@ -41,7 +42,9 @@ final class AppState {
     /// Background tasks for this project (see TaskQueue.swift).
     var queue: [QueuedTask] = []
     /// Sessions started by other sessions' agents (see SubSessions.swift).
-    var subSessions: [SubSession] = []
+    var subSessions: [SubSession] = [] { didSet { persistSubSessions() } }
+    /// True while a project's saved links are being loaded (so loading doesn't write them back).
+    @ObservationIgnored var restoringSubSessions = false
     /// Polls GitHub for labeled issues to queue (see TaskQueue.swift).
     @ObservationIgnored var issueWatch: Task<Void, Never>?
     /// The embedded browser (live preview, and the agent's browser tools).
@@ -107,8 +110,11 @@ final class AppState {
         current?.saveNow()
         processes.stopAll()
         controllers = [:]
+        restoringSubSessions = true
         subSessions = []
         project = root
+        subSessions = SubSession.load(root)
+        restoringSubSessions = false
         RecentProjects.add(root)
         queue = QueuedTask.load(root)
         MCPManager.shared.start(project: root)
@@ -189,6 +195,7 @@ final class AppState {
             let c = SessionController(session: s, root: s.root, processes: processes)
             c.app = self
             controllers[id] = c
+            if subSessions.contains(where: { $0.id == id }) { wireSubSession(c) }
             current = c
         }
         selectedDiff = current?.changedDiffs.last
@@ -250,6 +257,7 @@ final class AppState {
         guard let project else { return }
         controllers[id]?.stop()
         controllers[id] = nil
+        subSessions.removeAll { $0.id == id }
         SessionStore.delete(id, root: project)
         if current?.session.id == id { current = nil }
         refreshSessions()

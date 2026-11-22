@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SidebarView: View {
     @Environment(AppState.self) private var app
+    @State private var collapsed = Set<UUID>()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -41,6 +42,20 @@ struct SidebarView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Run a session on its own branch in its own folder; merge it back when you're happy")
+                if app.sessions.contains(where: { $0.workdir != nil && !$0.worktreeRemoved }) {
+                    Button { app.showWorktreeCleanup = true } label: {
+                        HoverRow {
+                            HStack(spacing: 9) {
+                                Image(systemName: "trash.slash").font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(Theme.text2).frame(width: 20, height: 20)
+                                Text("Clean up worktrees…").font(.system(size: 12.5)).foregroundStyle(Theme.text2)
+                                Spacer()
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help("Remove merged worktrees and their branches")
+                }
             }
             .padding(.horizontal, 8)
 
@@ -52,9 +67,12 @@ struct SidebarView: View {
 
             ScrollView {
                 LazyVStack(spacing: 1) {
-                    ForEach(app.sessions) { s in
-                        SessionRow(summary: s, selected: app.current?.session.id == s.id,
-                                   running: app.current?.session.id == s.id && (app.current?.running ?? false))
+                    ForEach(SessionTree.rows(app.sessions, collapsed: collapsed)) { row in
+                        SessionRow(summary: row.summary, selected: app.current?.session.id == row.id,
+                                   running: app.current?.session.id == row.id && (app.current?.running ?? false),
+                                   depth: row.depth, childCount: row.childCount, collapsed: collapsed.contains(row.id)) {
+                            if collapsed.contains(row.id) { collapsed.remove(row.id) } else { collapsed.insert(row.id) }
+                        }
                     }
                 }
                 .padding(.horizontal, 8)
@@ -114,19 +132,47 @@ struct SessionRow: View {
     let summary: SessionSummary
     let selected: Bool
     let running: Bool
+    var depth = 0
+    var childCount = 0
+    var collapsed = false
+    var toggle: () -> Void = {}
     @State private var confirmDelete = false
 
+    /// How a sub-session is doing (nil for an ordinary session).
+    private var subState: SubSession.State? { app.subSessions.first { $0.id == summary.id }?.state }
+
     var body: some View {
+        HStack(spacing: 0) {
+            if childCount > 0 {
+                Button(action: toggle) {
+                    Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.text3).frame(width: 16, height: 24)
+                }
+                .buttonStyle(.plain)
+                .help(collapsed ? "Show \(childCount) sub-session\(childCount == 1 ? "" : "s")" : "Hide sub-sessions")
+                .accessibilityLabel(collapsed ? "Expand sub-sessions" : "Collapse sub-sessions")
+            } else if depth > 0 {
+                Color.clear.frame(width: 16, height: 24)
+            }
+            rowButton
+        }
+        .padding(.leading, CGFloat(depth) * 14)
+    }
+
+    private var rowButton: some View {
         Button {
             app.select(summary.id)
             if app.sidebarFloating { app.showSidebar = false }
         } label: {
             HoverRow(selected: selected) {
                 HStack(spacing: 8) {
-                    if summary.branch != nil { Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.accent).help(summary.branch ?? "") }
+                    if let st = subState { subIcon(st) }
+                    else if summary.branch != nil { Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .semibold)).foregroundStyle(summary.worktreeRemoved ? Theme.text3 : Theme.accent).help(summary.branch ?? "") }
                     Text(summary.title).font(.system(size: 13)).foregroundStyle(selected ? Theme.text : Theme.text2).lineLimit(1)
+                        .strikethrough(summary.worktreeRemoved, color: Theme.text3)
                     Spacer(minLength: 4)
                     if running { Spinner().scaleEffect(0.8) }
+                    else if childCount > 0 && collapsed { Text("\(childCount)").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Theme.text3) }
                     else { Text(Self.age(summary.updated)).font(.system(size: 10.5)).foregroundStyle(Theme.text3).lineLimit(1) }
                 }
             }
@@ -134,6 +180,9 @@ struct SessionRow: View {
         .buttonStyle(.plain)
         .contextMenu {
             Button("Fork Session") { app.fork(summary.id, at: nil) }
+            if summary.workdir != nil && !summary.worktreeRemoved {
+                Button("Clean Up Worktrees…") { app.showWorktreeCleanup = true }
+            }
             Divider()
             Button("Delete Session…", role: .destructive) { confirmDelete = true }
         }
@@ -142,6 +191,20 @@ struct SessionRow: View {
         } message: {
             Text("The conversation goes to the Trash, so you can still get it back from there. Files the agent changed are not touched.")
         }
+    }
+
+    @ViewBuilder private func subIcon(_ st: SubSession.State) -> some View {
+        Group {
+            switch st {
+            case .waiting: Image(systemName: "clock").foregroundStyle(Theme.text3)
+            case .running: Image(systemName: "arrow.turn.down.right").foregroundStyle(Theme.accent)
+            case .finished: Image(systemName: "checkmark.circle").foregroundStyle(Theme.green)
+            case .failed: Image(systemName: "exclamationmark.circle").foregroundStyle(Theme.red)
+            case .merged: Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.green)
+            }
+        }
+        .font(.system(size: 10.5, weight: .semibold))
+        .help("Sub-session: \(st.rawValue)")
     }
 
     /// "now", "5m", "3h", "2d", then a date.

@@ -110,10 +110,7 @@ struct Composer: View {
                     ModePill(controller: controller)
                     ModelPill(controller: controller)
                     Spacer(minLength: 4)
-                    Text("~\(Fmt.tokens(max(controller.session.usage.lastPrompt, Compactor.estimateTokens(controller.session.messages)))) ctx")
-                        .font(.system(size: 11).monospacedDigit()).foregroundStyle(Theme.text3).lineLimit(1)
-                        .layoutPriority(-1)
-                        .help("Approximate context size. /compact frees space.")
+                    ContextBar(controller: controller)
                     sendButton
                 }
             }
@@ -397,5 +394,43 @@ struct ModelPill: View {
         .layoutPriority(-0.5)
         .help("\(Providers.label(for: controller.model)), effort \(AppSettings.shared.effort)")
         .task { if catalog.models.isEmpty { await catalog.refresh() } }
+    }
+}
+
+
+/// How full the context window is, with the part the provider served from its prompt cache shown in green.
+struct ContextBar: View {
+    var controller: SessionController
+
+    private var gauge: ContextGauge {
+        let model = controller.model
+        let window = ModelCatalog.shared.info(model)?.contextTokens ?? ProviderPlugins.shared.modelInfo(model)?.context
+        let u = controller.session.usage
+        return ContextGauge(lastPrompt: u.lastPrompt, lastCached: u.lastCached,
+                            estimate: Compactor.estimateTokens(controller.session.messages, model: model), window: window)
+    }
+
+    var body: some View {
+        let g = gauge
+        HStack(spacing: 7) {
+            if g.window != nil {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Theme.surface2)
+                        Capsule().fill(g.nearlyFull ? Theme.amber : Theme.accent.opacity(0.85))
+                            .frame(width: max(3, geo.size.width * g.fill))
+                        Capsule().fill(Theme.green)
+                            .frame(width: g.cachedFill > 0 ? max(3, geo.size.width * g.cachedFill) : 0)
+                    }
+                }
+                .frame(width: 48, height: 5)
+            }
+            Text(g.label)
+                .font(.system(size: 11).monospacedDigit()).foregroundStyle(g.nearlyFull ? Theme.amber : Theme.text3).lineLimit(1)
+        }
+        .layoutPriority(-1)
+        .help(g.help)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(g.help)
     }
 }

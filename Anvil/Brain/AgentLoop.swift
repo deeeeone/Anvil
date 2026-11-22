@@ -262,7 +262,7 @@ final class Agent {
             host?.agentStatus(step == 1 ? "Thinking" : "Thinking (step \(step))")
 
             // Compact before the context gets too big (keeps the pending turn).
-            if Compactor.shouldCompact(messages, limit: autoCompactTokens) {
+            if Compactor.shouldCompact(messages, limit: autoCompactTokens, model: brain.model) {
                 host?.agentStatus("Compacting the conversation")
                 do { try await compact(focus: nil, auto: true) } catch is CancellationError {
                     return finish("Stopped.", ok: false, steps: step)

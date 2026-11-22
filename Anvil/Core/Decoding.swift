@@ -34,19 +34,19 @@ extension ToolStep {
 }
 
 extension SessionUsage {
-    enum CodingKeys: String, CodingKey { case calls, prompt, completion, cached, cost, lastPrompt }
+    enum CodingKeys: String, CodingKey { case calls, prompt, completion, cached, cost, lastPrompt, lastCached }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init()
         calls = c.value(.calls, 0); prompt = c.value(.prompt, 0); completion = c.value(.completion, 0)
-        cached = c.value(.cached, 0); cost = c.value(.cost, 0.0); lastPrompt = c.value(.lastPrompt, 0)
+        cached = c.value(.cached, 0); cost = c.value(.cost, 0.0); lastPrompt = c.value(.lastPrompt, 0); lastCached = c.value(.lastCached, 0)
     }
 }
 
 extension Session {
     enum CodingKeys: String, CodingKey {
         case id, title, created, updated, projectPath, model, mode, items, messages, briefing, todos, plan, checkpoints, usage,
-             allowedCommands, workdir, branch, baseBranch, costLimit, stepLimit, compactedAt, briefedTools
+             allowedCommands, workdir, branch, baseBranch, costLimit, stepLimit, compactedAt, briefedTools, parentID, subName, worktreeRemoved
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -61,5 +61,7 @@ extension Session {
         workdir = c.value(.workdir, nil as String?); branch = c.value(.branch, nil as String?); baseBranch = c.value(.baseBranch, nil as String?)
         costLimit = c.value(.costLimit, nil as Double?); stepLimit = c.value(.stepLimit, nil as Int?); compactedAt = c.value(.compactedAt, nil as Date?)
         briefedTools = c.value(.briefedTools, nil as [String]?)
+        parentID = c.value(.parentID, nil as UUID?); subName = c.value(.subName, nil as String?)
+        worktreeRemoved = c.value(.worktreeRemoved, false)
     }
 }
