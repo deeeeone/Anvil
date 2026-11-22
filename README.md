@@ -20,7 +20,7 @@ Open a folder, describe a change, review every diff. Anvil reads, edits, runs an
 
 ---
 
-Anvil is a desktop app in the spirit of Claude Code and Codex, built natively for the Mac with SwiftUI. Its agent speaks a plain-text protocol instead of relying on native tool calling, so it runs on any OpenAI-compatible chat model, including cheap and free ones, and adds checks of its own to keep weaker models on track: tests run before "done", a reviewer reads the diff, and a different model takes over after repeated failures.
+Anvil is a desktop app in the spirit of Claude Code and Codex, built natively for the Mac with SwiftUI. Its agent speaks a plain-text protocol instead of relying on native tool calling, so it runs on any chat model, including cheap and free ones, and adds checks of its own to keep weaker models on track: tests run before "done", a reviewer reads the diff, and a different model takes over after repeated failures.
 
 On the default model, a typical small coding task costs a fraction of a cent.
 
