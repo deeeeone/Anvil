@@ -743,4 +743,12 @@ final class AgentLoopTests: XCTestCase {
         XCTAssertTrue(p.contains("Never start a job after one has failed"), "the unchanged docstring (a requirement) must reach the reviewer")
         XCTAssertTrue(p.contains("every explicit requirement"))
     }
+
+    func testPointerOpenersAndStockClosersAreRemoved() {
+        let raw = "Answered above: it's a flash loan, an uncollateralized crypto loan borrowed and repaid in one transaction, used mainly for arbitrage. No further actions needed."
+        XCTAssertEqual(Agent.trimFiller(raw), "It's a flash loan, an uncollateralized crypto loan borrowed and repaid in one transaction, used mainly for arbitrage.")
+        XCTAssertEqual(Agent.stripLeadingPointer("Answered above."), "Answered above.", "nothing left to show, so it's kept")
+        XCTAssertEqual(Agent.stripLeadingPointer("See below: the build fails in parseWeek because of an off-by-one."), "The build fails in parseWeek because of an off-by-one.")
+        XCTAssertEqual(Agent.stripLeadingPointer("Based on the search results, it is a loan."), "Based on the search results, it is a loan.")
+    }
 }

@@ -955,7 +955,7 @@ final class Agent {
 
     private func finish(_ raw: String, ok: Bool, steps: Int, silent: Bool = false, verifiedBy: String? = nil) -> AgentOutcome {
         var text = Fmt.plain(raw)
-        if ok && checkpoint.files.isEmpty && !isSubagent { text = Self.trimFiller(text) }
+        if ok && !isSubagent { text = checkpoint.files.isEmpty ? Self.trimFiller(text) : Self.stripLeadingPointer(text) }
         if !checkpoint.files.isEmpty { onCheckpoint?(checkpoint) }
         let changed = checkpoint.files.map { Paths.display(URL(fileURLWithPath: $0.path), root: ctx.root) }
         // Remember what broke, so the next session in this project doesn't walk into it again.
@@ -971,13 +971,27 @@ final class Agent {
     /// Drops the stock closing sentences models tack onto answers that changed nothing: "No changes were made",
     /// "the folder is not a git repo", "let me know if you want…". Only whole sentences at the very end are
     /// removed, and never the whole answer.
+    /// "Answered above: it's a flash loan…" → "It's a flash loan…". A pointer to text that isn't there reads as broken.
+    static func stripLeadingPointer(_ text: String) -> String {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let r = t.range(of: #"^(answered|answer|as (shown|noted|mentioned|described)|see|per|from|based on) (above|below|the (results|search results|output|steps) above)\s*[:,.\-–—]\s*"#,
+                              options: [.regularExpression, .caseInsensitive]) else { return text }
+        let rest = String(t[r.upperBound...])
+        guard rest.count > 20, let first = rest.first else { return text }
+        return first.uppercased() + rest.dropFirst()
+    }
+
     static func trimFiller(_ text: String) -> String {
+        let text = stripLeadingPointer(text)
         let filler = [
             #"^no (files|changes|code|edits)( (were|have been))? (made|changed|modified|edited|touched)\b"#,
             #"^(i )?(made|did not make|didn't make) no (changes|edits)\b"#,
             #"^nothing (was|has been) (changed|modified|edited)\b"#,
             #"^(and )?(the|this) (folder|directory|workspace|project|repository|repo) (is not|isn't) a git repo"#,
             #"^(let me know|feel free to|if you('d| would)? (like|want)|would you like|want me to|happy to|i can also)\b"#,
+            #"^(no|nothing)( further| more| else)?( actions?| steps?| changes?)?( is| are)?( needed| required| necessary| to do)\b"#,
+            #"^(the )?(task|request|work) (is )?(now )?(complete|completed|done|finished)\b"#,
+            #"^(i('m| am) )?(done|finished)\b[.!]?$"#,
         ]
         func isFiller(_ sentence: String) -> Bool {
             let s = sentence.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
