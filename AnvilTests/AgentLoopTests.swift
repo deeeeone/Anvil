@@ -717,4 +717,12 @@ final class AgentLoopTests: XCTestCase {
         XCTAssertTrue(Compactor.isTooLong(BrainError(status: 400, code: "x", message: "Prompt is longer than the free tier allows")))
         XCTAssertFalse(Compactor.isTooLong(BrainError(status: 401, code: "unauthorized", message: "bad key")))
     }
+
+    func testCancelledCompactionLeavesHistoryUntouched() async {
+        let agent = makeAgent([])
+        agent.messages = [.user("You are Anvil."), .assistant("a"), .user("b"), .assistant("c")]
+        agent.brain.override = { _, _ in throw CancellationError() }
+        do { try await agent.compact(focus: nil); XCTFail("should throw") } catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(agent.messages.count, 4, "the conversation is unchanged")
+    }
 }

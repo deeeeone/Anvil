@@ -380,8 +380,14 @@ final class SessionController: AgentHost {
                 try await agent.compact(focus: focus)
                 let after = Compactor.estimateTokens(agent.messages, model: model)
                 self?.append(ChatItem(kind: .system, text: "Compacted the conversation: about \(Fmt.tokens(before)) to \(Fmt.tokens(after)) tokens."))
+            } catch is CancellationError {
+                self?.append(ChatItem(kind: .system, text: "Compacting stopped. The conversation is unchanged."))
             } catch {
-                self?.append(ChatItem(kind: .error, text: "Compacting failed: \(error.localizedDescription)"))
+                if (error as? URLError)?.code == .cancelled || Task.isCancelled {
+                    self?.append(ChatItem(kind: .system, text: "Compacting stopped. The conversation is unchanged."))
+                } else {
+                    self?.append(ChatItem(kind: .error, text: "Compacting failed: \(error.localizedDescription)"))
+                }
             }
             self?.running = false
             self?.status = ""

@@ -911,6 +911,7 @@ final class Agent {
         var i = 0
         var total = parts.count
         while i < parts.count {
+            try Task.checkCancellation()
             host?.agentStatus("Compacting part \(i + 1) of \(total)")
             let request = Compactor.rollingRequest(summary: summary, chunk: parts[i], part: i + 1, of: total, focus: focus)
             do {
