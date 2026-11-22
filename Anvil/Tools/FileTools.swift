@@ -18,14 +18,63 @@ enum FileTools {
 
     static let imageExts: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp"]
 
-    static func readText(_ url: URL) throws -> String {
+    /// `forEdit`: refuse files that aren't valid UTF-8. Decoding them replaces bad bytes with U+FFFD, and writing that
+    /// back would silently destroy the original text (Latin-1 accents, Shift-JIS, binary-ish data).
+    static func readText(_ url: URL, forEdit: Bool = false) throws -> String {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else { throw ToolFailure("\(url.path) doesn't exist. Use glob or list_dir to find the right path.") }
         if isDir.boolValue { throw ToolFailure("\(url.lastPathComponent) is a folder; use list_dir") }
         let data = try Data(contentsOf: url)
-        if data.count > 8_000_000 { throw ToolFailure("file is \(data.count / 1_000_000) MB, too big to read whole; use grep or shell (head/sed -n) on it") }
+        if data.count > 8_000_000 { throw ToolFailure("file is \(data.count / 1_000_000) MB, too big to edit or load whole; read it in ranges with read_file offset/limit, search with grep, and change it with a shell command (sed -i, python) instead") }
         if data.prefix(8000).contains(0) { throw ToolFailure("\(url.lastPathComponent) looks binary") }
+        if forEdit, String(data: data, encoding: .utf8) == nil {
+            throw ToolFailure("\(url.lastPathComponent) isn't valid UTF-8 (probably Latin-1 or another legacy encoding), so editing it here would corrupt the non-ASCII characters. Change it with a shell command that keeps the bytes, e.g. sed -i '' 's/old/new/' \(url.lastPathComponent) (ASCII only) or python3 with encoding='latin-1'.")
+        }
         return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Lines `offset...offset+limit-1` of a file too big to load, streamed in 4 MB chunks.
+    static func readLargeRange(_ url: URL, rel: String, size: Int, offset: Int, limit: Int) throws -> ToolResult {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return .fail("can't open \(rel)") }
+        defer { try? h.close() }
+        if let head = try h.read(upToCount: 8000), head.contains(0) { return .fail("\(url.lastPathComponent) looks binary") }
+        try h.seek(toOffset: 0)
+        let start = max(1, offset)
+        var lineNo = 1                 // number of the line currently being scanned
+        var current = Data()           // bytes of the current line (only kept inside the wanted range)
+        var out: [String] = []
+        var pastLimit = false
+        func finishLine() {
+            if lineNo >= start && lineNo < start + limit {
+                var l = String(decoding: current, as: UTF8.self)
+                if l.hasSuffix("\r") { l.removeLast() }
+                if l.count > 600 { l = String(l.prefix(600)) + "…[line truncated]" }
+                out.append("\(lineNo)\t" + l)
+            }
+            current.removeAll(keepingCapacity: true)
+            lineNo += 1
+            if lineNo >= start + limit { pastLimit = true }
+        }
+        scan: while let chunk = try h.read(upToCount: 4_000_000), !chunk.isEmpty {
+            var from = chunk.startIndex
+            while from < chunk.endIndex {
+                let wanted = lineNo >= start && lineNo < start + limit
+                if let nl = chunk[from...].firstIndex(of: 0x0A) {
+                    if wanted { current.append(chunk[from..<nl]) }
+                    finishLine()
+                    from = chunk.index(after: nl)
+                    if pastLimit { break scan }
+                } else {
+                    if wanted { current.append(chunk[from...]) }
+                    break
+                }
+            }
+        }
+        if !pastLimit && !current.isEmpty { finishLine() }
+        if out.isEmpty { return .fail("offset \(start) is past the end of \(rel) (\(size / 1_000_000) MB)") }
+        let last = start + out.count - 1
+        return .ok("\(rel) (\(size / 1_000_000) MB, too big to load whole; showing lines \(start)-\(last)):\n" + out.joined(separator: "\n")
+                   + (pastLimit ? "\n(use offset \(last + 1) to read more, or grep / shell for searching)" : ""))
     }
 
     static func numbered(_ text: String, offset: Int, limit: Int) -> (String, Int, Int, Int) {
@@ -55,7 +104,13 @@ enum FileTools {
             r.image = (data, url.pathExtension.lowercased() == "png" ? "image/png" : "image/jpeg")
             return r
         }
+        // Files too big to load whole (logs, datasets) can still be read in ranges, streamed from disk.
+        if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, size > 8_000_000 {
+            let limit = max(1, min(2000, a["limit"]?.int ?? 400))
+            return try readLargeRange(url, rel: ctx.rel(url), size: size, offset: a["offset"]?.int ?? a["start_line"]?.int ?? 1, limit: limit)
+        }
         let text = try readText(url)
+        let lossy = (try? readText(url, forEdit: true)) == nil
         ctx.readFiles.insert(url.standardizedFileURL.path)
         ctx.stamp(url)
         if text.isEmpty { return .ok("\(ctx.rel(url)) is empty") }
@@ -63,7 +118,7 @@ enum FileTools {
         let (body, s, e, total) = numbered(text, offset: a["offset"]?.int ?? a["start_line"]?.int ?? 1, limit: limit)
         if body.isEmpty { return .fail("offset \(s) is past the end (\(total) lines)") }
         let more = e < total ? "\n(lines \(s)-\(e) of \(total); use offset \(e + 1) to read more)" : (s > 1 ? "\n(lines \(s)-\(e) of \(total))" : "")
-        return .ok("\(ctx.rel(url)):\n" + body + more)
+        return .ok("\(ctx.rel(url)):\n" + body + more + (lossy ? "\n(note: not valid UTF-8; some characters are shown as �. Don't edit this file with edit_file: it would corrupt them.)" : ""))
     }
 
     static let listDir = ToolSpec(
@@ -101,6 +156,15 @@ enum FileTools {
     // MARK: Search
 
     /// Files under root, skipping hidden folders and bulky build/vendor folders.
+    /// `url` relative to `root`, also when one of them goes through a symlink (/var vs /private/var, a linked project folder).
+    nonisolated static func relative(_ url: URL, to root: URL) -> String {
+        for r in [root, root.resolvingSymlinksInPath()] {
+            let base = r.path.hasSuffix("/") ? r.path : r.path + "/"
+            for u in [url, url.resolvingSymlinksInPath()] where u.path.hasPrefix(base) { return String(u.path.dropFirst(base.count)) }
+        }
+        return url.lastPathComponent
+    }
+
     nonisolated static func walk(_ root: URL, includeDirs: Bool = false) -> [URL] {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDir) else { return [] }
@@ -163,7 +227,7 @@ enum FileTools {
         let candidates = pat.hasSuffix("/") ? await Task.detached { walk(root, includeDirs: true) }.value : await files(under: root, ctx: ctx)
         let hits = await Task.detached { () -> [(String, Date)] in
             candidates.compactMap { url in
-                let rel = url.path.hasPrefix(base) ? String(url.path.dropFirst(base.count)) : url.lastPathComponent
+                let rel = relative(url, to: root)
                 guard matches(re, rel) else { return nil }
                 return (rel, (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
             }
@@ -192,15 +256,27 @@ enum FileTools {
         let context = max(0, min(5, a["context"]?.int ?? 0))
         let projectRoot = ctx.root
         let candidates = await files(under: root, ctx: ctx)
-        let result = await Task.detached { () -> (lines: [String], files: Int, truncated: Bool) in
+        let result = await Task.detached { () -> (lines: [String], files: Int, truncated: Bool, timedOut: Bool) in
             var lines: [String] = []
             var files = 0
             var truncated = false
             let deadline = Date().addingTimeInterval(25)
+            var regexTimedOut = false
+            /// One line against the pattern, abandoned at the deadline: a backtracking pattern like (a+)+$ can otherwise
+            /// spin on a single short line for hours and freeze the whole agent.
+            func hit(_ line: String) -> Bool {
+                var found = false
+                let lineDeadline = min(deadline, Date().addingTimeInterval(3))   // no single line gets more than 3 seconds
+                re.enumerateMatches(in: line, options: [.reportProgress], range: NSRange(line.startIndex..., in: line)) { r, flags, stop in
+                    if r != nil { found = true; stop.pointee = true }
+                    else if flags.contains(.progress), Date() > lineDeadline { regexTimedOut = true; stop.pointee = true }
+                }
+                return found
+            }
             let base = root.path.hasSuffix("/") ? root.path : root.path + "/"
             for url in candidates {
-                if Date() > deadline { truncated = true; break }
-                let rel = url.path.hasPrefix(base) ? String(url.path.dropFirst(base.count)) : url.lastPathComponent
+                if Date() > deadline || regexTimedOut { truncated = true; break }
+                let rel = relative(url, to: root)
                 if let nameRE, !matches(nameRE, rel) { continue }
                 guard let data = try? Data(contentsOf: url, options: .mappedIfSafe), data.count < 3_000_000,
                       !data.prefix(4000).contains(0) else { continue }
@@ -209,7 +285,7 @@ enum FileTools {
                 let all = text.components(separatedBy: "\n")
                 let shownPath = Paths.display(url, root: projectRoot)
                 var lastPrinted = -1
-                for (i, line) in all.enumerated() where re.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil {
+                for (i, line) in all.enumerated() where hit(line) {
                     let lo = max(0, i - context), hi = min(all.count - 1, i + context)
                     if context > 0 && lastPrinted >= 0 && lo > lastPrinted + 1 { lines.append("--") }
                     // Overlapping context windows (two matches near each other, or both clipped at the end of the file)
@@ -218,8 +294,8 @@ enum FileTools {
                     if from <= hi {
                         for k in from...hi {
                             let l = all[k].count > 240 ? String(all[k].prefix(240)) + "…" : all[k]
-                            let hit = k == i || re.firstMatch(in: all[k], range: NSRange(all[k].startIndex..., in: all[k])) != nil
-                            lines.append("\(shownPath):\(k + 1)\(hit ? ":" : "-") \(l)")
+                            let isHit = k == i || hit(all[k])
+                            lines.append("\(shownPath):\(k + 1)\(isHit ? ":" : "-") \(l)")
                         }
                     }
                     lastPrinted = max(lastPrinted, hi)
@@ -227,8 +303,9 @@ enum FileTools {
                 }
                 if lines.count >= limit { break }
             }
-            return (lines, files, truncated)
+            return (lines, files, truncated, regexTimedOut)
         }.value
+        if result.timedOut { return .fail("the pattern /\(pat)/ ran past its time limit (catastrophic backtracking?). Use a simpler pattern, e.g. without nested repeats like (a+)+. Matches so far:\n" + result.lines.joined(separator: "\n")) }
         if result.lines.isEmpty { return .ok("no matches for /\(pat)/ in \(result.files) files under \(ctx.rel(root))") }
         return .ok(result.lines.joined(separator: "\n") + (result.truncated ? "\n(stopped at \(result.lines.count) lines; narrow path or glob)" : ""))
     }
@@ -237,7 +314,7 @@ enum FileTools {
 
     static func currentText(_ url: URL) throws -> String? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return try readText(url)
+        return try readText(url, forEdit: true)
     }
 
     static let editFile = ToolSpec(

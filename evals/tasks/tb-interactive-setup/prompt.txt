@@ -1,0 +1,1 @@
+Run `python3 setup.py` and complete its interactive setup with: project name atlas, port 8081, TLS enabled (yes), admin email ops@atlas.dev. Don't edit setup.py and don't write config.json by hand: it has to be produced by running the setup. Confirm when it's done.

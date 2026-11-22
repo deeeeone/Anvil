@@ -273,7 +273,7 @@ Keys passed through the environment stay in memory and are never passed to the c
 
 ## Evals
 
-`evals/tasks/` holds 16 small, realistic tasks: bug fixes, features, refactors across files, implementing from a spec, a dev server, a performance fix, a flaky test, a shell script, and a question that must not change any files. Each has a `setup.sh`, a `prompt.txt`, and a hidden `check.sh` the agent never sees. Every run happens in a fresh repo under `/tmp`, so evals never touch your sessions.
+`evals/tasks/` holds 16 small, realistic tasks: bug fixes, features, refactors across files, implementing from a spec, a dev server, a performance fix, a flaky test, a shell script, and a question that must not change any files. Each has a `setup.sh`, a `prompt.txt`, and a hidden `check.sh` the agent never sees. Ten `tb-*` tasks are modelled on Terminal-Bench categories (recovering a secret from rewritten git history, a C/Python polyglot, fixing a broken C build, an XSS filter, an interactive installer, asyncio cancellation, SQL optimization, sysadmin config with TLS, a slow build, a 400k-row CSV transform) and ship a `solution.sh`; `evals/validate.sh` proves each check fails on the untouched project and passes with its solution. Every run happens in a fresh repo under `/tmp`, so evals never touch your sessions.
 
 ```bash
 python3 evals/run.py --models glm-5.3-flash-uncensored,deepseek-v4.1-flash-uncensored --parallel 4

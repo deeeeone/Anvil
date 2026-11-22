@@ -27,10 +27,20 @@ nonisolated final class OutputBuffer: @unchecked Sendable {
     func append(_ s: String) {
         lock.withLock {
             text += s
-            if text.count > limit { let cut = text.count - limit; dropped += cut; text = String(text.suffix(limit)) }
+            // Trimming walks the whole string by characters, so do it rarely: only once the buffer has grown to twice
+            // the limit (utf8.count is O(1)). Trimming on every append made a 200MB build log take minutes.
+            if text.utf8.count > limit * 2 {
+                let cut = text.count - limit
+                if cut > 0 { dropped += cut; text = String(text.suffix(limit)) }
+            }
         }
     }
-    var value: String { lock.withLock { text } }
+    var value: String {
+        lock.withLock {
+            guard text.utf8.count > limit else { return text }
+            return String(text.suffix(limit))
+        }
+    }
     var droppedChars: Int { lock.withLock { dropped } }
 }
 

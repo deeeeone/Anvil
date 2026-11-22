@@ -725,4 +725,22 @@ final class AgentLoopTests: XCTestCase {
         do { try await agent.compact(focus: nil); XCTFail("should throw") } catch { XCTAssertTrue(error is CancellationError) }
         XCTAssertEqual(agent.messages.count, 4, "the conversation is unchanged")
     }
+
+    func testReviewerSeesRequirementsInUnchangedParts() async throws {
+        let body = "def run(jobs):\n    \"\"\"Never start a job after one has failed.\"\"\"\n" + (0..<30).map { "    x\($0) = \($0)\n" }.joined() + "    return jobs\n"
+        try body.write(to: dir.appendingPathComponent("w.py"), atomically: true, encoding: .utf8)
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "read_file", "args": {"path": "w.py"}}]}"#),
+            fence(#"{"actions": [{"tool": "replace_lines", "args": {"path": "w.py", "start": 31, "end": 33, "content": "    y = 1\n    z = 2\n    q = 3"}}]}"#),
+            fence(#"{"say": "Done.", "done": true}"#),
+            "LGTM",
+        ], mode: .bypass, review: true)
+        agent.autoVerify = false
+        _ = await agent.run(goal: "fix w.py so it behaves as its docstring says")
+        let reviewPrompt = sent.compactMap { $0.last?.text }.first { $0.contains("You are reviewing a code change") }
+        let p = try XCTUnwrap(reviewPrompt, "the reviewer was never called")
+        XCTAssertTrue(p.contains("CURRENT CONTENT OF THE CHANGED FILES"), "reviewer has no file context")
+        XCTAssertTrue(p.contains("Never start a job after one has failed"), "the unchanged docstring (a requirement) must reach the reviewer")
+        XCTAssertTrue(p.contains("every explicit requirement"))
+    }
 }

@@ -1,0 +1,1 @@
+`./validate.sh` fails for this service layout. Make it print OK by fixing the layout and etc/myservice/service.conf (create what's missing, including a self-signed TLS certificate and key for myservice.local). Don't edit validate.sh. Keep the "# managed by ops" line in the conf.

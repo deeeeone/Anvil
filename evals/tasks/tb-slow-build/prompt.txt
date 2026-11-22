@@ -1,0 +1,1 @@
+Run ./slow_build.sh to completion (it takes about a minute and prints progress while it works), then write the sha256 checksum of dist/app.bin into answer.txt (just the 64 hex characters).

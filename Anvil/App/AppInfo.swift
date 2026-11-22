@@ -48,9 +48,24 @@ nonisolated enum Paths {
         return p.hasPrefix(h) ? "~" + p.dropFirst(h.count) : p
     }
 
+    /// The real location of a path that may not exist yet: symlinks are resolved on the deepest part that does exist
+    /// (resolvingSymlinksInPath leaves a path with a missing last component untouched, which let a write through
+    /// a symlink to a folder outside the project look like it was inside).
+    static func realPath(_ u: URL) -> String {
+        var existing = u.standardizedFileURL
+        var rest: [String] = []
+        while !FileManager.default.fileExists(atPath: existing.path), existing.pathComponents.count > 1 {
+            rest.insert(existing.lastPathComponent, at: 0)
+            existing = existing.deletingLastPathComponent()
+        }
+        var resolved = existing.resolvingSymlinksInPath()
+        for part in rest { resolved.appendPathComponent(part) }
+        return resolved.standardizedFileURL.path
+    }
+
     static func isInside(_ u: URL, root: URL) -> Bool {
-        let p = u.standardizedFileURL.resolvingSymlinksInPath().path
-        let r = root.standardizedFileURL.resolvingSymlinksInPath().path
+        let p = realPath(u)
+        let r = realPath(root)
         return p == r || p.hasPrefix(r.hasSuffix("/") ? r : r + "/")
     }
 }

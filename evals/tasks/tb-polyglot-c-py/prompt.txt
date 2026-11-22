@@ -1,0 +1,1 @@
+Create poly.c, a single file that is BOTH a valid C program and a valid Python 3 program. Compiled with `cc poly.c -o poly_c && ./poly_c` and run with `python3 poly.c`, it must print exactly `fib(15)=610` followed by a newline, computing the number with a recursive fib function in each language.

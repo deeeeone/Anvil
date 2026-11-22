@@ -1,0 +1,1 @@
+The tests in test_worker.py fail (python3 -m unittest). Fix worker.py so that run_all behaves as its docstring says. Don't change the tests.

@@ -1,0 +1,1 @@
+A secret API token was committed to this repository by mistake and then removed by rewriting history. Recover the token and write exactly the token value (nothing else) into recovered.txt. Do not change any tracked file.

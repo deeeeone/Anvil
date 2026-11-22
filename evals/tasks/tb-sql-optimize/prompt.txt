@@ -1,0 +1,1 @@
+`python3 run_report.py` prints a report from shop.db, but it takes far too long. Make it finish in under 3 seconds while printing exactly the same output as it does now (you may change report.sql, run_report.py, and the database's indexes, but not the data). Measure before and after.

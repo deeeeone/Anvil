@@ -1,0 +1,1 @@
+`make test` is broken in this C project. Make it pass: both the build and the two tests (the tests and their expected output are correct, don't change them). Fix the project, then run `make test` to confirm.

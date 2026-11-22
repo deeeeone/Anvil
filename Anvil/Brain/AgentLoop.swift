@@ -203,6 +203,7 @@ final class Agent {
     // MARK: Run
 
     func run(goal: String, images: [(Data, String)] = [], attachmentsNote: String = "") async -> AgentOutcome {
+        brain.effortCap = nil
         let activity = ProcessInfo.processInfo.beginActivity(options: [.idleSystemSleepDisabled, .userInitiated], reason: "Anvil is working on a task")
         defer { ProcessInfo.processInfo.endActivity(activity) }
         let taskStart = Date()
@@ -632,6 +633,14 @@ final class Agent {
             diff += u.isEmpty ? "" : u + "\n"
         }
         guard changed >= 3, !diff.isEmpty else { return nil }
+        // The diff alone hides requirements stated in the unchanged parts of a file (a docstring that says what the
+        // function must do, a comment, a spec in a header), so the reviewer also gets the changed files' current text.
+        var files = ""
+        for f in checkpoint.files.prefix(6) {
+            let url = URL(fileURLWithPath: f.path)
+            guard let now = try? String(contentsOf: url, encoding: .utf8), !now.isEmpty, files.count < 18_000 else { continue }
+            files += "\n--- \(Paths.display(url, root: ctx.root)) ---\n" + Fmt.clip(now, max: 7000) + "\n"
+        }
         let id = UUID()
         host?.agentStepBegan(id, tool: "review", summary: "Review the changes")
         host?.agentStatus("Reviewing the changes")
@@ -642,9 +651,11 @@ final class Agent {
 
         DIFF
         \(Fmt.clip(diff, max: 24000))
-
-        List only concrete, important problems: bugs, parts of the request that are missing, edge cases the request clearly implies, \
-        leftover debug code, or changes unrelated to the request. Don't comment on style or naming, don't suggest optional improvements. \
+        \(files.isEmpty ? "" : "\nCURRENT CONTENT OF THE CHANGED FILES (for context)\(files)")
+        First list every explicit requirement: those in the request, and those stated in docstrings, comments or specs in the files above. \
+        For each one, name the exact line of code that makes it true; if you can't point to a line (for example a case the code never handles), \
+        it is NOT met and counts as a problem. Then report only concrete, important problems: a requirement the code doesn't meet, bugs, parts of the \
+        request that are missing, edge cases the request clearly implies, leftover debug code, or changes unrelated to the request. Don't comment on style or naming, don't suggest optional improvements. \
         Be brief: at most 5 bullet points, each with the file and what is wrong. If there are no important problems, reply with exactly: LGTM
         """
         let text = (try? await brain.oneShot(prompt, effort: "low")) ?? "LGTM"

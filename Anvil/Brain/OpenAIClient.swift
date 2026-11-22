@@ -117,7 +117,36 @@ nonisolated final class OpenAIClient: Sendable {
 
     /// Reads an OpenAI-style SSE stream. Shared with the Gemini proxy client.
     static func consumeSSE(session: URLSession, request: URLRequest, onText: @escaping (String) -> Void,
-                           shouldStop: @escaping (String) -> Bool) async throws -> (text: String, usage: ChatUsage?, cut: Bool) {
+                           shouldStop: @escaping (String) -> Bool, stallSeconds: Double = 120,
+                           maxThinkSeconds: Double = 120) async throws -> (text: String, usage: ChatUsage?, cut: Bool) {
+        // Watchdog: URLSession only times out an idle connection, so a request the server holds open without ever
+        // sending a data line (a queued or wedged upstream) hung the agent for the whole task. No data line for
+        // `stallSeconds` abandons the attempt with a retryable error.
+        let clock = ProgressClock()
+        return try await withThrowingTaskGroup(of: (text: String, usage: ChatUsage?, cut: Bool)?.self) { group in
+            group.addTask { try await consumeSSEStream(session: session, request: request, onText: onText, shouldStop: shouldStop, clock: clock) }
+            group.addTask {
+                while !Task.isCancelled {
+                    try await Task.sleep(for: .seconds(2))
+                    if clock.idle > stallSeconds {
+                        throw BrainError(status: 0, code: "upstream_timeout", message: "the model sent nothing for \(Int(stallSeconds)) seconds")
+                    }
+                    // A reasoning model can think without end at high effort (streaming thousands of reasoning tokens and
+                    // never an answer). Past the budget, give up on this attempt so the caller can retry at lower effort.
+                    if !clock.contentStarted, clock.age > maxThinkSeconds {
+                        throw BrainError(status: 0, code: "thinking_too_long", message: "the model was still thinking after \(Int(maxThinkSeconds)) seconds without answering")
+                    }
+                }
+                return nil
+            }
+            defer { group.cancelAll() }
+            while let r = try await group.next() { if let r { return r } }
+            throw BrainError(status: 0, code: "network", message: "the reply stream ended without a result")
+        }
+    }
+
+    private static func consumeSSEStream(session: URLSession, request: URLRequest, onText: @escaping (String) -> Void,
+                                         shouldStop: @escaping (String) -> Bool, clock: ProgressClock) async throws -> (text: String, usage: ChatUsage?, cut: Bool) {
         let bytes: URLSession.AsyncBytes, resp: URLResponse
         do { (bytes, resp) = try await session.bytes(for: request) } catch {
             if (error as? URLError)?.code == .cancelled { throw CancellationError() }
@@ -128,6 +157,7 @@ nonisolated final class OpenAIClient: Sendable {
             }
             throw BrainError(status: 0, code: code == .timedOut ? "upstream_timeout" : "network", message: error.localizedDescription)
         }
+        clock.touch()
         let http = resp as? HTTPURLResponse
         let status = http?.statusCode ?? 0
         guard (200..<300).contains(status) else {
@@ -146,6 +176,7 @@ nonisolated final class OpenAIClient: Sendable {
         for try await line in bytes.lines {
             try Task.checkCancellation()
             guard line.hasPrefix("data:") else { continue }
+            clock.touch()
             let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
             if payload == "[DONE]" { finished = true; break }
             guard let j = JSON.parse(payload) else { continue }
@@ -156,6 +187,7 @@ nonisolated final class OpenAIClient: Sendable {
             }
             if let fr = j["choices"]?.array?.first?["finish_reason"], fr != .null { finished = true; finishReason = fr.string }
             if let d = j["choices"]?.array?.first?["delta"]?["content"]?.string, !d.isEmpty {
+                clock.contentArrived()
                 text += d
                 if Date().timeIntervalSince(lastEmit) > 0.08 { onText(text); lastEmit = Date() }
                 if d.contains("`") && shouldStop(text) { onText(text); return (text, usage, true) }
@@ -179,4 +211,18 @@ nonisolated final class OpenAIClient: Sendable {
         u?.finishReason = finishReason
         return (text, u, false)
     }
+}
+
+/// When a stream last showed signs of life (thread-safe).
+nonisolated final class ProgressClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last = Date()
+    private let started = Date()
+    private var content = false
+    func touch() { lock.withLock { last = Date() } }
+    func contentArrived() { lock.withLock { content = true; last = Date() } }
+    var contentStarted: Bool { lock.withLock { content } }
+    var idle: Double { lock.withLock { Date().timeIntervalSince(last) } }
+    /// Seconds since the attempt began.
+    var age: Double { Date().timeIntervalSince(started) }
 }

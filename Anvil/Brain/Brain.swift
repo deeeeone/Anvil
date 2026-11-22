@@ -7,6 +7,8 @@ final class Brain {
     var visionModel: String
     var effort: String
     var visionEffort: String
+    /// Set when a turn's reasoning ran away (see thinking_too_long): the rest of the request reasons at most this much.
+    var effortCap: String?
     let experiential: OpenAIClient?
     let luna: OpenAIClient?
     let geminiProxy: GeminiProxyClient?
@@ -68,6 +70,17 @@ final class Brain {
         return (model, false)
     }
 
+    nonisolated static func capped(_ effort: String, by cap: String?) -> String {
+        let order = ["low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 4]
+        guard let cap, let c = order[cap.lowercased()], let e = order[effort.lowercased()], e > c else { return effort }
+        return cap
+    }
+
+    /// One notch less reasoning (nil once there's nothing lower).
+    nonisolated static func lowerEffort(_ e: String) -> String? {
+        switch e.lowercased() { case "max", "xhigh": return "high"; case "high": return "medium"; case "medium": return "low"; default: return nil }
+    }
+
     nonisolated static func retryable(_ e: BrainError) -> Bool {
         ["network", "upstream_error", "server_busy", "upstream_timeout", "bad_response", "not_ready", "upstream_blocked"].contains(e.code)
             || e.status == 503 || e.status == 429 || e.message.lowercased().contains("retry")
@@ -80,6 +93,7 @@ final class Brain {
         b.onUsage = onUsage
         b.override = override
         b.effort = "low"   // helpers only read and search
+        b.effortCap = effortCap
         return b
     }
 
@@ -97,12 +111,16 @@ final class Brain {
         let (m, images) = Self.route(history, model: requested ?? model, vision: visionModel)
         lastFinishReason = nil
         if let override { return try await override(history, m) }
-        let turnEffort = images ? visionEffort : (requestedEffort ?? effort)
+        var turnEffort = Self.capped(images ? visionEffort : (requestedEffort ?? effort), by: effortCap)
         // Streaming has no built-in retry: retry transient failures here.
         var attempt = 0
         while true {
             do {
                 return try await call(history, model: m, images: images, effort: turnEffort, stop: OpenAIClient.agentStops, agent: true, maxTokens: maxTokens)
+            } catch let e as BrainError where e.code == "thinking_too_long" && Self.lowerEffort(turnEffort) != nil {
+                // Runaway reasoning: redo this turn with less of it instead of burning the whole task budget.
+                turnEffort = Self.lowerEffort(turnEffort)!
+                effortCap = turnEffort
             } catch let e as BrainError where Self.retryable(e) && attempt < (e.code == "server_busy" ? 5 : 2) {
                 // Rate limits and "not ready, retry shortly" get a real backoff (about 45 s in total); other blips a short one.
                 attempt += 1

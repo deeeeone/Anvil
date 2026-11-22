@@ -1,5 +1,15 @@
 import Foundation
 
+/// Counts bytes against a budget from any thread.
+nonisolated final class ByteBudget: @unchecked Sendable {
+    private let lock = NSLock()
+    private var used = 0
+    let limit: Int
+    init(limit: Int) { self.limit = limit }
+    /// True while the budget lasts (the chunk that crosses the limit is the last one allowed).
+    func take(_ n: Int) -> Bool { lock.withLock { let ok = used < limit; used += n; return ok } }
+}
+
 /// Shell commands, background processes and waiting on real conditions.
 enum ShellTools {
     static func all() -> [ToolSpec] { [shell, startProcess, readProcess, stopProcess, listProcesses, waitUntil, wait] }
@@ -30,7 +40,11 @@ enum ShellTools {
         let stepID = ctx.stepID
         weak var host = ctx.host
         let start = Date()
+        // Only the first ~1 MB of a command's output is streamed to the screen; the model gets the clipped tail anyway,
+        // and thousands of main-thread updates for a noisy build froze the app.
+        let streamed = ByteBudget(limit: 1_000_000)
         let r = await ProcessRunner.shell(cmd, cwd: cwd, timeout: timeout) { chunk in
+            guard streamed.take(chunk.utf8.count) else { return }
             Task { @MainActor in if let stepID { host?.agentStepOutput(stepID, chunk: chunk) } }
         }
         var out = r.combined
