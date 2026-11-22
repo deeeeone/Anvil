@@ -125,6 +125,7 @@ struct FlowChips: View {
 struct ItemView: View {
     let item: ChatItem
     let controller: SessionController
+    @State private var hoverMessage = false
 
     var body: some View {
         switch item.kind {
@@ -132,10 +133,13 @@ struct ItemView: View {
             HStack(alignment: .top) {
                 Spacer(minLength: 48)
                 if !controller.running && item.historyIndex != nil {
-                    VStack(spacing: 0) {
+                    // Shown while hovering the message, side by side (like Claude's message actions).
+                    HStack(spacing: 2) {
                         RewindButton(item: item, controller: controller)
                         ForkButton(item: item, controller: controller)
                     }
+                    .opacity(hoverMessage ? 1 : 0)
+                    .animation(.easeOut(duration: 0.12), value: hoverMessage)
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Text(item.text).font(.system(size: 14)).textSelection(.enabled).lineSpacing(2)
@@ -144,6 +148,8 @@ struct ItemView: View {
                 .padding(.horizontal, 15).padding(.vertical, 11)
                 .background(Theme.surface2, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
+            .onHover { hoverMessage = $0 }
+
         case .assistant:
             VStack(alignment: .leading, spacing: 8) {
                 MarkdownText(text: item.text).textSelection(.enabled)
@@ -546,12 +552,15 @@ struct ForkButton: View {
 
     var body: some View {
         Button { app.fork(controller.session.id, at: item.id) } label: {
+            // The branch symbol turned to point forward: "split off from here".
             Image(systemName: "arrow.triangle.branch").font(.system(size: 11, weight: .semibold))
+                .rotationEffect(.degrees(90))
                 .foregroundStyle(hover ? Theme.text : Theme.text3).frame(width: 24, height: 24)
                 .background(hover ? Theme.surface2 : .clear, in: Circle())
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
+        .padding(.top, 6)
         .disabled(controller.running)
         .help("Fork from here: a new session with the conversation up to this message, to try it differently. This session stays as it is.")
     }
