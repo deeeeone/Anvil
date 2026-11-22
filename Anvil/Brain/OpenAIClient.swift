@@ -137,6 +137,7 @@ nonisolated final class OpenAIClient: Sendable {
         var lastEmit = Date.distantPast
         var finished = false
         var finishReason: String?
+        do {
         for try await line in bytes.lines {
             try Task.checkCancellation()
             guard line.hasPrefix("data:") else { continue }
@@ -154,6 +155,16 @@ nonisolated final class OpenAIClient: Sendable {
                 if Date().timeIntervalSince(lastEmit) > 0.08 { onText(text); lastEmit = Date() }
                 if d.contains("`") && shouldStop(text) { onText(text); return (text, usage, true) }
             }
+        }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            if (error as? URLError)?.code == .cancelled { throw CancellationError() }
+            if text.isEmpty {
+                throw BrainError(status: status, code: "upstream_error",
+                                 message: "the provider closed the stream before replying (often a rejected session)")
+            }
+            if !Brain.replyComplete(text) { throw BrainError(status: status, code: "network", message: "the reply stream ended early") }
         }
         onText(text)
         if text.isEmpty { throw BrainError(status: status, code: "bad_response", message: "empty reply") }

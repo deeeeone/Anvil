@@ -107,13 +107,12 @@ private struct PluginRow: View {
                     if let k = spec.auth.keyURL, let u = URL(string: k) { Link("Get a key", destination: u).font(.caption) }
                 }
             case .web:
-                if !ready {
-                    HStack {
-                        Text("Sign in with your \(spec.name) account.").font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Sign in…") { PluginLoginWindow.shared.present(provider) { app.resetAgents() } }
-                        Button("Paste cookies…") { pasting = true }
-                    }
+                HStack {
+                    Text(ready ? "Signed in with your \(spec.name) account." : "Sign in with your \(spec.name) account.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(ready ? "Sign in again…" : "Sign in…") { PluginLoginWindow.shared.present(provider) { app.resetAgents() } }
+                    Button("Paste cookies…") { pasting = true }
                 }
             case .none:
                 EmptyView()
@@ -184,7 +183,14 @@ struct AddProviderSheet: View {
             }
             if let pending {
                 ConfirmProviderView(pending: pending, title: pending.replaces ? "Replace \(pending.spec.name)?" : "Install \(pending.spec.name)?") { installed in
-                    if installed { onAdded(); dismiss() } else { self.pending = nil }
+                    if installed {
+                        let id = pending.spec.id
+                        onAdded()
+                        dismiss()
+                        if pending.spec.auth.type == .web, let p = ProviderPlugins.shared.provider(id) {
+                            PluginLoginWindow.shared.present(p) { onAdded() }
+                        }
+                    } else { self.pending = nil }
                 }
             } else {
                 Picker("", selection: $tab) { ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
