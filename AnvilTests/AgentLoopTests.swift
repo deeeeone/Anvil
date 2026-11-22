@@ -581,4 +581,21 @@ final class AgentLoopTests: XCTestCase {
         XCTAssertEqual(Agent.trimFiller("No changes were made."), "No changes were made.")
         XCTAssertEqual(Agent.trimFiller("Version 1.2 is used. See e.g. main.swift."), "Version 1.2 is used. See e.g. main.swift.")
     }
+
+    func testClaimingNoToolsAfterActingIsReanchored() async {
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "list_dir", "args": {}}]}"#),
+            fence(#"{"say": "To build this I need file, shell, and browser tools that aren't available in this environment.", "actions": [], "done": true}"#),
+            fence(#"{"say": "Here is the answer.", "done": true}"#),
+        ])
+        let out = await agent.run(goal: "build a landing page")
+        XCTAssertEqual(out.text, "Here is the answer.", "the false 'no tools' answer wasn't accepted")
+        XCTAssertTrue(sent[2].last!.text.contains("You already used them successfully"), sent[2].last!.text)
+    }
+
+    func testCantActPhrasesCoverToolAvailabilityClaims() {
+        XCTAssertTrue(Agent.looksLikeCantAct("I need file, shell, and browser tools that aren't available in this environment."))
+        XCTAssertTrue(Agent.looksLikeCantAct("I don't have access to your file system."))
+        XCTAssertFalse(Agent.looksLikeCantAct("The parser reads the config, then the tools module registers handlers."))
+    }
 }

@@ -402,10 +402,12 @@ final class Agent {
             }
 
             if reply.actions.isEmpty {
-                // A "final answer" that says it can't touch the project, before doing anything: re-anchor instead.
-                if !actedThisRequest && reanchors < 2 && Self.looksLikeCantAct((reply.say ?? "") + " " + reply.thought) {
+                // A "final answer" that claims it has no tools: re-anchor instead, before or after it has acted.
+                // Web-chat models (whose own apps have no tools) slip into this even after successful steps.
+                if !editedThisRequest && reanchors < 2 && Self.looksLikeCantAct((reply.say ?? "") + " " + reply.thought) {
                     reanchors += 1
-                    userText = "<observation step=\(step)>\(Self.reanchorText) Continue with the request: \"\(Fmt.line(goal, 300))\". Start with an action such as read_file or list_dir. \(PromptBuilder.formatReminder)</observation>"
+                    let proof = actedThisRequest ? " You already used them successfully in this request: the results are in the observations above." : ""
+                    userText = "<observation step=\(step)>\(Self.reanchorText) That includes file, shell and browser tools (see the tool catalog in the first message).\(proof) Continue with the request: \"\(Fmt.line(goal, 300))\". Reply with the next actions. \(PromptBuilder.formatReminder)</observation>"
                     continue
                 }
                 // "I'll implement that and check it." with no actions and no explicit done: it meant to act.
@@ -1015,8 +1017,11 @@ final class Agent {
     /// "I can't access your files / run commands here": the model thinks it's a plain chat.
     static func looksLikeCantAct(_ raw: String) -> Bool {
         let t = raw.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
-        let cant = ["can't", "cannot", "can not", "unable to", "don't have", "do not have", "no access", "not able to"]
-        let what = ["access", "run commands", "execute", "read files", "the files", "your files", "file system", "filesystem", "the project", "browse"]
+        let cant = ["can't", "cannot", "can not", "unable to", "don't have", "do not have", "no access", "not able to",
+                    "aren't available", "are not available", "isn't available", "is not available", "not available to me",
+                    "no tools", "without access", "lack access", "lack the"]
+        let what = ["access", "run commands", "execute", "read files", "the files", "your files", "file system", "filesystem", "the project", "browse",
+                    "tools", "shell", "terminal", "browser", "this environment", "sandbox"]
         return t.count < 1200 && cant.contains { t.contains($0) } && what.contains { t.contains($0) }
     }
 

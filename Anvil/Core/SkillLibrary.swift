@@ -14,6 +14,24 @@ nonisolated struct FolderSkill: Hashable, Sendable {
 nonisolated enum SkillLibrary {
     static var anvilDir: URL { Paths.sub("skills") }
 
+    /// Skills whose name or description matches a name that doesn't exist (e.g. "website" → impeccable, showcase-pages).
+    static func closest(to name: String, project: URL?, limit: Int = 3) -> [String] {
+        let words = name.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init).filter { $0.count > 2 }
+        guard !words.isEmpty else { return [] }
+        let scored = all(project: project).map { s -> (String, Int) in
+            let n = s.name.lowercased(), d = s.description.lowercased()
+            var score = 0
+            for w in words {
+                // "website" should also match "websites" and "web site"; compare on a stem.
+                let stem = w.count > 5 ? String(w.dropLast(w.hasSuffix("s") ? 1 : 0)) : w
+                if n.contains(stem) { score += 3 }
+                if d.contains(stem) { score += 1 }
+            }
+            return (s.name, score)
+        }
+        return scored.filter { $0.1 > 0 }.sorted { $0.1 > $1.1 }.prefix(limit).map(\.0)
+    }
+
     static func all(project: URL?) -> [FolderSkill] {
         var roots: [(URL, String, Int)] = []
         if let project {

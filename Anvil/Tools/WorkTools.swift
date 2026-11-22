@@ -77,7 +77,10 @@ enum WorkTools {
         group: .work
     ) { a, ctx in
         guard let n = a["name"]?.string ?? a["value"]?.string else { return .fail("missing name") }
-        guard let s = SkillLibrary.find(n, project: ctx.root) else { return .fail("no skill named \"\(n)\". Use list_skills.") }
+        guard let s = SkillLibrary.find(n, project: ctx.root) else {
+            let close = SkillLibrary.closest(to: n, project: ctx.root)
+            return .fail("no skill named \"\(n)\"." + (close.isEmpty ? " Use list_skills." : " Closest: \(close.joined(separator: ", ")). Load one of those with use_skill."))
+        }
         return .ok(Fmt.clip(SkillLibrary.load(s), max: 14000))
     }
 
