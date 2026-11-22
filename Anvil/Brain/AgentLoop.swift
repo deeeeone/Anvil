@@ -884,14 +884,50 @@ final class Agent {
     /// Summarises the conversation and replaces the history with briefing + summary.
     func compact(focus: String?, auto: Bool = false) async throws {
         guard messages.count >= 2 else { return }
-        let request = Compactor.summaryRequest(messages, focus: focus)
-        let summary = try await brain.reply(request)
+        var summary: String
+        let size = Compactor.estimateTokens(messages, model: brain.model)
+        if size <= Compactor.singleCallTokens {
+            do { summary = try await brain.reply(Compactor.summaryRequest(messages, focus: focus)) }
+            catch where Compactor.isTooLong(error) { summary = try await rollingSummary(focus: focus) }
+        } else {
+            summary = try await rollingSummary(focus: focus)
+        }
         let clean = summary.replacingOccurrences(of: #"```json[\s\S]*?```"#, with: "", options: .regularExpression)
         let base = briefing.isEmpty ? (messages.first?.text ?? "") : briefing
         messages = Compactor.compacted(briefing: base, summary: clean)
         readCache = [:]
         onHistory?()
         onCompacted?(clean)
+    }
+
+    /// Summarizes the history in parts, each folded into the running summary, so no single call is bigger than
+    /// the provider accepts. A part the provider still rejects as too long is split in half and retried.
+    func rollingSummary(focus: String?) async throws -> String {
+        let body = Array(messages.dropFirst())   // the first message is the briefing, kept separately
+        let ratio = max(1.5, TokenCalibrator.shared.ratio(for: brain.model))
+        var budget = Compactor.chunkTokens
+        var parts = Compactor.chunks(body, maxChars: Int(Double(budget) * ratio))
+        var summary: String?
+        var i = 0
+        var total = parts.count
+        while i < parts.count {
+            host?.agentStatus("Compacting part \(i + 1) of \(total)")
+            let request = Compactor.rollingRequest(summary: summary, chunk: parts[i], part: i + 1, of: total, focus: focus)
+            do {
+                let reply = try await brain.reply(request)
+                summary = reply.replacingOccurrences(of: #"```json[\s\S]*?```"#, with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                i += 1
+            } catch where Compactor.isTooLong(error) {
+                guard budget > Compactor.minChunkTokens else { throw error }
+                budget /= 2
+                // Re-split this part and everything after it with the smaller budget.
+                let rest = parts[i...].flatMap { $0 }
+                parts = Array(parts[..<i]) + Compactor.chunks(rest, maxChars: Int(Double(budget) * ratio))
+                total = parts.count
+            }
+        }
+        return summary ?? ""
     }
 
     // MARK: Helpers

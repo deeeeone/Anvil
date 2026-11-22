@@ -48,6 +48,67 @@ nonisolated enum Compactor {
         return history
     }
 
+    // MARK: Rolling compaction
+
+    /// A history this small is summarized in one call; bigger ones (or one the provider rejects as too long) roll.
+    static let singleCallTokens = 24_000
+    /// Tokens of conversation per rolling step. Halved when a provider still says it's too long.
+    static let chunkTokens = 12_000
+    static let minChunkTokens = 1_500
+
+    /// Provider errors that mean "this request is bigger than I accept".
+    static func isTooLong(_ e: Error) -> Bool {
+        guard let b = e as? BrainError else { return false }
+        if b.status == 413 || b.code == "too_long" { return true }
+        let m = b.message.lowercased()
+        return ["too long", "longer than", "context length", "context window", "maximum context", "message_length", "too many tokens", "exceeds the"].contains { m.contains($0) }
+    }
+
+    /// One message as transcript text; big tool output is clipped, images dropped.
+    static func transcriptLine(_ m: ChatMessage, clip: Int = 6000) -> String {
+        let label = m.role == "assistant" ? "[your reply]" : "[owner / app]"
+        let text = m.text.isEmpty && m.hasImage ? "[image omitted]" : Fmt.clip(m.text, max: clip)
+        return "\(label)\n\(text)\n"
+    }
+
+    /// Splits messages into consecutive groups of at most `maxChars` (after clipping), always starting a group
+    /// at a user turn when possible, so an action and the observation that answers it stay together.
+    static func chunks(_ messages: [ChatMessage], maxChars: Int) -> [[ChatMessage]] {
+        var out: [[ChatMessage]] = []
+        var current: [ChatMessage] = []
+        var size = 0
+        for m in messages {
+            let n = transcriptLine(m).count
+            if !current.isEmpty, size + n > maxChars, m.role == "user" || size + n > maxChars * 2 {
+                out.append(current); current = []; size = 0
+            }
+            current.append(m); size += n
+        }
+        if !current.isEmpty { out.append(current) }
+        return out
+    }
+
+    /// One rolling step: fold `chunk` into `summary` (nil on the first step) and return the updated summary.
+    static func rollingRequest(summary: String?, chunk: [ChatMessage], part: Int, of total: Int, focus: String? = nil) -> [ChatMessage] {
+        let transcript = chunk.map { transcriptLine($0) }.joined(separator: "\n")
+        let have = summary.map { "SUMMARY SO FAR (from the earlier parts of the conversation):\n\($0)\n\n" } ?? "This is the first part of the conversation.\n\n"
+        let ask = """
+        <compact>
+        A long conversation is being compacted in parts so it fits the context window. This is part \(part) of \(total).
+
+        \(have)NEXT PART OF THE CONVERSATION:
+        \(transcript)
+
+        Write the updated summary: everything from the summary so far that still matters, with this part folded in. Where this part changes or \
+        reverses something earlier, keep only the latest decision. Include: the owner's requests and preferences; what has been done (files \
+        created or changed, with paths); key decisions and why; commands that build, run and test the project; current state of tests; open \
+        problems and exact next steps. Specific and concise, at most ~700 words, plain text, no JSON.
+        \(focus.map { "Pay special attention to: \($0)" } ?? "")
+        </compact>
+        """
+        return [.user(ask)]
+    }
+
     /// The compacted history: the fixed briefing plus the summary as one user turn, and a short assistant ack so turns still alternate.
     static func compacted(briefing: String, summary: String) -> [ChatMessage] {
         let user = briefing + "\n\nSUMMARY OF THE CONVERSATION SO FAR (earlier turns were compacted to save context)\n"

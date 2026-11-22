@@ -679,4 +679,42 @@ final class AgentLoopTests: XCTestCase {
         let tight = Brain.fold(h, recent: 3, olderClip: 300, recentClip: 4000).text.count
         XCTAssertLessThan(tight, normal / 2, "normal \(normal), tight \(tight)")
     }
+
+    func testRollingCompactionSurvivesAProviderCap() async throws {
+        let agent = makeAgent([])
+        var h: [ChatMessage] = [.user("You are Anvil. briefing")]
+        for i in 0..<30 {
+            h.append(.assistant("reply \(i) " + String(repeating: "x", count: 6000)))
+            h.append(.user("observation \(i) " + String(repeating: "y", count: 6000)))
+        }
+        agent.messages = h
+        agent.briefing = "You are Anvil. briefing"
+        var calls: [[ChatMessage]] = []
+        var lastSummary = ""
+        agent.brain.override = { request, _ in
+            let chars = request.reduce(0) { $0 + $1.charCount }
+            calls.append(request)
+            // A provider that refuses anything over 30k characters, like the free tier in the screenshot.
+            if chars > 30_000 { throw BrainError(status: 400, code: "upstream_error", message: "This prompt is longer than the free tier allows for a single request.") }
+            lastSummary = "SUMMARY after call \(calls.count)"
+            return lastSummary
+        }
+        try await agent.compact(focus: nil)
+        XCTAssertGreaterThan(calls.count, 3, "it rolled over several parts")
+        XCTAssertTrue(calls.dropFirst().contains { $0.last!.text.contains("SUMMARY after call") }, "later parts carry the running summary")
+        XCTAssertEqual(agent.messages.count, 2)
+        XCTAssertTrue(agent.messages[0].text.contains(lastSummary), "the final rolling summary became the context")
+        XCTAssertTrue(agent.messages[0].text.hasPrefix("You are Anvil"))
+    }
+
+    func testChunksKeepTurnsTogetherAndRespectTheBudget() {
+        var h: [ChatMessage] = []
+        for i in 0..<10 { h.append(.user("u\(i) " + String(repeating: "a", count: 900))); h.append(.assistant("a\(i) " + String(repeating: "b", count: 900))) }
+        let chunks = Compactor.chunks(h, maxChars: 4000)
+        XCTAssertGreaterThan(chunks.count, 3)
+        XCTAssertEqual(chunks.flatMap { $0 }.count, 20, "nothing lost")
+        XCTAssertTrue(chunks.dropFirst().allSatisfy { $0.first?.role == "user" }, "each part starts at a user turn")
+        XCTAssertTrue(Compactor.isTooLong(BrainError(status: 400, code: "x", message: "Prompt is longer than the free tier allows")))
+        XCTAssertFalse(Compactor.isTooLong(BrainError(status: 401, code: "unauthorized", message: "bad key")))
+    }
 }
