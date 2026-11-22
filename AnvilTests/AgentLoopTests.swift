@@ -277,10 +277,13 @@ final class AgentLoopTests: XCTestCase {
         let agent = makeAgent([
             fence(#"{"say": "I can't access the project files here. Please paste wc.py.", "actions": [], "done": true}"#),
             fence(#"{"say": "ok", "done": true}"#),
+            fence(#"{"say": "ok", "done": true}"#),
         ])
         let out = await agent.run(goal: "fix it")
         XCTAssertEqual(out.text, "ok")
         XCTAssertTrue(sent[1].last!.text.contains("You do have access"))
+        // "fix it" answered with "ok" and no action is sent back once more, then accepted.
+        XCTAssertTrue(sent[2].last!.text.contains("You answered without taking any action"))
     }
 
     func testIntentWithoutActionsIsNotAnAnswer() async {
@@ -597,5 +600,28 @@ final class AgentLoopTests: XCTestCase {
         XCTAssertTrue(Agent.looksLikeCantAct("I need file, shell, and browser tools that aren't available in this environment."))
         XCTAssertTrue(Agent.looksLikeCantAct("I don't have access to your file system."))
         XCTAssertFalse(Agent.looksLikeCantAct("The parser reads the config, then the tools module registers handlers."))
+    }
+
+    func testLongSandboxExcuseIsCaught() {
+        let reply = "## Blueprint\n\nBecause I am running in a sandboxed environment without direct access to your local filesystem, here is a complete plan.\n" + String(repeating: "- a section of the plan with details\n", count: 120)
+        XCTAssertGreaterThan(reply.count, 1200)
+        XCTAssertTrue(Agent.looksLikeCantAct(reply))
+    }
+
+    func testWorkRequestAnsweredWithoutActingIsSentBack() async {
+        let agent = makeAgent([
+            fence(#"{"say": "Here is a full blueprint for the page: app/page.tsx with a hero, features and footer.", "actions": [], "done": true}"#),
+            fence(#"{"actions": [{"tool": "list_dir", "args": {}}]}"#),
+            fence(#"{"say": "Built it.", "done": true}"#),
+        ])
+        let out = await agent.run(goal: "make a landing page for this project with nextjs")
+        XCTAssertEqual(out.text, "Built it.")
+        XCTAssertTrue(sent[1].last!.text.contains("You answered without taking any action"), sent[1].last!.text)
+    }
+
+    func testQuestionsCanStillBeAnsweredWithoutActing() async {
+        let agent = makeAgent([fence(#"{"say": "A Swift package manifest declares targets.", "done": true}"#)])
+        let out = await agent.run(goal: "what does a Package.swift file do?")
+        XCTAssertEqual(out.text, "A Swift package manifest declares targets.")
     }
 }

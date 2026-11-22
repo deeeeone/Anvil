@@ -241,6 +241,7 @@ final class Agent {
         var reanchors = 0
         var actedThisRequest = false
         var editedThisRequest = false
+        var sentBackForNoAction = false
         var lastBatchExploratory = false
         var lastBatchFailed = false
         var verifyRuns = 0
@@ -408,6 +409,15 @@ final class Agent {
                     reanchors += 1
                     let proof = actedThisRequest ? " You already used them successfully in this request: the results are in the observations above." : ""
                     userText = "<observation step=\(step)>\(Self.reanchorText) That includes file, shell and browser tools (see the tool catalog in the first message).\(proof) Continue with the request: \"\(Fmt.line(goal, 300))\". Reply with the next actions. \(PromptBuilder.formatReminder)</observation>"
+                    continue
+                }
+                // A request for work (build, fix, add…) "finished" without a single action: the model described the
+                // work instead of doing it (often a plan or code dump wrapped in "I'm in a sandbox"). Send it back once.
+                let finalText = (reply.say ?? reply.thought).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !actedThisRequest && !sentBackForNoAction && reply.explicitDone && size != .question
+                    && Self.asksForWork(goal) && !finalText.hasSuffix("?") {
+                    sentBackForNoAction = true
+                    userText = "<observation step=\(step)>You answered without taking any action, but this request asks you to change the project. \(Self.reanchorText) Don't describe or paste the work: do it with your tools (read the relevant files, then write and edit them, then run it). Continue with the request: \"\(Fmt.line(goal, 300))\". \(PromptBuilder.formatReminder)</observation>"
                     continue
                 }
                 // "I'll implement that and check it." with no actions and no explicit done: it meant to act.
@@ -1015,14 +1025,26 @@ final class Agent {
     }
 
     /// "I can't access your files / run commands here": the model thinks it's a plain chat.
+    /// The request asks for changes to the project (not a question or a chat).
+    static func asksForWork(_ goal: String) -> Bool {
+        let g = " " + goal.lowercased().replacingOccurrences(of: "\n", with: " ") + " "
+        let verbs = ["make", "build", "create", "add", "fix", "implement", "write", "refactor", "update", "change", "remove",
+                     "delete", "rename", "set up", "setup", "install", "migrate", "port", "convert", "generate", "scaffold", "redesign"]
+        return verbs.contains { g.contains(" \($0) ") || g.contains(" \($0)s ") || g.range(of: "^\\W*\($0)\\b", options: .regularExpression, range: g.range(of: g)) != nil }
+    }
+
     static func looksLikeCantAct(_ raw: String) -> Bool {
-        let t = raw.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+        // The excuse comes first, even when a long plan or code dump follows it.
+        let t = String(raw.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+            .replacingOccurrences(of: "without direct access", with: "without access")
+            .replacingOccurrences(of: "no direct access", with: "no access").prefix(700))
         let cant = ["can't", "cannot", "can not", "unable to", "don't have", "do not have", "no access", "not able to",
                     "aren't available", "are not available", "isn't available", "is not available", "not available to me",
                     "no tools", "without access", "lack access", "lack the"]
         let what = ["access", "run commands", "execute", "read files", "the files", "your files", "file system", "filesystem", "the project", "browse",
                     "tools", "shell", "terminal", "browser", "this environment", "sandbox"]
-        return t.count < 1200 && cant.contains { t.contains($0) } && what.contains { t.contains($0) }
+        let sandboxed = t.contains("sandboxed environment") || t.contains("running in a sandbox")
+        return sandboxed || (cant.contains { t.contains($0) } && what.contains { t.contains($0) })
     }
 
     static func timeNote(since start: Date) -> String {
