@@ -121,7 +121,12 @@ nonisolated final class OpenAIClient: Sendable {
         let bytes: URLSession.AsyncBytes, resp: URLResponse
         do { (bytes, resp) = try await session.bytes(for: request) } catch {
             if (error as? URLError)?.code == .cancelled { throw CancellationError() }
-            throw BrainError(status: 0, code: (error as? URLError)?.code == .timedOut ? "upstream_timeout" : "network", message: error.localizedDescription)
+            let code = (error as? URLError)?.code
+            if code == .badServerResponse || code == .cannotParseResponse {
+                throw BrainError(status: 0, code: "upstream_error",
+                                 message: "the provider closed the connection before replying (often a rejected session)")
+            }
+            throw BrainError(status: 0, code: code == .timedOut ? "upstream_timeout" : "network", message: error.localizedDescription)
         }
         let http = resp as? HTTPURLResponse
         let status = http?.statusCode ?? 0
