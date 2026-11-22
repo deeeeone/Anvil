@@ -176,7 +176,20 @@ nonisolated final class GeminiWebClient: @unchecked Sendable {
         if full.isEmpty {
             throw BrainError(status: 0, code: "upstream_error", message: "Gemini returned an empty reply. Try again, or add another account.")
         }
+        if Self.isServiceError(full) {
+            throw BrainError(status: 0, code: "gemini_error", message: "Gemini answered with its own error (\"\(Fmt.line(full, 80))\"), usually because the message was too long for it.")
+        }
         return full
+    }
+
+    /// Gemini's web app answers some failures (most often a message too long for it) with a canned sentence
+    /// instead of an error. That text must never be taken for the model's reply.
+    static func isServiceError(_ reply: String) -> Bool {
+        let t = reply.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+        guard t.count < 300, !t.contains("```") else { return false }
+        let canned = ["sorry, something went wrong", "something went wrong. please try", "i'm having a hard time fulfilling your request",
+                      "i'm unable to process this request right now", "an error occurred. please try again"]
+        return canned.contains { t.hasPrefix($0) || t.contains($0) }
     }
 
     private struct Uploaded {

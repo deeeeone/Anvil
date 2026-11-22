@@ -200,9 +200,20 @@ final class Brain {
             let accounts = WebAccounts.shared.candidates(for: .gemini)
             if !accounts.isEmpty {
                 do {
-                    let message = Self.fold(history)
-                    let images = message.parts.compactMap { if case .image(let d, let mime) = $0 { return (d, mime) } else { return nil } }
-                    let text = try await webGemini(message.text, images: images, model: m, stream: stream)
+                    // The whole conversation goes to Gemini's web app as one message. When it refuses (its canned
+                    // "something went wrong"), send a much tighter version once before giving up.
+                    var message = Self.fold(history)
+                    var text: String
+                    do {
+                        text = try await webGemini(message.text, images: Self.images(message), model: m, stream: stream)
+                    } catch let e as BrainError where e.code == "gemini_error" {
+                        message = Self.fold(history, recent: 3, olderClip: 300, recentClip: 4000)
+                        do {
+                            text = try await webGemini(message.text, images: Self.images(message), model: m, stream: stream)
+                        } catch let again as BrainError where again.code == "gemini_error" {
+                            throw BrainError(status: 413, code: "too_long", message: "Gemini's web app keeps failing on this conversation; it's too long for it. Run /compact, or switch to another model for this session.")
+                        }
+                    }
                     if agent { lastFinishReason = nil }
                     record(nil, model: m, history: [message], reply: text, free: true)
                     return text
@@ -234,13 +245,18 @@ final class Brain {
     }
 
     /// Collapses a multi-turn history into one user message (for a fresh Gemini session).
-    nonisolated static func fold(_ history: [ChatMessage]) -> ChatMessage {
+    nonisolated static func images(_ m: ChatMessage) -> [(Data, String)] {
+        m.parts.compactMap { if case .image(let d, let mime) = $0 { return (d, mime) } else { return nil } }
+    }
+
+    /// `recent` turns are kept in full (clipped to `recentClip`), older ones to `olderClip` characters.
+    nonisolated static func fold(_ history: [ChatMessage], recent keep: Int = 6, olderClip: Int = 1200, recentClip: Int? = nil) -> ChatMessage {
         guard history.count > 1 else { return history.last ?? .user("") }
         var s = history[0].text + "\n\nCONVERSATION SO FAR (your earlier replies and the app's observations)\n"
         let middle = Array(history.dropFirst().dropLast())
         for (i, m) in middle.enumerated() {
-            let recent = i >= middle.count - 6
-            let body = recent ? m.text : Fmt.clip(m.text, max: 1200)
+            let recent = i >= middle.count - keep
+            let body = recent ? (recentClip.map { Fmt.clip(m.text, max: $0) } ?? m.text) : Fmt.clip(m.text, max: olderClip)
             s += m.role == "assistant" ? "\n[your reply]\n\(body)\n" : "\n[app]\n\(body)\n"
         }
         let last = history[history.count - 1]

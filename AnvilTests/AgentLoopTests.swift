@@ -664,4 +664,19 @@ final class AgentLoopTests: XCTestCase {
             + "(Note: I don't have direct file/shell/browser tool declarations active in this turn's tool list, only retriever:expand_tools and retriever:expand_skills.)"
         XCTAssertTrue(Agent.looksLikeCantAct(reply))
     }
+
+    func testGeminiCannedErrorsAreNotAnswers() {
+        XCTAssertTrue(GeminiWebClient.isServiceError("Sorry, something went wrong. Please try your request again."))
+        XCTAssertTrue(GeminiWebClient.isServiceError("I\u{2019}m having a hard time fulfilling your request. Can I help you with something else instead?"))
+        XCTAssertFalse(GeminiWebClient.isServiceError("Reading the files.\n```json\n{\"actions\": []}\n```"))
+        XCTAssertFalse(GeminiWebClient.isServiceError("The build failed because something went wrong in the postcss config, which " + String(repeating: "is explained here. ", count: 30)))
+    }
+
+    func testTighterFoldIsMuchSmaller() {
+        var h: [ChatMessage] = [.user("briefing")]
+        for i in 0..<20 { h.append(.assistant(String(repeating: "r\(i) ", count: 2000))); h.append(.user(String(repeating: "o\(i) ", count: 2000))) }
+        let normal = Brain.fold(h).text.count
+        let tight = Brain.fold(h, recent: 3, olderClip: 300, recentClip: 4000).text.count
+        XCTAssertLessThan(tight, normal / 2, "normal \(normal), tight \(tight)")
+    }
 }
