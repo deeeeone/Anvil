@@ -101,13 +101,108 @@ struct HoverRow<Content: View>: View {
 }
 
 /// Claude Code's working glyph, cycling.
+/// A label that updates itself on a timer inside AppKit. SwiftUI's TimelineView re-runs layout up through the whole
+/// window on every tick, which on a long conversation keeps the main thread busy for as long as a task runs
+/// (and hung a beta tester's Mac). Here SwiftUI is never told about the ticks; it is only told when the label's
+/// width really changes (for the elapsed timer, when it gains a digit).
+struct TickingLabel: NSViewRepresentable {
+    var font: NSFont
+    var color: NSColor
+    var interval: TimeInterval
+    /// Fixed size, or nil to fit the text.
+    var size: NSSize?
+    var alignment: NSTextAlignment = .left
+    var text: (Date) -> String
+
+    /// Draws its text itself. A changing NSTextField invalidates its intrinsic size on every update, which wakes the
+    /// SwiftUI host's layout; a view that only redraws doesn't.
+    final class Label: NSView {
+        var fixed: NSSize?
+        var font: NSFont = .systemFont(ofSize: 12) { didSet { needsDisplay = true } }
+        var color: NSColor = .labelColor { didSet { needsDisplay = true } }
+        var alignment: NSTextAlignment = .left
+        private(set) var value = ""
+        override var isFlipped: Bool { true }
+
+        private var attributes: [NSAttributedString.Key: Any] { [.font: font, .foregroundColor: color] }
+
+        func set(_ s: String) {
+            guard s != value else { return }
+            let widthChanged = fixed == nil && s.count != value.count
+            value = s
+            needsDisplay = true
+            if widthChanged { invalidateIntrinsicContentSize() }
+        }
+
+        override var intrinsicContentSize: NSSize {
+            if let fixed { return fixed }
+            let t = (value as NSString).size(withAttributes: attributes)
+            return NSSize(width: ceil(t.width), height: ceil(t.height))
+        }
+
+        override func draw(_ dirtyRect: NSRect) {
+            let t = (value as NSString).size(withAttributes: attributes)
+            var x: CGFloat = 0
+            if alignment == .center { x = (bounds.width - t.width) / 2 } else if alignment == .right { x = bounds.width - t.width }
+            (value as NSString).draw(at: NSPoint(x: x, y: (bounds.height - t.height) / 2), withAttributes: attributes)
+        }
+    }
+
+    final class Coordinator {
+        var timer: Timer?
+        deinit { timer?.invalidate() }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> Label {
+        let l = Label()
+        l.fixed = size
+        l.font = font
+        l.color = color
+        l.alignment = alignment
+        l.set(text(Date()))
+        l.setContentHuggingPriority(.required, for: .horizontal)
+        l.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let render = text
+        let t = Timer(timeInterval: interval, repeats: true) { [weak l] _ in
+            l?.set(render(Date()))
+        }
+        RunLoop.main.add(t, forMode: .common)
+        context.coordinator.timer = t
+        return l
+    }
+
+    func updateNSView(_ l: Label, context: Context) {
+        l.font = font
+        l.color = color
+    }
+
+    static func dismantleNSView(_ l: Label, coordinator: Coordinator) {
+        coordinator.timer?.invalidate()
+        coordinator.timer = nil
+    }
+}
+
 struct Spinner: View {
     static let frames = ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"]
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.12)) { ctx in
-            let i = Int(ctx.date.timeIntervalSinceReferenceDate / 0.12) % Self.frames.count
-            Text(Self.frames[i]).font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.accent).frame(width: 16)
+        TickingLabel(font: .systemFont(ofSize: 15, weight: .bold), color: NSColor(Theme.accent), interval: 0.12,
+                     size: NSSize(width: 16, height: 20), alignment: .center) { date in
+            Self.frames[Int(date.timeIntervalSinceReferenceDate / 0.12) % Self.frames.count]
         }
+        .frame(width: 16, height: 20)
+    }
+}
+
+/// "17s": seconds since `start`, ticking once a second without involving SwiftUI.
+struct ElapsedLabel: View {
+    let start: Date
+    var body: some View {
+        TickingLabel(font: .monospacedDigitSystemFont(ofSize: 12, weight: .regular), color: NSColor(Theme.text3), interval: 1, size: nil) { date in
+            "\(max(0, Int(date.timeIntervalSince(start))))s"
+        }
+        .fixedSize()
     }
 }
 

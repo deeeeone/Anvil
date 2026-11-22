@@ -523,11 +523,7 @@ struct StatusLine: View {
                 Text((controller.status.isEmpty ? "Working" : controller.status) + "…")
                     .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.accent.opacity(0.95))
                     .lineLimit(1).truncationMode(.middle)
-                if let s = controller.startedAt {
-                    TimelineView(.periodic(from: s, by: 1)) { ctx in
-                        Text("\(Int(ctx.date.timeIntervalSince(s)))s").font(.system(size: 12).monospacedDigit()).foregroundStyle(Theme.text3)
-                    }
-                }
+                if let s = controller.startedAt { ElapsedLabel(start: s) }
                 Text("· esc to interrupt").font(.system(size: 12)).foregroundStyle(Theme.text3).lineLimit(1).layoutPriority(-1)
                 Spacer(minLength: 0)
             }
