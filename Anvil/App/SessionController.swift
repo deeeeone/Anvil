@@ -50,6 +50,8 @@ final class SessionController: AgentHost {
     var draft: String?
     /// Called when a request finishes (the background queue uses it).
     @ObservationIgnored var onFinish: ((AgentOutcome) -> Void)?
+    /// Runs unattended (a queue task or a sub-session): never stops to wait for a plan approval.
+    var background = false
 
     @ObservationIgnored private var agent: Agent?
     @ObservationIgnored private var task: Task<Void, Never>?
@@ -131,6 +133,7 @@ final class SessionController: AgentHost {
         a.prefetch = s.prefetch
         a.prepareWhilePlanning = s.prepareWhilePlanning
         a.lspChecks = s.lspChecks
+        a.planNudges = !background
     }
 
     @ObservationIgnored private var lastWarm = Date.distantPast
@@ -679,12 +682,15 @@ final class SessionController: AgentHost {
     }
 
     func agentPlan(_ steps: [String]) async -> PlanDecision {
-        let card = PlanCard(steps: steps)
+        var card = PlanCard(steps: steps)
+        // Bypass means no prompts: the plan is shown and tracked, but approved right away.
+        if mode == .bypass || background { card.state = .approved }
         let item = ChatItem(kind: .plan, text: "", plan: card)
         append(item)
         session.plan = card
         session.todos = []
         if app?.showInspector == true { app?.inspectorTab = .todo }
+        if mode == .bypass || background { return .approve }
         return await withCheckedContinuation { cont in
             var done = false
             pendingPlan = PendingPlan(itemID: item.id) { [weak self] decision in

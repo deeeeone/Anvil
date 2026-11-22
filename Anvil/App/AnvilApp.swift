@@ -9,7 +9,40 @@ struct AnvilMain {
     }
 }
 
+/// Quitting never blocks the main thread. When lid-closed mode needs undoing (which shows macOS's password
+/// prompt), Anvil asks to quit a moment later, brings itself forward so the prompt is visible, undoes it, then quits.
+final class AnvilAppDelegate: NSObject, NSApplicationDelegate {
+    private var quitting = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !quitting, UserDefaults.standard.bool(forKey: "lidModeSetByAnvil") else { return .terminateNow }
+        quitting = true
+        Task { @MainActor in
+            if await KeepAwake.lidClosedModeOn() {
+                NSApp.activate(ignoringOtherApps: true)
+                let problem = await withTaskGroup(of: String?.self) { g -> String? in
+                    g.addTask { await KeepAwake.setLidClosedMode(false) }
+                    g.addTask { try? await Task.sleep(for: .seconds(90)); return "timed out" }
+                    let first = await g.next() ?? nil
+                    g.cancelAll()
+                    return first
+                }
+                if problem != nil {
+                    Notifier.shared.post(id: "lid-mode", title: "Lid-closed mode is still on",
+                                         body: "Your Mac won't sleep with the lid closed. Turn it off in Anvil's Settings or run: sudo pmset -a disablesleep 0",
+                                         category: "done", session: "")
+                }
+            } else {
+                UserDefaults.standard.set(false, forKey: "lidModeSetByAnvil")   // already off: nothing to undo
+            }
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+}
+
 struct AnvilApp: App {
+    @NSApplicationDelegateAdaptor(AnvilAppDelegate.self) private var delegate
     @State private var app = AppState()
 
     var body: some Scene {

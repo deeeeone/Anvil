@@ -35,14 +35,32 @@ struct Composer: View {
             if suggestions.isEmpty && !mentions.isEmpty { mentionList }
             VStack(alignment: .leading, spacing: 10) {
                 if !images.isEmpty { attachments }
-                TextField(controller.running ? "Add a note for the agent, it arrives with the next step" : "Ask for a change. @ to attach files, / for commands, ⌥⏎ to queue",
-                          text: $text, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 14.5))
-                    .lineLimit(prominent ? 3...12 : 1...12)
-                    .focused($focused)
+                // A TextEditor, not a vertical TextField: past its line limit a TextField clips its first lines and
+                // ignores the scroll wheel. This grows with the text up to a cap, then scrolls normally.
+                ZStack(alignment: .topLeading) {
+                    Text(text.isEmpty ? " " : text + "\n")
+                        .font(.system(size: 14.5))
+                        .padding(.horizontal, 5)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .opacity(0)
+                        .accessibilityHidden(true)
+                    if text.isEmpty {
+                        Text(controller.running ? "Add a note for the agent, it arrives with the next step" : "Ask for a change. @ to attach files, / for commands, ⌥⏎ to queue")
+                            .font(.system(size: 14.5))
+                            .foregroundStyle(Theme.text3)
+                            .padding(.horizontal, 5)
+                            .allowsHitTesting(false)
+                    }
+                    TextEditor(text: $text)
+                        .font(.system(size: 14.5))
+                        .scrollContentBackground(.hidden)
+                        .scrollIndicators(.automatic)
+                        .focused($focused)
+                }
+                .frame(minHeight: prominent ? 62 : 20, maxHeight: prominent ? 300 : 240)
                     .onKeyPress(.return, phases: .down) { press in
-                        if press.modifiers.contains(.shift) { text += "\n"; return .handled }
+                        if press.modifiers.contains(.shift) { return .ignored }   // the editor inserts the newline at the cursor
                         if press.modifiers.contains(.option) {
                             // ⌥⏎: hand it to the background queue (its own worktree) instead of this session.
                             let t = text.trimmingCharacters(in: .whitespacesAndNewlines)

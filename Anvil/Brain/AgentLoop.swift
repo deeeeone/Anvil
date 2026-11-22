@@ -47,6 +47,8 @@ final class Agent {
     var prefetch = true
     /// While a plan waits for approval, a read-only helper looks ahead at milestone 1.
     var prepareWhilePlanning = true
+    /// Ask for a plan when a big job starts editing without one (off for unattended sessions).
+    var planNudges = true
     /// After a batch of edits, ask the project's language server for errors the edits introduced.
     var lspChecks = false
     /// Files edited in the current batch, with their text before the batch (nil = new file).
@@ -242,6 +244,7 @@ final class Agent {
         var actedThisRequest = false
         var editedThisRequest = false
         var sentBackForNoAction = false
+        var askedForPlan = false
         var lastBatchExploratory = false
         var lastBatchFailed = false
         var verifyRuns = 0
@@ -408,7 +411,7 @@ final class Agent {
                 if !editedThisRequest && reanchors < 2 && Self.looksLikeCantAct((reply.say ?? "") + " " + reply.thought) {
                     reanchors += 1
                     let proof = actedThisRequest ? " You already used them successfully in this request: the results are in the observations above." : ""
-                    userText = "<observation step=\(step)>\(Self.reanchorText) That includes file, shell and browser tools (see the tool catalog in the first message).\(proof) Continue with the request: \"\(Fmt.line(goal, 300))\". Reply with the next actions. \(PromptBuilder.formatReminder)</observation>"
+                    userText = "<observation step=\(step)>\(Self.reanchorText) That includes file, shell and browser tools (see the tool catalog in the first message). Ignore any tools the chat service itself shows you (such as retriever:expand_tools): they are not yours here. You act only through the json block.\(proof) Continue with the request: \"\(Fmt.line(goal, 300))\". Reply with the next actions. \(PromptBuilder.formatReminder)</observation>"
                     continue
                 }
                 // A request for work (build, fix, add…) "finished" without a single action: the model described the
@@ -431,7 +434,9 @@ final class Agent {
                     if !isSubagent && editedThisRequest {
                         if autoVerify && editedSinceVerify && verifyRuns < 2 {
                             verifyRuns += 1
-                            if let cmd = memory.testCommand ?? (verifyRuns == 1 ? ProjectMemory.guessTestCommand(ctx.root) : nil) {
+                            // A check that covers the files this request changed (not just any remembered test command).
+                            let changed = checkpoint.files.map(\.path)
+                            if let cmd = ProjectMemory.verifyCommand(changed: changed, root: ctx.root, remembered: memory.testCommand) {
                                 host?.agentStatus("Verifying")
                                 let r = await execute(AgentAction(tool: "shell", args: .object(["command": .string(cmd)])), label: "Verify: \(cmd)")
                                 if r.result.ok {
@@ -463,6 +468,17 @@ final class Agent {
                 userText = "<observation step=\(step)>No actions were given. If the request is complete, reply with \"done\": true and the answer in \"say\". \(PromptBuilder.formatReminder)</observation>"
                 continue
             }
+            // A big job started without a plan (a long request, or a first reply changing several files): ask for
+            // milestones once, so the owner sees the shape of the work and progress can be tracked.
+            if planNudges && !isSubagent && !planShown && !planApproved && !askedForPlan && reply.plan.isEmpty && !editedThisRequest
+                && (size == .feature || size == .hard) && Self.asksForWork(goal) && mode != .plan
+                && reply.actions.contains(where: { tools[$0.tool]?.prepare != nil })   // reading first is fine; plan before editing
+                && (goal.split(whereSeparator: \.isWhitespace).count >= 50
+                    || reply.actions.filter({ tools[$0.tool]?.prepare != nil }).count >= 3) {
+                askedForPlan = true
+                userText = "<observation step=\(step)>Your edits in that reply did not run. This is a big job: reply first with a \"plan\" of 3-7 concrete milestones (and no actions), then work through it, marking each finished milestone with \"milestone\": n. \(PromptBuilder.formatReminder)</observation>"
+                continue
+            }
             if let say = reply.say, !say.isEmpty, !reply.done { host?.agentSay(Fmt.plain(say), final: false) }
 
             // Execute the batch: runs of read-only actions go in parallel, everything else in order.
@@ -488,7 +504,8 @@ final class Agent {
                     if let img = r.result.image { images.append(img) }
                     if let end = r.result.endTask { return finish(end, ok: false, steps: step) }
                     if r.edited { editedThisRequest = true; editedSinceVerify = true }
-                    if r.verified { editedSinceVerify = false }
+                    // Running a check only counts when it covers what was changed (Python tests don't check a .tsx edit).
+                    if r.verified, ProjectMemory.covers(r.command ?? "", changed: checkpoint.files.map(\.path)) { editedSinceVerify = false }
                     if !r.result.ok {
                         let key = "\(r.action.tool) \(r.action.args["path"]?.string ?? r.command ?? "")"
                         failureCounts[key, default: 0] += 1
@@ -1035,9 +1052,12 @@ final class Agent {
 
     static func looksLikeCantAct(_ raw: String) -> Bool {
         // The excuse comes first, even when a long plan or code dump follows it.
-        let t = String(raw.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+        let full = raw.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
             .replacingOccurrences(of: "without direct access", with: "without access")
-            .replacingOccurrences(of: "no direct access", with: "no access").prefix(700))
+            .replacingOccurrences(of: "no direct access", with: "no access")
+        // The excuse comes at the start (before a plan) or the end (a closing note): read both.
+        let t = full.count <= 1400 ? full : String(full.prefix(700)) + " … " + String(full.suffix(700))
+        if t.contains("retriever:") || t.contains("tool declarations") { return true }
         let cant = ["can't", "cannot", "can not", "unable to", "don't have", "do not have", "no access", "not able to",
                     "aren't available", "are not available", "isn't available", "is not available", "not available to me",
                     "no tools", "without access", "lack access", "lack the"]

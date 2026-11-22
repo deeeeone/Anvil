@@ -166,7 +166,11 @@ nonisolated enum SessionStore {
         }.sorted { $0.updated > $1.updated }
     }
 
-    static func delete(_ id: UUID, root: URL) { try? FileManager.default.removeItem(at: file(id, root: root)) }
+    /// Moves the session file to the Trash (recoverable), falling back to deleting it.
+    static func delete(_ id: UUID, root: URL) {
+        let f = file(id, root: root)
+        if (try? FileManager.default.trashItem(at: f, resultingItemURL: nil)) == nil { try? FileManager.default.removeItem(at: f) }
+    }
 }
 
 /// Recently opened project folders.

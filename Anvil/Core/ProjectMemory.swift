@@ -43,6 +43,91 @@ nonisolated struct ProjectMemory: Codable, Equatable, Sendable {
     }
 
     /// The likely test command from the project's files, before any has run.
+    // MARK: Checks that fit the change
+
+    /// Which languages a command checks ("" = can't tell, e.g. make or a custom script: trust it).
+    static func languages(of cmd: String) -> Set<String> {
+        let c = cmd.lowercased()
+        if c.range(of: #"\b(pytest|unittest|py_compile|mypy|ruff|python3?)\b"#, options: .regularExpression) != nil { return ["py"] }
+        if c.range(of: #"\b(npm|yarn|pnpm|bun|npx|node|jest|vitest|mocha|tsc|eslint|next|vite|deno)\b"#, options: .regularExpression) != nil {
+            return ["js", "jsx", "ts", "tsx", "mjs", "cjs", "css", "scss", "html", "json", "vue", "svelte", "md", "mdx"]
+        }
+        if c.contains("cargo") { return ["rs", "toml"] }
+        if c.range(of: #"\bgo\s"#, options: .regularExpression) != nil { return ["go"] }
+        if c.contains("swift ") || c.contains("xcodebuild") { return ["swift", "plist"] }
+        return []
+    }
+
+    /// Whether running `cmd` says anything about files with these paths.
+    static func covers(_ cmd: String, changed: [String]) -> Bool {
+        let langs = languages(of: cmd)
+        guard !langs.isEmpty else { return true }
+        let exts = Set(changed.map { URL(fileURLWithPath: $0).pathExtension.lowercased() }.filter { !$0.isEmpty })
+        return exts.isEmpty || !exts.isDisjoint(with: langs)
+    }
+
+    private static let manifests = ["package.json", "Cargo.toml", "go.mod", "Package.swift", "pyproject.toml", "setup.py"]
+
+    /// The folder (inside `root`) that holds the project the changed files belong to: the nearest manifest above them.
+    static func projectDir(for changed: [String], root: URL) -> URL {
+        let fm = FileManager.default
+        var counts: [String: Int] = [:]
+        let rootPath = root.standardizedFileURL.path
+        for f in changed {
+            var dir = URL(fileURLWithPath: f).deletingLastPathComponent().standardizedFileURL
+            var found = rootPath
+            while dir.path.hasPrefix(rootPath) {
+                if manifests.contains(where: { fm.fileExists(atPath: dir.appendingPathComponent($0).path) }) { found = dir.path; break }
+                if dir.path == rootPath { break }
+                dir = dir.deletingLastPathComponent()
+            }
+            counts[found, default: 0] += 1
+        }
+        return URL(fileURLWithPath: counts.max { $0.value < $1.value }?.key ?? rootPath)
+    }
+
+    /// The command that checks a request's changes, run from the project root. nil = nothing fits; ask the model.
+    static func verifyCommand(changed: [String], root: URL, remembered: String?) -> String? {
+        guard !changed.isEmpty else { return remembered ?? guessTestCommand(root) }
+        let dir = projectDir(for: changed, root: root)
+        let atRoot = dir.standardizedFileURL.path == root.standardizedFileURL.path
+        if atRoot, let r = remembered, covers(r, changed: changed) { return r }
+        let prefix = atRoot ? "" : "cd \(shellQuote(Paths.display(dir, root: root))) && "
+        if let t = guessTestCommand(dir), covers(t, changed: changed) { return prefix + t }
+        if let b = buildCommand(dir), covers(b, changed: changed) { return prefix + b }
+        // Plain Python files with no tests: at least make sure they compile.
+        let py = changed.filter { $0.hasSuffix(".py") }
+        if !py.isEmpty, py.count == changed.count {
+            return "python3 -m py_compile " + py.map { shellQuote(Paths.display(URL(fileURLWithPath: $0), root: root)) }.joined(separator: " ")
+        }
+        return nil
+    }
+
+    /// A build or type-check for a project folder, installing JavaScript dependencies first when they're missing.
+    static func buildCommand(_ dir: URL) -> String? {
+        let fm = FileManager.default
+        func has(_ p: String) -> Bool { fm.fileExists(atPath: dir.appendingPathComponent(p).path) }
+        if has("package.json") {
+            let pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : has("bun.lockb") || has("bun.lock") ? "bun" : "npm"
+            let install = has("node_modules") ? "" : (pm == "npm" ? "npm install --no-audit --no-fund && " : "\(pm) install && ")
+            if let d = try? Data(contentsOf: dir.appendingPathComponent("package.json")), let j = JSON.parse(String(decoding: d, as: UTF8.self)) {
+                for script in ["build", "typecheck", "lint"] where j["scripts"]?[script]?.string != nil {
+                    return install + (pm == "npm" ? "npm run \(script)" : "\(pm) run \(script)")
+                }
+            }
+            if has("tsconfig.json") { return install + "npx tsc --noEmit" }
+            return nil
+        }
+        if has("Cargo.toml") { return "cargo check" }
+        if has("go.mod") { return "go build ./..." }
+        if has("Package.swift") { return "swift build" }
+        return nil
+    }
+
+    private static func shellQuote(_ s: String) -> String {
+        s.range(of: #"^[A-Za-z0-9_./~-]+$"#, options: .regularExpression) != nil ? s : "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     static func guessTestCommand(_ root: URL) -> String? {
         let fm = FileManager.default
         func has(_ p: String) -> Bool { fm.fileExists(atPath: root.appendingPathComponent(p).path) }

@@ -71,12 +71,7 @@ final class AppState {
             MainActor.assumeIsolated {
                 self?.processes.stopAll()
                 KeepAwake.shared.update(working: false)
-                // Undo lid-closed mode if Anvil turned it on.
-                if UserDefaults.standard.bool(forKey: "lidModeSetByAnvil") {
-                    let sem = DispatchSemaphore(value: 0)
-                    Task.detached { _ = await KeepAwake.setLidClosedMode(false); sem.signal() }
-                    _ = sem.wait(timeout: .now() + 60)
-                }
+                // Lid-closed mode is undone before this, in AnvilAppDelegate.applicationShouldTerminate (never blocking here).
                 MCPManager.shared.stopAll()
                 LSP.stopAll()
                 ProviderServers.shared.stopAll()
@@ -198,6 +193,57 @@ final class AppState {
         }
         selectedDiff = current?.changedDiffs.last
         refreshGit()
+    }
+
+    /// A new session that continues `id`'s conversation: all of it, or (with `itemID`, one of your messages) up to just
+    /// before that message, which goes into the new composer to edit. Files and the original session are untouched.
+    func fork(_ id: UUID, at itemID: UUID?) {
+        guard let project else { return }
+        controllers[id]?.saveNow()
+        guard let source = controllers[id]?.session ?? SessionStore.load(id, root: project) else { return }
+        var s = Session(projectPath: source.projectPath)
+        s.workdir = source.workdir
+        s.branch = source.branch
+        s.baseBranch = source.baseBranch
+        s.model = source.model
+        s.mode = source.mode
+        s.allowedCommands = source.allowedCommands
+        s.costLimit = source.costLimit
+        s.stepLimit = source.stepLimit
+        s.briefing = source.briefing
+        s.briefedTools = source.briefedTools
+        s.compactedAt = source.compactedAt
+        s.title = "Fork: " + source.title.replacingOccurrences(of: "Fork: ", with: "")
+        var draft: String?
+        if let itemID, let idx = source.items.firstIndex(where: { $0.id == itemID }), source.items[idx].kind == .user {
+            let item = source.items[idx]
+            s.items = Array(source.items.prefix(idx))
+            let conversationOK = item.historyIndex.map { $0 <= source.messages.count } == true && !(source.compactedAt.map { $0 > item.date } ?? false)
+            if conversationOK, let h = item.historyIndex {
+                s.messages = Array(source.messages.prefix(h))
+            } else {
+                s.messages = []
+                s.briefing = ""
+            }
+            draft = item.text
+        } else {
+            s.items = source.items
+            s.messages = source.messages
+            s.todos = source.todos
+            s.plan = source.plan
+        }
+        // Checkpoints stay with the original: undoing in the fork must not touch the original's changes.
+        s.items.append(ChatItem(kind: .system, text: "Forked from \u{201C}\(Fmt.line(source.title, 60))\u{201D}. Files are shared with it: nothing was restored."))
+        current?.saveNow()
+        let root = URL(fileURLWithPath: s.workdir ?? s.projectPath)
+        let c = SessionController(session: s, root: root, processes: processes)
+        c.app = self
+        c.draft = draft
+        controllers[s.id] = c
+        current = c
+        c.saveNow()
+        selectedDiff = nil
+        refreshSessions()
     }
 
     func delete(_ id: UUID) {

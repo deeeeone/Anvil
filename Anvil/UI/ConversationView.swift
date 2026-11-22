@@ -48,6 +48,13 @@ struct ConversationView: View {
                         .environment(\.anvilSend, controller.running ? nil : { controller.send($0) })
                     }
                     .scrollIndicators(.automatic)
+                    // When a task finishes, its live steps collapse into a summary and the content shrinks: keep the
+                    // view pinned to the end instead of leaving it past the new bottom (a blank screen until you scroll).
+                    .defaultScrollAnchor(.bottom)
+                    .onChange(of: controller.running) { _, _ in
+                        DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { proxy.scrollTo("bottom", anchor: .bottom) }
+                    }
                     .onChange(of: controller.session.items.count) { _, _ in
                         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
                     }
@@ -125,7 +132,10 @@ struct ItemView: View {
             HStack(alignment: .top) {
                 Spacer(minLength: 48)
                 if !controller.running && item.historyIndex != nil {
-                    RewindButton(item: item, controller: controller)
+                    VStack(spacing: 0) {
+                        RewindButton(item: item, controller: controller)
+                        ForkButton(item: item, controller: controller)
+                    }
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Text(item.text).font(.system(size: 14)).textSelection(.enabled).lineSpacing(2)
@@ -525,6 +535,27 @@ struct StatusLine: View {
     }
 }
 
+
+/// Fork: a new session with the conversation up to this message, the message in its composer to edit.
+/// The original session and the files are left as they are.
+struct ForkButton: View {
+    let item: ChatItem
+    let controller: SessionController
+    @Environment(AppState.self) private var app
+    @State private var hover = false
+
+    var body: some View {
+        Button { app.fork(controller.session.id, at: item.id) } label: {
+            Image(systemName: "arrow.triangle.branch").font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(hover ? Theme.text : Theme.text3).frame(width: 24, height: 24)
+                .background(hover ? Theme.surface2 : .clear, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .disabled(controller.running)
+        .help("Fork from here: a new session with the conversation up to this message, to try it differently. This session stays as it is.")
+    }
+}
 
 struct RewindButton: View {
     let item: ChatItem

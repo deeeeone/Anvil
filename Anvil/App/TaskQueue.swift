@@ -79,6 +79,7 @@ extension AppState {
                 s.mode = AppSettings.shared.queueMode
                 let c = SessionController(session: s, root: dir, processes: processes)
                 c.app = self
+                c.background = true
                 registerController(c)
                 if let j = queue.firstIndex(where: { $0.id == task.id }) { queue[j].sessionID = s.id; queue[j].branch = branch }
                 c.onFinish = { [weak self, weak c] outcome in

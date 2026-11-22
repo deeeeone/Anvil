@@ -624,4 +624,44 @@ final class AgentLoopTests: XCTestCase {
         let out = await agent.run(goal: "what does a Package.swift file do?")
         XCTAssertEqual(out.text, "A Swift package manifest declares targets.")
     }
+
+    func testBigJobAsksForAPlanBeforeEditing() async {
+        let goal = "build a landing page " + String(repeating: "with a hero section and feature grid and screenshots ", count: 8)
+        let agent = makeAgent([
+            fence(#"{"actions": [{"tool": "list_dir", "args": {}}]}"#),
+            fence(#"{"actions": [{"tool": "write_file", "args": {"path": "a.txt", "content": "x"}}]}"#),
+            fence(#"{"say": "Plan.", "plan": ["Scaffold", "Hero", "Features"], "actions": [], "done": false}"#),
+            fence(#"{"actions": [{"tool": "write_file", "args": {"path": "a.txt", "content": "x"}}], "milestone": 1}"#),
+            fence(#"{"say": "Done.", "done": true}"#),
+        ], mode: .bypass)
+        agent.autoVerify = false
+        agent.selfReview = false
+        _ = await agent.run(goal: goal)
+        XCTAssertTrue(sent[2].last!.text.contains("reply first with a \"plan\""), "edits wait for a plan; reads didn't")
+        XCTAssertTrue(sent[1].last!.text.contains("list_dir"), "the read-only first step ran")
+    }
+
+    func testVerificationFitsTheChangedFiles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("verify-\(UUID().uuidString.prefix(6))")
+        let site = root.appendingPathComponent("site")
+        try FileManager.default.createDirectory(at: site.appendingPathComponent("app"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try #"{"scripts": {"build": "next build"}}"#.write(to: site.appendingPathComponent("package.json"), atomically: true, encoding: .utf8)
+        try "".write(to: root.appendingPathComponent("test_stats.py"), atomically: true, encoding: .utf8)
+        let page = site.appendingPathComponent("app/page.tsx").path
+        // The remembered Python test doesn't check a .tsx change; the site's own build does (installing first).
+        let cmd = ProjectMemory.verifyCommand(changed: [page], root: root, remembered: "python3 -m unittest -q")
+        XCTAssertEqual(cmd, "cd site && npm install --no-audit --no-fund && npm run build")
+        XCTAssertFalse(ProjectMemory.covers("python3 -m unittest -q", changed: [page]))
+        XCTAssertTrue(ProjectMemory.covers("npm run build", changed: [page]))
+        // A Python change still uses the remembered command.
+        XCTAssertEqual(ProjectMemory.verifyCommand(changed: [root.appendingPathComponent("stats.py").path], root: root, remembered: "python3 -m unittest -q"),
+                       "python3 -m unittest -q")
+    }
+
+    func testClosingNoteAboutTheChatServicesToolsIsCaught() {
+        let reply = "No styles are applied because layout.tsx imports globals.css incorrectly. " + String(repeating: "Details of the diagnosis. ", count: 80)
+            + "(Note: I don't have direct file/shell/browser tool declarations active in this turn's tool list, only retriever:expand_tools and retriever:expand_skills.)"
+        XCTAssertTrue(Agent.looksLikeCantAct(reply))
+    }
 }

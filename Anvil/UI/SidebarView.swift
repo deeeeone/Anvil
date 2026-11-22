@@ -114,6 +114,7 @@ struct SessionRow: View {
     let summary: SessionSummary
     let selected: Bool
     let running: Bool
+    @State private var confirmDelete = false
 
     var body: some View {
         Button {
@@ -131,7 +132,16 @@ struct SessionRow: View {
             }
         }
         .buttonStyle(.plain)
-        .contextMenu { Button("Delete Session", role: .destructive) { app.delete(summary.id) } }
+        .contextMenu {
+            Button("Fork Session") { app.fork(summary.id, at: nil) }
+            Divider()
+            Button("Delete Session…", role: .destructive) { confirmDelete = true }
+        }
+        .confirmationDialog("Delete \u{201C}\(summary.title)\u{201D}?", isPresented: $confirmDelete) {
+            Button("Move to Trash", role: .destructive) { app.delete(summary.id) }
+        } message: {
+            Text("The conversation goes to the Trash, so you can still get it back from there. Files the agent changed are not touched.")
+        }
     }
 
     /// "now", "5m", "3h", "2d", then a date.

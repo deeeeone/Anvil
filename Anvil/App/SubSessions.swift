@@ -53,6 +53,7 @@ extension AppState {
             s.model = model ?? parent.session.model
             let c = SessionController(session: s, root: dir, processes: processes)
             c.app = self
+            c.background = true
             registerController(c)
             let info = SubSession(id: s.id, parentID: pid, name: String(clean), task: task, branch: branch, base: base, dir: dir.path)
             subSessions.append(info)
