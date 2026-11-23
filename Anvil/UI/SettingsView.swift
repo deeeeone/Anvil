@@ -106,6 +106,7 @@ struct AgentSettings: View {
                 Text(s.maxTaskCost > 0 ? "" : "(no limit)").foregroundStyle(.secondary)
             }
             KeepAwakeSettings()
+            DiscordSettings()
             Picker("Background queue tasks run in", selection: $s.queueMode) {
                 ForEach(PermissionMode.allCases) { Text($0.label).tag($0) }
             }
@@ -251,6 +252,21 @@ struct ModelPickerSheet: View {
     }
 }
 
+
+struct DiscordSettings: View {
+    @Environment(AppState.self) private var app
+    var body: some View {
+        @Bindable var s = AppSettings.shared
+        Toggle("Show on Discord while Anvil works (Rich Presence)", isOn: $s.discordPresence)
+            .onChange(of: s.discordPresence) { app.refreshPresence() }
+            .help("Shows \"Working on a task\" and the model on your Discord profile, with a link to the repo. Needs the Discord app running.")
+        if s.discordPresence {
+            Toggle("Include the project folder name", isOn: $s.discordShowProject)
+                .onChange(of: s.discordShowProject) { app.refreshPresence() }
+                .padding(.leading, 18)
+        }
+    }
+}
 
 struct KeepAwakeSettings: View {
     @State private var lidMode = false

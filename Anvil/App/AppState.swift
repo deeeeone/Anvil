@@ -45,7 +45,9 @@ final class AppState {
     var subSessions: [SubSession] = []
     /// Instructions waiting for their time (see Schedule.swift).
     var schedules: [ScheduledTask] = []
-    @ObservationIgnored var scheduleTimer: Task<Void, Never>? { didSet { persistSubSessions() } }
+    @ObservationIgnored var scheduleTimer: Task<Void, Never>?
+    @ObservationIgnored var presenceBusy = false
+    @ObservationIgnored var presenceTaskStart: Date? { didSet { persistSubSessions() } }
     /// True while a project's saved links are being loaded (so loading doesn't write them back).
     @ObservationIgnored var restoringSubSessions = false
     /// Polls GitHub for labeled issues to queue (see TaskQueue.swift).
@@ -64,6 +66,17 @@ final class AppState {
         let busy = controllers.values.contains { $0.running }
         KeepAwake.shared.update(working: busy)
         keepingAwake = KeepAwake.shared.held
+        if busy != presenceBusy { presenceBusy = busy; presenceTaskStart = busy ? Date() : nil }
+        refreshPresence()
+    }
+
+    /// Updates (or removes) the Discord Rich Presence from the current state and settings.
+    func refreshPresence() {
+        let s = AppSettings.shared
+        guard s.discordPresence, !AppInfo.isTesting else { DiscordPresence.shared.update(nil); return }
+        let model = current?.model ?? s.model
+        let project = s.discordShowProject ? project?.lastPathComponent : nil
+        DiscordPresence.shared.update(.init(working: presenceBusy, model: model, project: project, taskStart: presenceTaskStart))
     }
 
     func controller(for id: UUID) -> SessionController? { controllers[id] }
@@ -77,6 +90,7 @@ final class AppState {
             MainActor.assumeIsolated {
                 self?.processes.stopAll()
                 KeepAwake.shared.update(working: false)
+                DiscordPresence.shared.shutdown()
                 // Lid-closed mode is undone before this, in AnvilAppDelegate.applicationShouldTerminate (never blocking here).
                 MCPManager.shared.stopAll()
                 LSP.stopAll()
@@ -126,6 +140,7 @@ final class AppState {
         refreshGit()
         refreshBrief(root)
         processQueue()
+        refreshPresence()
         watchGitHubIssues()
         loadSchedules()
         startScheduleTimer()

@@ -23,6 +23,10 @@ final class AppSettings {
     var maxTaskCost: Double { didSet { d.set(maxTaskCost, forKey: "maxTaskCost") } }
     /// Keep the Mac from sleeping while a request or queue task runs.
     var keepAwake: Bool { didSet { d.set(keepAwake, forKey: "keepAwake") } }
+    /// Show "Working on a task" on your Discord profile (Rich Presence), with a link to the repo.
+    var discordPresence: Bool { didSet { d.set(discordPresence, forKey: "discordPresence") } }
+    /// Also show the project's folder name there (off by default: project names can be private).
+    var discordShowProject: Bool { didSet { d.set(discordShowProject, forKey: "discordShowProject") } }
     /// Permission mode for background queue tasks.
     var queueMode: PermissionMode { didSet { d.set(queueMode.rawValue, forKey: "queueMode") } }
     /// How many queue tasks and sub-sessions run at the same time (each in its own worktree).
@@ -90,6 +94,8 @@ final class AppSettings {
         shellTimeout = d.object(forKey: "shellTimeout") as? Double ?? 300
         maxTaskCost = d.object(forKey: "maxTaskCost") as? Double ?? 0
         keepAwake = d.object(forKey: "keepAwake") as? Bool ?? true
+        discordPresence = d.object(forKey: "discordPresence") as? Bool ?? true
+        discordShowProject = d.object(forKey: "discordShowProject") as? Bool ?? false
         queueMode = PermissionMode(rawValue: d.string(forKey: "queueMode") ?? "") ?? .acceptEdits
         parallelTasks = min(4, max(1, d.object(forKey: "parallelTasks") as? Int ?? 2))
         lspChecks = d.object(forKey: "lspChecks") as? Bool ?? true
