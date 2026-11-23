@@ -18,6 +18,7 @@ final class DiscordPresenceTests: XCTestCase {
         XCTAssertEqual((a["timestamps"] as? [String: Int])?["start"], 2_000)
         let button = (a["buttons"] as? [[String: String]])?.first
         XCTAssertEqual(button?["url"], "https://github.com/deeeeone/Anvil")
+        XCTAssertEqual((a["assets"] as? [String: String])?["large_image"], DiscordPresence.logoURL)
         let idle = DiscordPresence.activity(.init(working: false, model: "glm-5.3", project: nil, taskStart: nil), appStart: start)
         XCTAssertEqual(idle["state"] as? String, "glm-5.3", "no project name unless given")
         XCTAssertEqual((idle["timestamps"] as? [String: Int])?["start"], 1_000)

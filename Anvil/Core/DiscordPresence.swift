@@ -10,6 +10,8 @@ nonisolated final class DiscordPresence: @unchecked Sendable {
     /// The Discord application the presence belongs to (its name and art come from the Developer Portal).
     static let clientID = "918234595579805776"
     static let repoURL = "https://github.com/deeeeone/Anvil"
+    /// The large image: a public URL, so no art has to be uploaded to the Developer Portal. It loads once the repo is public.
+    static let logoURL = "https://raw.githubusercontent.com/deeeeone/Anvil/main/design/anvil-icon-1024.png"
 
     struct State: Equatable, Sendable {
         var working: Bool
@@ -69,10 +71,10 @@ nonisolated final class DiscordPresence: @unchecked Sendable {
             "details": s.working ? "Working on a task" : "Ready for the next task",
             "state": state,
             "timestamps": ["start": Int((s.working ? (s.taskStart ?? appStart) : appStart).timeIntervalSince1970)],
-            "assets": ["large_image": "anvil", "large_text": "Anvil, a native macOS coding agent"],
+            "assets": ["large_image": logoURL, "large_text": "Anvil, a native macOS coding agent"],
             "buttons": [["label": "Anvil on GitHub", "url": repoURL]],
         ]
-        if s.working { a["assets"] = ["large_image": "anvil", "large_text": "Anvil, a native macOS coding agent", "small_text": "Working"] }
+        if s.working { a["assets"] = ["large_image": logoURL, "large_text": "Anvil, a native macOS coding agent"] }
         return a
     }
 
