@@ -210,6 +210,43 @@ final class BrowserTests: XCTestCase {
         do { _ = try await b.click(99); XCTFail("missing element should throw") } catch {}
     }
 
+    func testNetworkToolAndHookAreRegistered() {
+        XCTAssertTrue(BrowserTools.all().contains { $0.name == "browser_network" })
+        XCTAssertFalse(BrowserController.networkHook.isEmpty)
+        XCTAssertTrue(BrowserController.networkHook.contains("__anvilNet"))
+    }
+
+    func testNetworkLogRecordsFetchAndKeepsThePage() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("anvil-net-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let page = dir.appendingPathComponent("api.html")
+        try """
+        <html><head><title>Loading</title></head><body>
+        <script>
+        fetch('data:application/json,{"ok":1}', {method: 'POST', headers: {'Authorization': 'Bearer secret-token', 'X-Trace': 'abc'}, body: 'hello'})
+          .then(r => r.text()).then(t => { document.title = 'done ' + t }).catch(() => { document.title = 'failed' });
+        </script></body></html>
+        """.write(to: page, atomically: true, encoding: .utf8)
+        let b = BrowserController()
+        _ = await b.open(page.path)
+        try await Task.sleep(for: .milliseconds(800))
+        let title = try await b.evaluate("document.title")
+        XCTAssertEqual(title, "done {\"ok\":1}", "the hook must not break the page's own fetch")
+        let log = try await b.network(filter: "data:", limit: 50, bodies: true, clear: false)
+        XCTAssertTrue(log.contains("POST"), log)
+        XCTAssertTrue(log.contains("fetch"), log)
+        XCTAssertTrue(log.contains("X-Trace: abc"), log)
+        XCTAssertFalse(log.contains("secret-token"), "authorization values are masked")
+        XCTAssertTrue(log.contains("request body: hello"), log)
+        XCTAssertTrue(log.contains("{\"ok\":1}"), log)
+        let none = try await b.network(filter: "status>=500", limit: 50, bodies: false, clear: false)
+        XCTAssertTrue(none.contains("no request matches"), none)
+        _ = try await b.network(filter: nil, limit: 50, bodies: false, clear: true)
+        let cleared = try await b.network(filter: nil, limit: 50, bodies: false, clear: false)
+        XCTAssertTrue(cleared.contains("no requests recorded"), cleared)
+    }
+
     func testAgentGetsBrowserToolsOnlyWithABrowser() {
         let brain = Brain(client: OpenAIClient(baseURL: URL(string: "http://localhost:1")!, apiKey: ""), model: "m", visionModel: "", effort: "", visionEffort: "")
         let without = Agent(ctx: ToolContext(root: URL(fileURLWithPath: "/tmp"), processes: ProcessManager(), host: nil), brain: brain)
@@ -219,5 +256,47 @@ final class BrowserTests: XCTestCase {
         let with = Agent(ctx: ctx, brain: brain)
         XCTAssertNotNil(with.tools["browser_screenshot"])
         XCTAssertEqual(with.tools["browser_click"]?.kind, .network, "the preview browser never needs approval")
+    }
+}
+
+final class ForkAndTitleTests: XCTestCase {
+    func testCleanTitleStripsWrappersAndLabels() {
+        XCTAssertEqual(Session.cleanTitle("\"Fix the login bug\""), "Fix the login bug")
+        XCTAssertEqual(Session.cleanTitle("`Add dark mode`"), "Add dark mode")
+        XCTAssertEqual(Session.cleanTitle("**Title:** Refactor auth module"), "Refactor auth module")
+        XCTAssertEqual(Session.cleanTitle("Title: Add dark mode."), "Add dark mode")
+        XCTAssertEqual(Session.cleanTitle("Speed up the build script\nand more"), "Speed up the build script")
+        XCTAssertNil(Session.cleanTitle(" \n  \n"))
+        XCTAssertNil(Session.cleanTitle("Title:"))
+        XCTAssertNil(Session.cleanTitle("one two three four five six seven eight nine ten eleven twelve thirteen"))
+        XCTAssertEqual(Session.cleanTitle(String(repeating: "word", count: 20))?.count, 60)
+    }
+
+    func testForkPrefixCutsTheInFlightRequest() {
+        var s = Session(projectPath: "/tmp/x")
+        let first = ChatItem(kind: .user, text: "first", date: Date(timeIntervalSinceNow: -100), historyIndex: 0)
+        let done = ChatItem(kind: .assistant, text: "ok", final: true)
+        let inFlight = ChatItem(kind: .user, text: "second request", date: Date(timeIntervalSinceNow: -50), historyIndex: 2)
+        let running = ChatItem(kind: .tool, text: "$ make", tool: ToolStep(name: "shell", summary: "$ make", status: .running))
+        s.items = [first, done, inFlight, running]
+        s.messages = [.user("first"), .assistant("ok"), .user("second request"), .assistant("working")]
+
+        guard let idx = Session.inFlightIndex(s.items) else { return XCTFail("no in-flight request") }
+        XCTAssertEqual(idx, 2)
+        let cut = Session.forkPrefix(s, before: idx)
+        XCTAssertTrue(cut.keepsConversation)
+        XCTAssertEqual(cut.items.map(\.id), [first.id, done.id])
+        XCTAssertEqual(cut.messages.count, 2)
+        XCTAssertEqual(s.items[idx].text, "second request", "the draft comes from the in-flight item")
+    }
+
+    func testForkPrefixDropsConversationThatCannotBeTrusted() {
+        var s = Session(projectPath: "/tmp/x")
+        s.items = [ChatItem(kind: .user, text: "asked", historyIndex: 5)]
+        s.messages = [.user("asked")]   // fewer messages synced than the request expects
+        let cut = Session.forkPrefix(s, before: 0)
+        XCTAssertFalse(cut.keepsConversation)
+        XCTAssertTrue(cut.messages.isEmpty)
+        XCTAssertTrue(cut.items.isEmpty)
     }
 }

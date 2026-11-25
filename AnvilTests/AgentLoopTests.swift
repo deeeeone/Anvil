@@ -770,4 +770,50 @@ final class AgentLoopTests: XCTestCase {
         XCTAssertTrue(Agent.isThinAnswer("Fixed the four real issues and re-verified against the live site."))
         XCTAssertFalse(Agent.isThinAnswer("I added vidora_scraper.py. Run `python3 vidora_scraper.py --tmdb 1396 --season 1 --episode 1`; verified live, it printed 1080p m3u8 URLs."))
     }
+
+    func testFallbackOrderAndAuthErrors() {
+        let same: (String, String) -> Bool = { $0.split(separator: "-").first == $1.split(separator: "-").first }
+        let all = ["ex-a", "ex-b", "lu-c", "lu-d"]
+        let rateLimit = BrainError(status: 429, code: "server_busy", message: "")
+        let badKey = BrainError(status: 401, code: "unauthorized", message: "")
+        // Favorites first (only those that are available), then the other ready models.
+        XCTAssertEqual(Agent.fallbackModel(after: "ex-a", error: rateLimit, favorites: ["lu-d", "gone"], available: all, sameProvider: same, ready: { _ in true }), "lu-d")
+        // A bad key rules out the failed model's whole provider, favorites included.
+        XCTAssertEqual(Agent.fallbackModel(after: "ex-a", error: badKey, favorites: ["ex-b", "lu-d"], available: all, sameProvider: same, ready: { _ in true }), "lu-d")
+        // A transient failure may move to a sibling model of the same provider.
+        XCTAssertEqual(Agent.fallbackModel(after: "ex-a", error: rateLimit, favorites: [], available: all, sameProvider: same, ready: { $0 == "ex-b" }), "ex-b")
+        XCTAssertNil(Agent.fallbackModel(after: "ex-a", error: badKey, favorites: [], available: all, sameProvider: same, ready: { $0 == "ex-b" }))
+        XCTAssertNil(Agent.fallbackModel(after: "ex-a", error: nil, favorites: [], available: ["ex-a"], sameProvider: same, ready: { _ in true }))
+    }
+
+    func testAuthFailureSwitchesModelAndRetriesTheTurn() async {
+        let settings = AppSettings.shared
+        let savedFavorites = settings.favoriteModels, savedLuna = settings.lunaURL
+        defer { settings.favoriteModels = savedFavorites; settings.lunaURL = savedLuna }
+        // A Luna model is the fallback: the failed model is Experiential Labs, so the auth error can't pick its siblings.
+        let target = ModelCatalog.shared.choices.first { $0.plugin == nil && $0.provider == .luna }?.id ?? "gpt-6-luna"
+        settings.lunaURL = "http://localhost:1"
+        settings.favoriteModels = [target]
+        var tried: [String] = []
+        let brain = Brain(client: OpenAIClient(baseURL: URL(string: "http://localhost:1")!, apiKey: ""), model: "glm-5.3-flash-uncensored",
+                          visionModel: "", effort: "high", visionEffort: "low")
+        brain.override = { _, model in
+            tried.append(model)
+            if model == "glm-5.3-flash-uncensored" { throw BrainError(status: 401, code: "unauthorized", message: "") }
+            return #"{"say": "ok", "actions": [], "done": true}"#
+        }
+        let ctx = ToolContext(root: dir, processes: ProcessManager(), host: host)
+        let agent = Agent(ctx: ctx, brain: brain)
+        agent.autoVerify = false; agent.selfReview = false; agent.streaming = false; agent.prepareWhilePlanning = false
+        agent.memory = ProjectMemory()
+        var switched: [String] = []
+        agent.onModelFallback = { switched.append($0) }
+        let out = await agent.run(goal: "say hi")
+        XCTAssertTrue(out.ok, out.text)
+        XCTAssertEqual(tried, ["glm-5.3-flash-uncensored", target])
+        XCTAssertEqual(switched, [target])
+        XCTAssertEqual(agent.brain.model, target)
+        // The failed turn's message was dropped before the retry, so the request is in the history once.
+        XCTAssertEqual(agent.messages.filter { $0.role == "user" }.count, 1)
+    }
 }

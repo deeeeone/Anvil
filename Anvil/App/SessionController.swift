@@ -39,6 +39,8 @@ final class SessionController: AgentHost {
     private(set) var status = ""
     /// The reply as it streams in: the model's reasoning so far (shown under the spinner).
     private(set) var liveText = ""
+    /// The placeholder title the first request set, with that request, until its request ends (then an AI title may replace it).
+    @ObservationIgnored private var autoTitle: (placeholder: String, goal: String)?
     private(set) var startedAt: Date?
     var pendingPermission: PendingPermission?
     var pendingPlan: PendingPlan?
@@ -96,12 +98,16 @@ final class SessionController: AgentHost {
         ctx.shellTimeout = AppSettings.shared.shellTimeout
         ctx.todos = session.todos
         let a = Agent(ctx: ctx, brain: brain, extraTools: MCPManager.shared.toolSpecs + (app?.subSessionTools(for: self) ?? []))
-        a.toolProvider = { MCPManager.shared.toolSpecs }
+        a.toolProvider = { [weak a] in MCPManager.shared.toolSpecs + (a?.memoryToolSpecs() ?? []) }
         a.messages = session.messages
         a.briefing = session.briefing
         a.briefedTools = session.briefedTools.map(Set.init)
         a.mode = mode
         a.allowedCommands = Set(session.allowedCommands)
+        a.attachedNotebook = session.attachedNotebook
+        a.memoryRoot = URL(fileURLWithPath: session.projectPath)
+        a.memoryTitle = session.title
+        a.memoryUploadedCount = { [weak self] in self?.session.memoryUploadedCount }
         applySettings(a)
         a.onModeChange = { [weak self] m in self?.session.mode = m; self?.scheduleSave() }
         a.onHistory = { [weak self, weak a] in
@@ -112,7 +118,13 @@ final class SessionController: AgentHost {
             self.session.allowedCommands = Array(a.allowedCommands)
             self.scheduleSave()
         }
-        a.onCompacted = { [weak self] _ in self?.session.compactedAt = Date() }
+        a.onCompacted = { [weak self, weak a] _ in
+            self?.session.compactedAt = Date()
+            // Compaction saved everything before it to memory, so only what follows counts as new.
+            self?.session.memoryUploadedCount = a?.messages.count
+        }
+        // Only the stored model changes: the running agent already switched its brain.
+        a.onModelFallback = { [weak self] m in self?.session.model = m; self?.scheduleSave() }
         a.onCheckpoint = { [weak self] cp in
             guard let self else { return }
             if let i = self.session.checkpoints.firstIndex(where: { $0.id == cp.id }) { self.session.checkpoints[i] = cp } else { self.session.checkpoints.append(cp) }
@@ -128,6 +140,7 @@ final class SessionController: AgentHost {
         a.maxCost = session.costLimit ?? s.maxTaskCost
         a.autoCompactTokens = s.autoCompactTokens
         a.autoVerify = s.autoVerify
+        a.autoFallback = s.autoFallback
         a.selfReview = s.selfReview
         a.streaming = s.streaming
         a.escalationModel = s.escalation(for: model)
@@ -138,6 +151,7 @@ final class SessionController: AgentHost {
         a.prepareWhilePlanning = s.prepareWhilePlanning
         a.lspChecks = s.lspChecks
         a.planNudges = !background
+        a.registerMemoryTool()
     }
 
     @ObservationIgnored private var lastWarm = Date.distantPast
@@ -206,6 +220,7 @@ final class SessionController: AgentHost {
         append(ChatItem(kind: .user, text: display, images: images.count, historyIndex: agent?.messages.count ?? session.messages.count))
         if session.items.filter({ $0.kind == .user }).count == 1 && (session.title == "New session" || session.title.hasPrefix("New session on ")) {
             session.title = Session.title(from: display)
+            autoTitle = (session.title, display)
             app?.refreshSessions()
         }
         let agent: Agent
@@ -216,6 +231,7 @@ final class SessionController: AgentHost {
             return
         }
         agent.mode = mode
+        agent.memoryTitle = session.title
         applySettings(agent)
         running = true
         startedAt = Date()
@@ -234,6 +250,11 @@ final class SessionController: AgentHost {
             self.pendingQuestion = nil
             if !outcome.changedFiles.isEmpty { self.app?.refreshGit() }
             self.saveNow()
+            self.rememberNewMessages()
+            if let first = self.autoTitle {
+                self.autoTitle = nil
+                if outcome.ok { self.suggestTitle(from: first.goal, placeholder: first.placeholder) }
+            }
             if NSApp != nil && !NSApp.isActive { self.notifyDone(outcome) }
             if self.continueGoal(after: outcome) { return }
             self.afterRequest(goal: goal, outcome: outcome)
@@ -276,6 +297,8 @@ final class SessionController: AgentHost {
             app?.newSession()
         case "compact":
             compact(focus: args.isEmpty ? nil : args)
+        case "notebook":
+            notebookCommand(args)
         case "model":
             if args.isEmpty {
                 let info = ModelCatalog.shared.info(model)
@@ -394,6 +417,92 @@ final class SessionController: AgentHost {
             self?.task = nil
             self?.saveNow()
         }
+    }
+
+    /// Replaces the placeholder title with one a small model writes from the first request. Silent on any error,
+    /// and skipped when the owner has renamed the session since.
+    private func suggestTitle(from goal: String, placeholder: String) {
+        guard AppSettings.shared.aiTitles, !placeholder.hasPrefix("Fork: ") else { return }
+        let quick = AppSettings.shared.quickModel
+        let model: String? = !quick.isEmpty && AppSettings.shared.ready(model: quick) ? quick : nil
+        let brain: Brain
+        if let agent {
+            brain = agent.brain.fork(model: model)
+        } else {
+            guard let b = try? Brain.fromSettings(model: model ?? session.model) else { return }
+            b.onUsage = { [weak self] u, _, cost in self?.session.usage.add(u, cost: cost) }
+            brain = b
+        }
+        let prompt = "Write a short title (3 to 6 words) for a coding session that started with this request. Reply with the title only: no quotes, no trailing period, no emoji.\n\nRequest: " + String(goal.prefix(600))
+        Task { [weak self] in
+            guard let raw = try? await brain.oneShot(prompt, effort: "low"), let title = Session.cleanTitle(raw) else { return }
+            guard let self, self.session.title == placeholder else { return }
+            self.session.title = title
+            self.saveNow()
+            self.app?.refreshSessions()
+        }
+    }
+
+    // MARK: NotebookLM memory
+
+    /// /notebook lists the account's notebooks, /notebook <number or name> attaches one, /notebook off detaches it.
+    private func notebookCommand(_ args: String) {
+        let arg = args.trimmingCharacters(in: .whitespaces)
+        if arg.lowercased() == "off" {
+            session.attachedNotebook = nil
+            session.attachedNotebookTitle = nil
+            agent?.attachedNotebook = nil
+            agent?.registerMemoryTool()
+            scheduleSave()
+            append(ChatItem(kind: .system, text: "Detached. ask_memory goes back to this project's memory."))
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            let list: [NotebookLMClient.Notebook]
+            do { list = try await NotebookMemory.shared.notebooks() }
+            catch { self.append(ChatItem(kind: .error, text: NotebookMemory.message(error))); return }
+            if arg.isEmpty {
+                let lines = list.enumerated().map { "\($0.offset + 1). \($0.element.title) (\($0.element.sourceCount) sources)" }
+                self.append(ChatItem(kind: .system, text: list.isEmpty ? "No notebooks in this Google account yet."
+                    : "Your notebooks:\n" + lines.joined(separator: "\n") + "\n\nType /notebook <number or name> to attach one, or /notebook off to detach."))
+                return
+            }
+            let pick: NotebookLMClient.Notebook?
+            if let n = Int(arg), list.indices.contains(n - 1) { pick = list[n - 1] }
+            else { pick = list.first { $0.title.caseInsensitiveCompare(arg) == .orderedSame } ?? list.first { $0.title.localizedCaseInsensitiveContains(arg) } }
+            guard let nb = pick else {
+                self.append(ChatItem(kind: .system, text: "No notebook matches \"\(arg)\". See /notebook for the list."))
+                return
+            }
+            self.session.attachedNotebook = nb.id
+            self.session.attachedNotebookTitle = nb.title
+            self.agent?.attachedNotebook = nb.id
+            self.agent?.registerMemoryTool()
+            self.scheduleSave()
+            self.append(ChatItem(kind: .system, text: "Attached \"\(nb.title)\". ask_memory now asks that notebook."))
+        }
+    }
+
+    /// Saves the conversation added since the last upload, but only for long sessions: about 60k tokens in all and
+    /// 40k characters not yet saved. Short sessions never upload.
+    private func rememberNewMessages() {
+        guard AppSettings.shared.notebookMemory, let agent else { return }
+        let all = agent.messages
+        let from = min(max(session.memoryUploadedCount ?? 1, 1), all.count)
+        let fresh = Array(all[from...])
+        let tokens = Compactor.estimateTokens(all, model: agent.brain.model)
+        guard MemoryRules.shouldUpload(tokens: tokens, freshChars: fresh.reduce(0, { $0 + $1.charCount })) else { return }
+        let previous = session.memoryUploadedCount
+        session.memoryUploadedCount = all.count
+        scheduleSave()
+        let day = Date().formatted(date: .abbreviated, time: .omitted)
+        // If the upload fails, the count goes back so the same messages are tried again on the next request.
+        NotebookMemory.shared.upload(title: "\(session.title) · \(day)", text: NotebookMemory.transcript(fresh),
+                                     root: URL(fileURLWithPath: session.projectPath), onFailure: { [weak self] in
+            self?.session.memoryUploadedCount = previous
+            self?.scheduleSave()
+        })
     }
 
     // MARK: Learning from the session

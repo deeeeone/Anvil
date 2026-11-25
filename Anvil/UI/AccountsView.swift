@@ -94,7 +94,10 @@ private struct AccountRow: View {
                     }
                 }
                 if let detail = subtitle { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-                if account.needsAttention, account.enabled {
+                if let until = account.cooldownUntil, account.isResting, account.enabled {
+                    Text("Resting until \(until.formatted(date: .omitted, time: .shortened)) (usage limit)")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if account.needsAttention, account.enabled {
                     Label(account.lastError, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundStyle(.orange).lineLimit(2)
                 } else {
@@ -107,7 +110,7 @@ private struct AccountRow: View {
                 ProgressView().controlSize(.small)
             } else if checked {
                 Label("Signed in", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
-            } else if account.needsAttention, account.enabled {
+            } else if account.needsAttention, account.enabled, !account.isResting {
                 Button("Sign in again") { reconnect() }
             }
 
@@ -162,7 +165,7 @@ private struct AccountRow: View {
         checking = true
         defer { checking = false }
         do {
-            let v = try await WebSignIn.verify(account.provider, cookies: store.cookies(account.id), accountID: account.id)
+            let v = try await WebSignIn.verify(account.provider, cookies: store.cookies(account.id), accountID: account.id, authUser: account.authUser)
             store.save(v, provider: account.provider, replacing: account.id)
         } catch {
             if let fresh = await WebSignIn.safariSession(matching: account) {

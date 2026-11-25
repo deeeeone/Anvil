@@ -55,8 +55,24 @@ final class AppSettings {
     var warmCache: Bool { didSet { d.set(warmCache, forKey: "warmCache") } }
     /// Keep a short project brief (one cheap call when the project's shape changes).
     var projectBrief: Bool { didSet { d.set(projectBrief, forKey: "projectBrief") } }
+    /// Name a session with a small model after its first request (the first message's title stays until then).
+    var aiTitles: Bool { didSet { d.set(aiTitles, forKey: "aiTitles") } }
     /// Inject the jailbreak prompt ahead of requests to ChatGPT and Gemini web models.
     var jailbreak: Bool { didSet { d.set(jailbreak, forKey: "jailbreak") } }
+    /// Save session transcripts to a NotebookLM notebook in the Google account, and let the agent ask it (ask_memory).
+    var notebookMemory: Bool { didSet { d.set(notebookMemory, forKey: "notebookMemory") } }
+    /// "project" (one notebook per project folder) or "account" (one notebook for everything).
+    var notebookScope: String { didSet { d.set(notebookScope, forKey: "notebookScope") } }
+    /// The Google AI plan ("free", "plus", "pro", "ultra"), which sets NotebookLM's limits.
+    var notebookPlan: String { didSet { d.set(notebookPlan, forKey: "notebookPlan") } }
+    /// Models pinned to the top of the model menu, in order.
+    var favoriteModels: [String] { didSet { d.set(favoriteModels, forKey: "favoriteModels") } }
+    /// Provider section ids (a Provider rawValue or a provider plugin id) hidden from the model menu.
+    var hiddenModelSections: [String] { didSet { d.set(hiddenModelSections, forKey: "hiddenModelSections") } }
+    /// Provider section ids whose models sit in a submenu in the model menu.
+    var collapsedModelSections: [String] { didSet { d.set(collapsedModelSections, forKey: "collapsedModelSections") } }
+    /// When a model fails for good (bad key, quota, retries used up), retry the turn on another ready model.
+    var autoFallback: Bool { didSet { d.set(autoFallback, forKey: "autoFallback") } }
     /// Experiential Labs key.
     var apiKey: String {
         didSet { if !inMemoryKey { Keychain.set(apiKey, for: "apiKey") } }
@@ -111,7 +127,15 @@ final class AppSettings {
         prepareWhilePlanning = d.object(forKey: "prepareWhilePlanning") as? Bool ?? true
         warmCache = d.object(forKey: "warmCache") as? Bool ?? true
         projectBrief = d.object(forKey: "projectBrief") as? Bool ?? true
+        aiTitles = d.object(forKey: "aiTitles") as? Bool ?? true
         jailbreak = d.object(forKey: "jailbreak") as? Bool ?? false
+        notebookMemory = d.object(forKey: "notebookMemory") as? Bool ?? true
+        notebookScope = d.string(forKey: "notebookScope") ?? "project"
+        notebookPlan = d.string(forKey: "notebookPlan") ?? "free"
+        favoriteModels = d.stringArray(forKey: "favoriteModels") ?? []
+        hiddenModelSections = d.stringArray(forKey: "hiddenModelSections") ?? []
+        collapsedModelSections = d.stringArray(forKey: "collapsedModelSections") ?? []
+        autoFallback = d.object(forKey: "autoFallback") as? Bool ?? true
         lunaURL = d.string(forKey: "lunaURL") ?? Providers.defaultLunaURL
         geminiURL = d.string(forKey: "geminiURL") ?? Providers.defaultGeminiURL
         chatgptURL = d.string(forKey: "chatgptURL") ?? Providers.defaultChatGPTURL

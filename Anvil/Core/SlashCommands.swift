@@ -32,6 +32,7 @@ nonisolated enum SlashCommands {
         .init(name: "commit", summary: "stage all and commit with a generated message", source: "built-in"),
         .init(name: "diff", summary: "show the git diff in the inspector", source: "built-in"),
         .init(name: "pr", summary: "open a GitHub pull request for this work (optional notes)", source: "built-in"),
+        .init(name: "notebook", summary: "NotebookLM notebooks: /notebook lists them, /notebook <number or name> attaches one, /notebook off detaches", source: "built-in"),
         .init(name: "skills", summary: "list available skills", source: "built-in"),
         .init(name: "mcp", summary: "MCP server status", source: "built-in"),
         .init(name: "effort", summary: "thinking effort: low, medium, high or max", source: "built-in"),

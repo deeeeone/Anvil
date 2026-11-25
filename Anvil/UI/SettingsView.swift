@@ -60,6 +60,7 @@ struct ProviderSettings: View {
 
             AccountsSection(provider: .gemini)
             AccountsSection(provider: .chatgpt)
+            NotebookMemorySection()
             PluginProvidersSection()
             ProxyFallbackSettings()
 
@@ -130,6 +131,7 @@ struct AgentSettings: View {
                 Toggle("Look ahead while a plan waits for approval", isOn: $s.prepareWhilePlanning)
                 Toggle("Warm the prompt cache while you type", isOn: $s.warmCache)
                 Toggle("Keep a project brief (one cheap call when the project changes)", isOn: $s.projectBrief)
+                Toggle("Name sessions with AI (one cheap call after the first request)", isOn: $s.aiTitles)
                 Picker("Model for simple requests", selection: $s.quickModel) {
                     Text("Same as the session").tag("")
                     ForEach(ModelCatalog.shared.choices) { Text($0.id).tag($0.id) }
@@ -145,6 +147,12 @@ struct AgentSettings: View {
                 }
             } header: { Text("Accuracy and speed") } footer: {
                 Text("Every edit is syntax-checked. With type checks on, Anvil also asks the language server it finds (typescript-language-server, pyright, gopls, rust-analyzer, sourcekit-lsp for Swift packages) for errors your edits introduced. The exploration model handles explore helpers and turns that only read and search.").font(.caption)
+            }
+            Section {
+                Toggle("Switch models automatically when one fails", isOn: $s.autoFallback)
+                    .help("When a model fails for good (a rejected key, no quota, retries used up), the turn is retried on your favorite models first, then another ready model. Up to two switches per request.")
+            } header: { Text("Models") } footer: {
+                Text("Favorite and hide models from the model menu: the heart adds the current model, and Model list has per-provider show and collapse options.").font(.caption)
             }
             Section("Permission modes") {
                 Text("Ask before edits: shows each diff and command for approval (one card can cover every edit in a reply, and an approved plan covers its edits). Auto-accept edits: file changes apply without asking, commands still ask. Plan only: read-only until you approve a plan. Bypass: nothing asks, ever; edits still get checkpoints you can undo. Dangerous commands (rm -rf, sudo, git push, git reset --hard...) ask in every mode except Bypass.")
@@ -289,5 +297,48 @@ struct KeepAwakeSettings: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
         .task { lidMode = await KeepAwake.lidClosedModeOn() }
+    }
+}
+
+/// NotebookLM memory: the switch, where notebooks are kept, and a connection check the owner runs.
+struct NotebookMemorySection: View {
+    @State private var testing = false
+    @State private var result = ""
+
+    var body: some View {
+        @Bindable var s = AppSettings.shared
+        Section {
+            Toggle("Remember past sessions in NotebookLM (the agent can ask about them)", isOn: $s.notebookMemory)
+            Picker("Notebooks", selection: $s.notebookScope) {
+                Text("One per project").tag("project")
+                Text("One for everything").tag("account")
+            }
+            .disabled(!s.notebookMemory)
+            Picker("Google AI plan", selection: $s.notebookPlan) {
+                Text("Free (50 chats a day)").tag("free")
+                Text("Plus (200 chats a day)").tag("plus")
+                Text("Pro (500 chats a day)").tag("pro")
+                Text("Ultra (2500 chats a day)").tag("ultra")
+            }
+            .disabled(!s.notebookMemory)
+            HStack {
+                Button(testing ? "Testing…" : "Test connection") { test() }.disabled(testing)
+                Text(result).font(.caption).foregroundStyle(.secondary)
+            }
+        } header: { Label("Memory (NotebookLM)", systemImage: "books.vertical") }
+    }
+
+    private func test() {
+        testing = true
+        result = ""
+        Task {
+            do {
+                let count = try await NotebookMemory.shared.notebooks().count
+                result = "Connected. \(count) notebook\(count == 1 ? "" : "s") in this Google account."
+            } catch {
+                result = NotebookMemory.message(error)
+            }
+            testing = false
+        }
     }
 }

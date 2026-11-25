@@ -120,8 +120,13 @@ final class CleanupTokensTreeTests: XCTestCase {
 
     func testSessionKeepsParentLinkAcrossSaveAndLoad() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("anvil-sup-\(UUID().uuidString)")
+        // Restore the previous value: unsetting it would send every later test to the real support folder.
+        let previous = ProcessInfo.processInfo.environment["ANVIL_SUPPORT_DIR"]
         setenv("ANVIL_SUPPORT_DIR", dir.path, 1)
-        defer { unsetenv("ANVIL_SUPPORT_DIR"); try? FileManager.default.removeItem(at: dir) }
+        defer {
+            if let previous { setenv("ANVIL_SUPPORT_DIR", previous, 1) } else { unsetenv("ANVIL_SUPPORT_DIR") }
+            try? FileManager.default.removeItem(at: dir)
+        }
         let root = URL(fileURLWithPath: "/tmp/anvil-proj-\(UUID().uuidString)")
         var s = Session(projectPath: root.path)
         let parent = UUID()
@@ -142,8 +147,13 @@ final class CleanupTokensTreeTests: XCTestCase {
 
     func testSubSessionLinksSurviveARestart() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("anvil-sup-\(UUID().uuidString)")
+        // Restore the previous value: unsetting it would send every later test to the real support folder.
+        let previous = ProcessInfo.processInfo.environment["ANVIL_SUPPORT_DIR"]
         setenv("ANVIL_SUPPORT_DIR", dir.path, 1)
-        defer { unsetenv("ANVIL_SUPPORT_DIR"); try? FileManager.default.removeItem(at: dir) }
+        defer {
+            if let previous { setenv("ANVIL_SUPPORT_DIR", previous, 1) } else { unsetenv("ANVIL_SUPPORT_DIR") }
+            try? FileManager.default.removeItem(at: dir)
+        }
         let root = URL(fileURLWithPath: "/tmp/anvil-proj-\(UUID().uuidString)")
         let parent = UUID()
         func sub(_ name: String, _ state: SubSession.State) -> SubSession {

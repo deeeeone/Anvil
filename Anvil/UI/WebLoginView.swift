@@ -11,6 +11,8 @@ struct AddWebAccountSheet: View {
     @State private var checking = false
     @State private var message = ""
     @State private var failed = false
+    /// Which signed-in Google account in the browser the cookies belong to (0 is the first).
+    @State private var authUser = 0
 
     private var site: String { provider == .chatgpt ? "ChatGPT" : "Gemini" }
     private var host: String { provider == .chatgpt ? "chatgpt.com" : "gemini.google.com" }
@@ -40,13 +42,26 @@ struct AddWebAccountSheet: View {
                 .frame(minHeight: 200)
                 .onChange(of: pasted) { message = ""; failed = false }
 
+            if provider == .gemini {
+                HStack(spacing: 8) {
+                    Stepper(value: $authUser, in: 0...9) {
+                        Text("Account in that browser: \(authUser)").font(.caption)
+                    }
+                    .fixedSize()
+                    .onChange(of: authUser) { message = ""; failed = false }
+                    Text("0 is the first Google account signed in to that browser.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                    Spacer()
+                }
+            }
+
             HStack(spacing: 8) {
                 if checking {
                     ProgressView().controlSize(.small)
                     Text("Checking with \(site)…").font(.caption).foregroundStyle(.secondary)
                 } else if !message.isEmpty {
                     Label(message, systemImage: failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                        .font(.caption).foregroundStyle(failed ? .orange : .green).lineLimit(2)
+                        .font(.caption).foregroundStyle(failed ? .orange : .green).lineLimit(3)
                 } else if !pasted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Label(ready ? "Looks signed in" : "Missing \(WebAccounts.requiredCookie(provider))",
                           systemImage: ready ? "checkmark.circle" : "exclamationmark.triangle")
@@ -69,20 +84,28 @@ struct AddWebAccountSheet: View {
             }
         }
         .padding(18)
-        .frame(width: 580, height: 420)
+        .frame(width: 580, height: 460)
     }
 
     private func add() async {
         checking = true
         defer { checking = false }
         do {
-            let verified = try await WebSignIn.verify(provider, cookies: cookies)
-            WebAccounts.shared.save(verified, provider: provider)
-            failed = false
-            message = verified.email.isEmpty ? "Added." : "Added \(verified.email)."
+            let verified = try await WebSignIn.verify(provider, cookies: cookies, authUser: provider == .gemini ? authUser : nil)
+            let saved = WebAccounts.shared.save(verified, provider: provider)
             onAdded()
-            try? await Task.sleep(for: .seconds(0.7))
-            dismiss()
+            if saved.added {
+                failed = false
+                message = verified.email.isEmpty ? "Added." : "Added \(verified.email)."
+                try? await Task.sleep(for: .seconds(0.7))
+                dismiss()
+            } else {
+                // Same person as an account already here: stay open so the account number can be changed.
+                failed = true
+                let who = WebAccounts.shared.account(saved.id)?.label ?? "an account"
+                message = "These cookies are for \(who), which is already added, so it was refreshed."
+                    + (provider == .gemini ? " In a browser with several Google accounts, pick the account number below." : "")
+            }
         } catch {
             failed = true
             message = WebSignIn.message(error)

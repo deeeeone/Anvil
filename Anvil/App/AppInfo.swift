@@ -16,7 +16,13 @@ nonisolated enum Paths {
 
     /// ~/Library/Application Support/Anvil (overridable with ANVIL_SUPPORT_DIR for tests and headless runs).
     static var support: URL {
-        if let o = ProcessInfo.processInfo.environment["ANVIL_SUPPORT_DIR"], !o.isEmpty { return dir(URL(fileURLWithPath: o)) }
+        let env = ProcessInfo.processInfo.environment
+        if let o = env["ANVIL_SUPPORT_DIR"], !o.isEmpty { return dir(URL(fileURLWithPath: o)) }
+        // Under XCTest, keep files (accounts list, sessions, mcp.json) out of the owner's real support folder.
+        // UserDefaults and the Keychain are not redirected by this.
+        if env["XCTestConfigurationFilePath"] != nil || env["XCTestBundlePath"] != nil || NSClassFromString("XCTestCase") != nil {
+            return dir(URL(fileURLWithPath: "/tmp/anvil-test-support"))
+        }
         return dir(FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(AppInfo.name, isDirectory: true))
     }
 

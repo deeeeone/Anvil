@@ -327,48 +327,113 @@ struct ModePill: View {
 struct ModelPill: View {
     let controller: SessionController
     @Bindable private var settings = AppSettings.shared
+
+    /// Every provider section in menu order: built-in providers, then installed plugins.
+    private var modelSections: [(id: String, title: String)] {
+        Provider.allCases.map { (id: $0.rawValue, title: $0.label) } + ProviderPlugins.shared.installed.map { (id: $0.id, title: $0.spec.name) }
+    }
+
+    /// The section holding the current model (never hidden).
+    private var currentSection: String {
+        if let (plugin, _) = ProviderPlugins.shared.route(controller.model) { return plugin.id }
+        return Providers.provider(for: controller.model).rawValue
+    }
+
+    private func isHidden(_ id: String) -> Bool {
+        settings.hiddenModelSections.contains(id) && id != currentSection
+    }
+
+    /// A provider's models: a section, or a submenu when the owner collapsed it.
+    @ViewBuilder private func sectionView<Content: View>(_ id: String, _ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+        if settings.collapsedModelSections.contains(id) {
+            Menu(title) { content() }
+        } else {
+            Section(title) { content() }
+        }
+    }
+
+    /// Adds or removes an id from a list of section ids.
+    private func setMember(_ list: inout [String], _ id: String, _ present: Bool) {
+        list.removeAll { $0 == id }
+        if present { list.append(id) }
+    }
+
     var body: some View {
         let catalog = ModelCatalog.shared
         Menu {
+            let favorites = settings.favoriteModels.filter { id in catalog.choices.contains { $0.id == id } }
+            if !favorites.isEmpty {
+                Section("Favorites") {
+                    ForEach(favorites, id: \.self) { id in
+                        Button {
+                            controller.model = id
+                        } label: {
+                            if id == controller.model { Label(id, systemImage: "checkmark") } else { Text(id) }
+                        }
+                        .disabled(!AppSettings.shared.ready(model: id))
+                    }
+                }
+            }
             ForEach(Provider.allCases) { p in
                 let ready = AppSettings.shared.ready(p)
                 let web = p == .chatgpt || p == .gemini
-                Section(p.label + (ready || web ? "" : " (not set up)")) {
-                    if !ready, web {
-                        Button("Sign in to \(p == .chatgpt ? "ChatGPT" : "Gemini")…") {
-                            WebLoginWindow.shared.present(provider: p) { _ in
-                                if let first = catalog.choices.first(where: { $0.provider == p && $0.plugin == nil }) { controller.model = first.id }
+                if !isHidden(p.rawValue) {
+                    sectionView(p.rawValue, p.label + (ready || web ? "" : " (not set up)")) {
+                        if !ready, web {
+                            Button("Sign in to \(p == .chatgpt ? "ChatGPT" : "Gemini")…") {
+                                WebLoginWindow.shared.present(provider: p) { _ in
+                                    if let first = catalog.choices.first(where: { $0.provider == p && $0.plugin == nil }) { controller.model = first.id }
+                                }
+                            }
+                        } else {
+                            ForEach(catalog.choices.filter { $0.provider == p && $0.plugin == nil }) { c in
+                                Button {
+                                    controller.model = c.id
+                                } label: {
+                                    if c.id == controller.model { Label(c.id, systemImage: "checkmark") } else { Text(c.id) }
+                                }
+                                .disabled(!ready)
                             }
                         }
-                    } else {
-                    ForEach(catalog.choices.filter { $0.provider == p && $0.plugin == nil }) { c in
-                        Button {
-                            controller.model = c.id
-                        } label: {
-                            if c.id == controller.model { Label(c.id, systemImage: "checkmark") } else { Text(c.id) }
-                        }
-                        .disabled(!ready)
-                    }
                     }
                 }
             }
             ForEach(ProviderPlugins.shared.installed) { p in
                 let ready = ProviderPlugins.shared.isReady(p.id)
-                Section(p.spec.name + (ready ? "" : " (not set up)")) {
-                    let models = catalog.choices.filter { $0.plugin == p.id }
-                    if models.isEmpty { Text("No models yet: set it up in Settings") }
-                    ForEach(models) { c in
-                        Button {
-                            controller.model = c.id
-                        } label: {
-                            let name = String(c.id.dropFirst(p.id.count + 1))
-                            if c.id == controller.model { Label(name, systemImage: "checkmark") } else { Text(name) }
+                if !isHidden(p.id) {
+                    sectionView(p.id, p.spec.name + (ready ? "" : " (not set up)")) {
+                        let models = catalog.choices.filter { $0.plugin == p.id }
+                        if models.isEmpty { Text("No models yet: set it up in Settings") }
+                        ForEach(models) { c in
+                            Button {
+                                controller.model = c.id
+                            } label: {
+                                let name = String(c.id.dropFirst(p.id.count + 1))
+                                if c.id == controller.model { Label(name, systemImage: "checkmark") } else { Text(name) }
+                            }
+                            .disabled(!ready)
                         }
-                        .disabled(!ready)
                     }
                 }
             }
             Divider()
+            let current = controller.model
+            let isFavorite = settings.favoriteModels.contains(current)
+            Button {
+                if isFavorite { settings.favoriteModels.removeAll { $0 == current } } else { settings.favoriteModels.append(current) }
+            } label: {
+                Label(isFavorite ? "Remove \(current) from Favorites" : "Add \(current) to Favorites", systemImage: isFavorite ? "heart.fill" : "heart")
+            }
+            Menu("Model list") {
+                ForEach(modelSections, id: \.id) { s in
+                    Toggle("Show \(s.title)", isOn: Binding(
+                        get: { !settings.hiddenModelSections.contains(s.id) },
+                        set: { setMember(&settings.hiddenModelSections, s.id, !$0) }))
+                    Toggle("Collapse \(s.title)", isOn: Binding(
+                        get: { settings.collapsedModelSections.contains(s.id) },
+                        set: { setMember(&settings.collapsedModelSections, s.id, $0) }))
+                }
+            }
             if Jailbreak.applies(to: controller.model) {
                 Toggle("Jailbreak mode", isOn: $settings.jailbreak)
                     .help("Inject the rebel prompt into ChatGPT and Gemini web requests")

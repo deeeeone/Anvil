@@ -242,22 +242,24 @@ final class AppState {
         s.compactedAt = source.compactedAt
         s.title = "Fork: " + source.title.replacingOccurrences(of: "Fork: ", with: "")
         var draft: String?
-        if let itemID, let idx = source.items.firstIndex(where: { $0.id == itemID }), source.items[idx].kind == .user {
+        // While a request runs, a fork never copies it: the cut is before its user item (the fork gets its text to edit).
+        let running = controllers[id]?.running == true
+        let cutAt = itemID.flatMap { itemID in source.items.firstIndex(where: { $0.id == itemID && $0.kind == .user }) }
+            ?? (running ? Session.inFlightIndex(source.items) : nil)
+        if let idx = cutAt {
             let item = source.items[idx]
-            s.items = Array(source.items.prefix(idx))
-            let conversationOK = item.historyIndex.map { $0 <= source.messages.count } == true && !(source.compactedAt.map { $0 > item.date } ?? false)
-            if conversationOK, let h = item.historyIndex {
-                s.messages = Array(source.messages.prefix(h))
-            } else {
-                s.messages = []
-                s.briefing = ""
-            }
+            let cut = Session.forkPrefix(source, before: idx)
+            s.items = cut.items
+            s.messages = cut.messages
+            if !cut.keepsConversation { s.briefing = "" }
             draft = item.text
         } else {
-            s.items = source.items
+            s.items = running ? source.items.filter { $0.tool?.status != .running } : source.items
             s.messages = source.messages
-            s.todos = source.todos
-            s.plan = source.plan
+            if !running {
+                s.todos = source.todos
+                s.plan = source.plan
+            }
         }
         // Checkpoints stay with the original: undoing in the fork must not touch the original's changes.
         s.items.append(ChatItem(kind: .system, text: "Forked from \u{201C}\(Fmt.line(source.title, 60))\u{201D}. Files are shared with it: nothing was restored."))

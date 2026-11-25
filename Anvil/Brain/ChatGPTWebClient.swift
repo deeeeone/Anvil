@@ -446,7 +446,7 @@ nonisolated final class ChatGPTWebClient: @unchecked Sendable {
         let clean = Fmt.line(body, 300)
         let code: String
         if status == 401 || status == 403 { code = "unauthorized" }
-        else if status == 429 { code = "server_busy" }
+        else if status == 429 || clean.contains("usage_limit") || clean.lowercased().contains("rate limit") { code = "usage_limit" }
         else if status == 413 || clean.contains("message_length") { code = "too_long" }
         else { code = "upstream_error" }
         return BrainError(status: status, code: code, message: clean)

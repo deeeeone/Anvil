@@ -14,6 +14,8 @@ enum Theme {
     static let borderStrong = Color.white.opacity(0.12)
 
     static let text = Color(hex: 0xEDEDEF)
+    /// Long-form reading text (answers): a touch softer than `text`, so paragraphs don't glare on the dark background.
+    static let body = Color(hex: 0xD4D4D8)
     static let text2 = Color(hex: 0xA1A1AA)
     static let text3 = Color(hex: 0x63636D)
 

@@ -31,6 +31,12 @@ nonisolated struct WebAccount: Codable, Identifiable, Equatable, Sendable {
     var enabled = true
     /// Keyed by yyyy-MM-dd, oldest trimmed.
     var usage: [String: WebUsageDay] = [:]
+    /// Set when a usage limit hit this account: it goes last in line until then.
+    var cooldownUntil: Date?
+    /// The Google account index (`authuser`) the cookies were signed in with. Nil is the browser's first account.
+    var authUser: Int?
+
+    var isResting: Bool { (cooldownUntil ?? .distantPast) > Date() }
 
     var todayKey: String { WebAccount.day.string(from: Date()) }
 
@@ -117,11 +123,13 @@ final class WebAccounts {
         return accounts.first { $0.id == id }
     }
 
-    /// The active account first, then the others (most recently added first).
+    /// The active account first, then the others (most recently added first). Accounts resting after a
+    /// usage limit go last, but stay in the list so they're still tried when nothing else works.
     func candidates(for provider: Provider) -> [WebAccount] {
         let list = accounts(for: provider).filter(\.enabled)
         let chosen = active[provider]
         return list.sorted { a, b in
+            if a.isResting != b.isResting { return !a.isResting }
             if a.id == chosen { return true }
             if b.id == chosen { return false }
             return a.added > b.added
@@ -133,6 +141,17 @@ final class WebAccounts {
     func select(_ id: UUID) {
         guard let a = account(id) else { return }
         active[a.provider] = id
+        save()
+    }
+
+    /// Rests an account after a usage limit. If it was the active one, the next healthy account takes over.
+    func coolDown(_ id: UUID, until: Date) {
+        guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
+        accounts[i].cooldownUntil = until
+        let p = accounts[i].provider
+        if active[p] == id {
+            active[p] = candidates(for: p).first { $0.id != id && !$0.isResting }?.id ?? id
+        }
         save()
     }
 
@@ -159,32 +178,36 @@ final class WebAccounts {
     }
 
     /// Saves a verified sign-in. Signing in again as the same person (or reconnecting a specific
-    /// account) refreshes that account instead of adding a duplicate. Returns the account's id.
+    /// account) refreshes that account instead of adding a duplicate. Returns the account's id and
+    /// whether it was added (false when an existing account was refreshed).
     @discardableResult
-    func save(_ signIn: WebSignIn.Verified, provider: Provider, replacing: UUID? = nil) -> UUID {
+    func save(_ signIn: WebSignIn.Verified, provider: Provider, replacing: UUID? = nil) -> (id: UUID, added: Bool) {
         let email = signIn.email.lowercased()
         let existing = replacing.flatMap { id in accounts.firstIndex { $0.id == id } }
             ?? (email.isEmpty ? nil : accounts.firstIndex { $0.provider == provider && $0.email.lowercased() == email })
-        let id: UUID
+        let result: (id: UUID, added: Bool)
         if let i = existing {
-            id = accounts[i].id
+            let id = accounts[i].id
             Keychain.set(Self.cookiesJSON(signIn.cookies), for: "cookies.\(id.uuidString)")
             if !signIn.detail.isEmpty { accounts[i].detail = signIn.detail }
+            accounts[i].authUser = signIn.authUser
             accounts[i].enabled = true
             accounts[i].lastError = ""
             accounts[i].lastErrorAt = nil
             if active[provider] == nil { active[provider] = id }
             save()
+            result = (id, false)
         } else {
-            id = signIn.accountID
-            add(provider: provider, name: signIn.email, detail: signIn.detail, cookies: signIn.cookies, id: id)
+            add(provider: provider, name: signIn.email, detail: signIn.detail, cookies: signIn.cookies, id: signIn.accountID, authUser: signIn.authUser)
+            result = (signIn.accountID, true)
         }
         Task { await ModelCatalog.shared.refresh() }
-        return id
+        return result
     }
 
-    func add(provider: Provider, name: String, detail: String, cookies: [String: String], id: UUID = UUID()) {
-        let account = WebAccount(id: id, provider: provider, name: name.trimmingCharacters(in: .whitespaces), detail: detail)
+    func add(provider: Provider, name: String, detail: String, cookies: [String: String], id: UUID = UUID(), authUser: Int? = nil) {
+        var account = WebAccount(id: id, provider: provider, name: name.trimmingCharacters(in: .whitespaces), detail: detail)
+        account.authUser = authUser
         Keychain.set(Self.cookiesJSON(cookies), for: "cookies.\(account.id.uuidString)")
         accounts.append(account)
         if active[provider] == nil { active[provider] = account.id }
@@ -224,6 +247,7 @@ final class WebAccounts {
         } else {
             accounts[i].lastError = ""
             accounts[i].lastErrorAt = nil
+            accounts[i].cooldownUntil = nil
         }
         // Keep the sheet light: 120 days is more than the week view needs.
         if accounts[i].usage.count > 120 {
@@ -400,9 +424,11 @@ nonisolated enum WebSignIn {
         var email = ""
         var detail = ""
         var cookies: [String: String] = [:]
+        /// The Google account index the cookies were checked with (Gemini only).
+        var authUser: Int?
     }
 
-    static func verify(_ provider: Provider, cookies: [String: String], accountID: UUID = UUID()) async throws -> Verified {
+    static func verify(_ provider: Provider, cookies: [String: String], accountID: UUID = UUID(), authUser: Int? = nil) async throws -> Verified {
         guard WebAccounts.looksSignedIn(provider, cookies) else {
             throw BrainError(status: 401, code: "unauthorized", message: "Not signed in yet.")
         }
@@ -414,10 +440,11 @@ nonisolated enum WebSignIn {
             v.detail = [id.email, id.plan.isEmpty ? "" : "\(id.plan.capitalized) plan"].filter { !$0.isEmpty }.joined(separator: " · ")
             v.cookies = client.currentCookies
         } else {
-            let client = GeminiWebClient(accountID: accountID, cookies: cookies)
+            let client = GeminiWebClient(accountID: accountID, cookies: cookies, authUser: authUser)
             v.email = try await client.identity()
             v.detail = v.email.isEmpty ? "Google account" : v.email
             v.cookies = client.currentCookies
+            v.authUser = authUser
         }
         return v
     }
@@ -427,7 +454,7 @@ nonisolated enum WebSignIn {
     static func safariSession(matching account: WebAccount) async -> Verified? {
         guard let safari = try? SafariCookies.cookies(for: account.provider),
               WebAccounts.looksSignedIn(account.provider, safari),
-              let v = try? await verify(account.provider, cookies: safari, accountID: account.id) else { return nil }
+              let v = try? await verify(account.provider, cookies: safari, accountID: account.id, authUser: account.authUser) else { return nil }
         let want = account.email.lowercased()
         guard !want.isEmpty, v.email.lowercased() == want else { return nil }
         return v

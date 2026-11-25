@@ -13,6 +13,7 @@ protocol AgentBrowser: AnyObject {
     func navigate(_ action: String) async -> String
     func setViewport(width: Int?, height: Int?) -> String
     func console() async throws -> String
+    func network(filter: String?, limit: Int, bodies: Bool, clear: Bool) async throws -> String
 }
 
 /// The embedded browser behind the Preview tab. Real WebKit (Safari's engine), identifying itself as Safari.
@@ -43,12 +44,107 @@ final class BrowserController: NSObject, WKNavigationDelegate, AgentBrowser {
       const f = window.fetch; if (f) window.fetch = function () { return f.apply(this, arguments).then(r => { if (!r.ok) push('network', [r.status + ' ' + r.url]); return r }, err => { push('network', ['failed ' + (arguments[0] && arguments[0].url || arguments[0]) + ': ' + err]); throw err }) };
     })();
     """
+    /// Records requests the page makes (fetch, XHR, resource and navigation loads) into window.__anvilNet, newest 400.
+    static let networkHook = #"""
+    (() => { if (window.__anvilNet) return; window.__anvilNet = [];
+      const MASK = /auth|cookie|key|token|secret|session/i;
+      const textish = ct => /text|json|javascript|xml|html/i.test(ct || '');
+      const abs = u => { try { return new URL(String(u), location.href).href } catch (e) { return String(u) } };
+      const hdrs = h => { const o = {};
+        try { if (!h) return o;
+          if (typeof Headers !== 'undefined' && h instanceof Headers) h.forEach((v, k) => { o[k] = v });
+          else if (Array.isArray(h)) h.forEach(p => { o[p[0]] = p[1] });
+          else if (typeof h === 'object') Object.keys(h).forEach(k => { o[k] = h[k] });
+          for (const k of Object.keys(o)) o[k] = MASK.test(k) ? '***' : String(o[k]).slice(0, 300);
+        } catch (e) {}
+        return o };
+      const keep = e => { try { const n = window.__anvilNet; n.push(e); if (n.length > 400) n.splice(0, n.length - 400) } catch (x) {} return e };
+      const begin = (type, method, url, headers, b) => keep({ t: Date.now(), method: String(method || 'GET').toUpperCase(), url: abs(url), type: type,
+        status: null, ok: null, ms: null, ct: '', size: null, reqHeaders: hdrs(headers), reqBody: typeof b === 'string' ? b.slice(0, 1000) : undefined, err: '' });
+      try {
+        const f = window.fetch;
+        if (f) window.fetch = function (input, init) {
+          let e = null, start = 0;
+          try {
+            const req = typeof Request !== 'undefined' && input instanceof Request ? input : null;
+            e = begin('fetch', (init && init.method) || (req && req.method), req ? req.url : input, (init && init.headers) || (req && req.headers), init && init.body);
+            start = performance.now();
+          } catch (x) { e = null }
+          const p = f.apply(this, arguments);
+          if (!e) return p;
+          return p.then(r => {
+            try {
+              e.status = r.status; e.ok = r.ok; e.ms = Math.round(performance.now() - start);
+              e.ct = r.headers.get('content-type') || '';
+              const len = Number(r.headers.get('content-length')) || null;
+              e.size = len;
+              if (textish(e.ct) && !(len > 1000000)) r.clone().text().then(t => { e.size = e.size || t.length; e.body = t.slice(0, 2000) }, () => {});
+            } catch (x) {}
+            return r;
+          }, err => {
+            try { e.err = String((err && err.message) || err); e.ms = Math.round(performance.now() - start) } catch (x) {}
+            throw err;
+          });
+        };
+      } catch (e) {}
+      try {
+        const X = window.XMLHttpRequest;
+        if (X) {
+          const open = X.prototype.open, setH = X.prototype.setRequestHeader, send = X.prototype.send;
+          X.prototype.open = function (method, url) {
+            try { this.__anvil = { method: method, url: url, reqHeaders: {} } } catch (x) {}
+            return open.apply(this, arguments);
+          };
+          X.prototype.setRequestHeader = function (k, v) {
+            try { if (this.__anvil) this.__anvil.reqHeaders[k] = MASK.test(k) ? '***' : String(v).slice(0, 300) } catch (x) {}
+            return setH.apply(this, arguments);
+          };
+          X.prototype.send = function (b) {
+            try {
+              const d = this.__anvil;
+              if (d) {
+                const e = begin('xhr', d.method, d.url, d.reqHeaders, b);
+                const start = performance.now();
+                this.addEventListener('loadend', () => { try {
+                  e.status = this.status || null; e.ok = this.status >= 200 && this.status < 300;
+                  e.ms = Math.round(performance.now() - start);
+                  if (!this.status) e.err = 'failed';
+                  e.ct = this.getResponseHeader('content-type') || '';
+                  const len = Number(this.getResponseHeader('content-length')) || null;
+                  e.size = len;
+                  if (textish(e.ct) && (this.responseType === '' || this.responseType === 'text') && typeof this.responseText === 'string') { e.size = e.size || this.responseText.length; e.body = this.responseText.slice(0, 2000) }
+                } catch (x) {} });
+              }
+            } catch (x) {}
+            return send.apply(this, arguments);
+          };
+        }
+      } catch (e) {}
+      try {
+        if (window.PerformanceObserver) {
+          const po = new PerformanceObserver(list => {
+            for (const p of list.getEntries()) { try {
+              const t = Math.round(performance.timeOrigin + p.startTime);
+              if ((window.__anvilNet || []).some(x => (x.type === 'fetch' || x.type === 'xhr') && x.url === p.name && Math.abs(x.t - t) < 1000)) continue;
+              const status = p.responseStatus || null;
+              const type = p.entryType === 'navigation' ? 'navigation' : p.initiatorType === 'xmlhttprequest' ? 'xhr' : p.initiatorType;
+              keep({ t: t, method: 'GET', url: p.name, type: type, status: status, ok: status ? status < 400 : null, ms: Math.round(p.duration),
+                ct: '', size: Math.round(p.transferSize || p.encodedBodySize || 0) || null, err: '' });
+            } catch (x) {} }
+          });
+          try { po.observe({ entryTypes: ['resource', 'navigation'], buffered: true }) }
+          catch (x) { try { po.observe({ type: 'resource', buffered: true }) } catch (y) {} }
+        }
+      } catch (e) {}
+    })();
+    """#
     @ObservationIgnored private var waiters: [CheckedContinuation<Void, Never>] = []
 
     @ObservationIgnored lazy var webView: WKWebView = {
         let cfg = WKWebViewConfiguration()
         cfg.websiteDataStore = .default()
         cfg.userContentController.addUserScript(WKUserScript(source: Self.consoleHook, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        cfg.userContentController.addUserScript(WKUserScript(source: Self.networkHook, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         cfg.preferences.isElementFullscreenEnabled = true
         let w = WKWebView(frame: NSRect(x: 0, y: 0, width: 1280, height: 860), configuration: cfg)
         w.customUserAgent = Self.userAgent
@@ -202,6 +298,70 @@ final class BrowserController: NSObject, WKNavigationDelegate, AgentBrowser {
         return list.isEmpty ? "console is empty (no logs, errors or failed requests since the page loaded)" : list.suffix(80).joined(separator: "\n")
     }
 
+    /// Requests the page made since it loaded, newest last. filter: url substring, "status>=400" or "type=xhr".
+    func network(filter: String?, limit: Int, bodies: Bool, clear: Bool) async throws -> String {
+        let raw = try await evaluate("(() => { const n = JSON.stringify(window.__anvilNet || []); if (\(clear)) window.__anvilNet = []; return n })()")
+        let all = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [[String: Any]] ?? []
+        let f = (filter ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+        var needle = f
+        var statusTest: (op: String, n: Int)?
+        var wantType: String?
+        if f.hasPrefix("status") {
+            let rest = f.dropFirst(6).trimmingCharacters(in: .whitespaces)
+            if let op = [">=", "<=", ">", "<", "="].first(where: { rest.hasPrefix($0) }),
+               let n = Int(rest.dropFirst(op.count).trimmingCharacters(in: .whitespaces)) { statusTest = (op, n); needle = "" }
+        } else if f.hasPrefix("type=") {
+            wantType = String(f.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+            needle = ""
+        }
+        let hits = all.filter { e in
+            if !needle.isEmpty && !((e["url"] as? String) ?? "").lowercased().contains(needle) { return false }
+            if let w = wantType, (e["type"] as? String) != w { return false }
+            if let s = statusTest {
+                guard let code = Self.num(e, "status") else { return false }
+                let ok: Bool
+                switch s.op {
+                case ">=": ok = code >= s.n
+                case "<=": ok = code <= s.n
+                case ">": ok = code > s.n
+                case "<": ok = code < s.n
+                default: ok = code == s.n
+                }
+                if !ok { return false }
+            }
+            return true
+        }
+        guard !all.isEmpty else { return "no requests recorded since the page loaded" }
+        guard !hits.isEmpty else { return "no request matches \"\(filter ?? "")\"" }
+        let picked = Array(hits.suffix(max(1, limit)))
+        let head = picked.count < hits.count ? "showing the last \(picked.count) of \(hits.count) requests\n" : ""
+        return head + picked.map { Self.netLine($0, bodies: bodies) }.joined(separator: "\n")
+    }
+
+    private static func num(_ e: [String: Any], _ k: String) -> Int? { (e[k] as? NSNumber)?.intValue }
+
+    /// One request: method, status, type, timing, size, url; with bodies, headers and response preview indented under it.
+    private static func netLine(_ e: [String: Any], bodies: Bool) -> String {
+        let err = (e["err"] as? String) ?? ""
+        let status = num(e, "status").map { String($0) } ?? (err.isEmpty ? "-" : "failed")
+        let ms = num(e, "ms").map { "\($0)ms" } ?? "-"
+        let size = num(e, "size").map { $0 < 1024 ? "\($0)B" : String(format: "%.1fkB", Double($0) / 1024) } ?? "-"
+        var line = "\((e["method"] as? String) ?? "GET") \(status) \((e["type"] as? String) ?? "?") \(ms) \(size) \((e["url"] as? String) ?? "")"
+        if !err.isEmpty { line += " (\(err))" }
+        guard bodies else { return line }
+        func oneLine(_ s: String) -> String { s.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ") }
+        var out = [line]
+        if let h = e["reqHeaders"] as? [String: String], !h.isEmpty {
+            out.append("    request headers: " + h.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" }.joined(separator: "; "))
+        }
+        if let b = e["reqBody"] as? String, !b.isEmpty { out.append("    request body: " + oneLine(b)) }
+        if let b = e["body"] as? String, !b.isEmpty {
+            let ct = (e["ct"] as? String) ?? ""
+            out.append("    response" + (ct.isEmpty ? "" : " (\(ct))") + ": " + oneLine(b))
+        }
+        return out.joined(separator: "\n")
+    }
+
     func screenshot() async throws -> Data {
         let img = try await webView.takeSnapshot(configuration: nil)
         guard let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
@@ -212,7 +372,7 @@ final class BrowserController: NSObject, WKNavigationDelegate, AgentBrowser {
 
 /// The agent's browser tools (only registered when the app provides a browser).
 enum BrowserTools {
-    static func all() -> [ToolSpec] { [open, read, find, click, type, key, select, hover, scroll, wait, nav, console, viewport, eval, screenshot] }
+    static func all() -> [ToolSpec] { [open, read, find, click, type, key, select, hover, scroll, wait, nav, console, network, viewport, eval, screenshot] }
 
     /// Runs a small DOM action on element [id] from browser_read.
     static func onElement(_ ctx: ToolContext, _ id: Int, _ body: String) async throws -> String {
@@ -288,6 +448,10 @@ enum BrowserTools {
     static let console = ToolSpec(name: "browser_console", kind: .network, signature: "{}",
                                   summary: "console logs, uncaught errors, rejected promises and failed requests since the page loaded", group: .web) { _, ctx in
         .ok(try await browser(ctx).console())
+    }
+    static let network = ToolSpec(name: "browser_network", kind: .network, signature: #"{optional "filter": str, optional "limit": int, optional "bodies": bool, optional "clear": bool}"#,
+                                  summary: "network requests the page made since it loaded (fetch, XHR, scripts, images, media) with method, status, type, timing and size; bodies:true adds headers and response previews. Not seen: service-worker and cross-origin iframe traffic, and statuses of plain resource loads when the browser hides them", group: .web) { a, ctx in
+        .ok(Fmt.clip(try await browser(ctx).network(filter: a["filter"]?.string, limit: a["limit"]?.int ?? 50, bodies: a["bodies"]?.bool ?? false, clear: a["clear"]?.bool ?? false), max: 14000))
     }
     static let viewport = ToolSpec(name: "browser_viewport", kind: .network, signature: #"{"device": "mobile|tablet|desktop"} or {"width": int, "height": int}"#,
                                    summary: "emulate a screen size to check responsive layouts (desktop fills the pane)", group: .web) { a, ctx in

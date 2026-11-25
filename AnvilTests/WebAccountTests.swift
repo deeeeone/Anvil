@@ -189,7 +189,7 @@ extension WebAccountTests {
         let email = "test-\(UUID().uuidString.prefix(8))@example.com".lowercased()
         var first = WebSignIn.Verified(accountID: UUID(), email: email, detail: "\(email) · Plus plan",
                                        cookies: ["__Secure-next-auth.session-token": "old"])
-        let id = store.save(first, provider: .chatgpt)
+        let id = store.save(first, provider: .chatgpt).id
         defer { store.delete(id) }
         store.markError(id, "signed out")
         XCTAssertTrue(store.account(id)?.needsAttention ?? false)
@@ -200,7 +200,8 @@ extension WebAccountTests {
         first.email = email.uppercased()
         first.cookies = ["__Secure-next-auth.session-token": "new"]
         let again = store.save(first, provider: .chatgpt)
-        XCTAssertEqual(again, id)
+        XCTAssertFalse(again.added)
+        XCTAssertEqual(again.id, id)
         XCTAssertEqual(store.accounts(for: .chatgpt).filter { $0.email.lowercased() == email }.count, 1)
         XCTAssertEqual(store.cookies(id)["__Secure-next-auth.session-token"], "new")
         XCTAssertFalse(store.account(id)?.needsAttention ?? true)
@@ -208,8 +209,62 @@ extension WebAccountTests {
         // Someone else is a second account.
         let other = store.save(WebSignIn.Verified(accountID: UUID(), email: "other-\(email)", cookies: ["__Secure-next-auth.session-token": "x"]),
                                provider: .chatgpt)
-        defer { store.delete(other) }
-        XCTAssertNotEqual(other, id)
+        defer { store.delete(other.id) }
+        XCTAssertTrue(other.added)
+        XCTAssertNotEqual(other.id, id)
+    }
+
+    func testSaveReportsAddedAndKeepsAccountsApart() {
+        let store = WebAccounts.shared
+        let email = "test-\(UUID().uuidString.prefix(8))@example.com".lowercased()
+        let first = store.save(WebSignIn.Verified(accountID: UUID(), email: email, cookies: ["__Secure-1PSID": "a"]), provider: .gemini)
+        XCTAssertTrue(first.added)
+        defer { store.delete(first.id) }
+
+        // Same address, another account index: refreshed, and the index is remembered.
+        let again = store.save(WebSignIn.Verified(accountID: UUID(), email: email.uppercased(), cookies: ["__Secure-1PSID": "b"], authUser: 1), provider: .gemini)
+        XCTAssertFalse(again.added)
+        XCTAssertEqual(again.id, first.id)
+        XCTAssertEqual(store.account(first.id)?.authUser, 1)
+
+        // A different address with a different index is a new account.
+        let other = store.save(WebSignIn.Verified(accountID: UUID(), email: "other-\(email)", cookies: ["__Secure-1PSID": "c"], authUser: 2), provider: .gemini)
+        defer { store.delete(other.id) }
+        XCTAssertTrue(other.added)
+        XCTAssertNotEqual(other.id, first.id)
+        XCTAssertEqual(store.account(other.id)?.authUser, 2)
+    }
+
+    func testCoolingDownAccountGoesLastButStaysCandidate() {
+        let store = WebAccounts.shared
+        let marker = "test-\(UUID().uuidString)"
+        store.add(provider: .gemini, name: "\(marker)-a", detail: "test", cookies: ["__Secure-1PSID": "a"])
+        store.add(provider: .gemini, name: "\(marker)-b", detail: "test", cookies: ["__Secure-1PSID": "b"])
+        guard let first = store.accounts(for: .gemini).first(where: { $0.name == "\(marker)-a" }),
+              let second = store.accounts(for: .gemini).first(where: { $0.name == "\(marker)-b" }) else {
+            return XCTFail("accounts were not added")
+        }
+        defer { store.delete(first.id); store.delete(second.id) }
+
+        store.select(first.id)
+        store.coolDown(first.id, until: Date().addingTimeInterval(3600))
+        XCTAssertTrue(store.isActive(second.id), "the next healthy account takes over")
+
+        let ids = store.candidates(for: .gemini).map(\.id)
+        XCTAssertTrue(ids.contains(first.id), "a resting account is still tried")
+        XCTAssertLessThan(ids.firstIndex(of: second.id) ?? .max, ids.firstIndex(of: first.id) ?? 0)
+
+        store.record(first.id, prompt: 1, completion: 1)
+        XCTAssertFalse(store.account(first.id)?.isResting ?? true, "a successful request clears the rest")
+    }
+
+    func testOldAccountJSONStillDecodes() throws {
+        let json = #"{"id":"\#(UUID().uuidString)","provider":"gemini","name":"Account","detail":"","added":0,"lastError":"","enabled":true,"usage":{}}"#
+        let account = try JSONDecoder().decode(WebAccount.self, from: Data(json.utf8))
+        XCTAssertEqual(account.provider, .gemini)
+        XCTAssertNil(account.cooldownUntil)
+        XCTAssertNil(account.authUser)
+        XCTAssertFalse(account.isResting)
     }
 
     func testGeminiIdentityReadsTheAddress() async throws {

@@ -105,6 +105,11 @@ nonisolated struct Session: Codable, Identifiable, Equatable, Sendable {
     var compactedAt: Date?
     /// The worktree and branch were removed by Worktree cleanup; the conversation stays as history.
     var worktreeRemoved = false
+    /// The NotebookLM notebook that ask_memory queries in this session instead of the project's memory (/notebook).
+    var attachedNotebook: String?
+    var attachedNotebookTitle: String?
+    /// How many messages of the conversation are already in NotebookLM memory (nil = none yet).
+    var memoryUploadedCount: Int?
 
     /// Where the agent works: the worktree for worktree sessions, else the project.
     var root: URL { URL(fileURLWithPath: workdir ?? projectPath) }
@@ -116,6 +121,32 @@ nonisolated struct Session: Codable, Identifiable, Equatable, Sendable {
         let one = goal.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
         let words = one.split(separator: " ").prefix(8).joined(separator: " ")
         return words.count > 60 ? String(words.prefix(57)) + "..." : (words.isEmpty ? "New session" : words)
+    }
+
+    /// The title a model wrote: first line, wrapping quotes and a "Title:" label removed. Nil when empty or over 12 words.
+    static func cleanTitle(_ raw: String) -> String? {
+        let wrap = CharacterSet(charactersIn: "\"'`*#\u{201C}\u{201D}\u{2018}\u{2019} ")
+        var line = raw.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: wrap) }.first { !$0.isEmpty } ?? ""
+        if line.lowercased().hasPrefix("title:") { line = String(line.dropFirst(6)).trimmingCharacters(in: wrap) }
+        line = line.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:!?")).trimmingCharacters(in: wrap)
+        line = line.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard !line.isEmpty, line.split(separator: " ").count <= 12 else { return nil }
+        return line.count > 60 ? String(line.prefix(60)).trimmingCharacters(in: .whitespaces) : line
+    }
+
+    /// The user item that started the request in flight (the last one with a model history position).
+    static func inFlightIndex(_ items: [ChatItem]) -> Int? {
+        items.lastIndex { $0.kind == .user && $0.historyIndex != nil }
+    }
+
+    /// What a fork keeps of a conversation before the request at `idx`: its items and model messages.
+    /// The messages are empty when they can't be trusted (fewer than the request expects, or compacted after it).
+    static func forkPrefix(_ source: Session, before idx: Int) -> (items: [ChatItem], messages: [ChatMessage], keepsConversation: Bool) {
+        let item = source.items[idx]
+        let items = Array(source.items.prefix(idx))
+        let ok = item.historyIndex.map { $0 <= source.messages.count } == true && !(source.compactedAt.map { $0 > item.date } ?? false)
+        guard ok, let h = item.historyIndex else { return (items, [], false) }
+        return (items, Array(source.messages.prefix(h)), true)
     }
 }
 

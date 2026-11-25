@@ -135,10 +135,10 @@ struct ItemView: View {
         case .user:
             HStack(alignment: .top) {
                 Spacer(minLength: 48)
-                if !controller.running && item.historyIndex != nil {
-                    // Shown while hovering the message, side by side (like Claude's message actions).
+                if item.historyIndex != nil {
+                    // Shown while hovering the message, side by side (like Claude's message actions). Rewind waits for the request to finish.
                     HStack(spacing: 2) {
-                        RewindButton(item: item, controller: controller)
+                        if !controller.running { RewindButton(item: item, controller: controller) }
                         ForkButton(item: item, controller: controller)
                     }
                     .opacity(hoverMessage ? 1 : 0)
@@ -560,7 +560,6 @@ struct ForkButton: View {
         .buttonStyle(.plain)
         .onHover { hover = $0 }
         .padding(.top, 6)
-        .disabled(controller.running)
         .help("Fork from here: a new session with the conversation up to this message, to try it differently. This session stays as it is.")
     }
 }

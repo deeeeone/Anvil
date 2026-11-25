@@ -34,6 +34,10 @@ final class Agent {
     var escalationModel = ""
     /// Model for exploration turns and explore helpers ("" = the session model).
     var exploreModel = ""
+    /// When a model fails for good, retry the turn on another ready model (up to two switches per request).
+    var autoFallback = true
+    /// Told when a request switches models, so the session's model pill follows.
+    var onModelFallback: ((String) -> Void)?
     /// Stream replies to the host (live text; early stop for providers that ignore stop sequences).
     var streaming = true
     /// Stop the request once it has cost this much (USD; 0 = no limit).
@@ -105,6 +109,17 @@ final class Agent {
     /// Called whenever `messages` changes (persist the session).
     var onHistory: (() -> Void)?
     var onCompacted: ((String) -> Void)?
+    /// The NotebookLM notebook that ask_memory queries instead of the project's memory (set by /notebook).
+    var attachedNotebook: String?
+    /// The project the NotebookLM memory belongs to (the project, not a worktree).
+    var memoryRoot: URL?
+    /// The session's title, used to name what compaction saves to memory.
+    var memoryTitle: String?
+    /// How many messages are already in memory (nil = none), set by the session.
+    var memoryUploadedCount: (() -> Int?)?
+    /// ask_memory calls in the current request (at most three), and this session's answers by question.
+    private var memoryAsks = 0
+    private var memoryAnswers: [String: String] = [:]
 
     init(ctx: ToolContext, brain: Brain, extraTools: [ToolSpec] = [], subagent: Bool = false) {
         self.ctx = ctx
@@ -117,7 +132,62 @@ final class Agent {
         register(specs)
         if !subagent { register([exploreTool()] + mcpTools() + GitHub.tools()) }
         if ctx.browser != nil && !subagent { register(BrowserTools.all()) }
+        registerMemoryTool()
         knownToolNames = Set(tools.keys)
+    }
+
+    /// Whether ask_memory is useful now: a notebook is attached, or memory has saved or compacted this session,
+    /// or the session is long and the project's notebook already holds earlier sessions (never for helpers).
+    var wantsMemoryTool: Bool {
+        guard !isSubagent else { return false }
+        return MemoryRules.offerTool(attached: attachedNotebook != nil, uploaded: memoryUploadedCount?() != nil,
+                                     tokens: Compactor.estimateTokens(messages, model: brain.model),
+                                     notebookHasUploads: NotebookMemory.shared.hasUploads(root: memoryRoot ?? ctx.root),
+                                     memoryOn: AppSettings.shared.notebookMemory)
+    }
+
+    /// Registers ask_memory when it is wanted and removes it when it is not.
+    func registerMemoryTool() {
+        if wantsMemoryTool { register([askMemorySpec()]) } else { unregister("ask_memory") }
+    }
+
+    /// The tool list the agent asks for each step: ask_memory appears mid-session once the session grows long.
+    func memoryToolSpecs() -> [ToolSpec] { wantsMemoryTool ? [askMemorySpec()] : [] }
+
+    /// Removes a tool from this agent. It comes back through the tool provider when it is wanted again.
+    func unregister(_ name: String) {
+        guard tools[name] != nil else { return }
+        tools[name] = nil
+        ordered.removeAll { $0.name == name }
+        knownToolNames.remove(name)
+    }
+
+    private func askMemorySpec() -> ToolSpec {
+        ToolSpec(name: "ask_memory", kind: .network, signature: #"{"question": str}"#,
+                 summary: "ask this project's long-term memory (NotebookLM, holding full transcripts of earlier sessions and any notebook the owner attached) and get a cited answer; use it when the owner refers to past work or a detail may have been lost to compaction",
+                 group: .search) { [weak self] args, _ in
+            guard let self else { return ToolResult(ok: false, output: "The agent is gone.") }
+            return await self.askMemory(args["question"]?.string ?? "")
+        }
+    }
+
+    /// ask_memory: at most three questions per request. An identical question is answered from this session's cache.
+    func askMemory(_ question: String) async -> ToolResult {
+        let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return ToolResult(ok: false, output: "Give a question: {\"question\": \"...\"}") }
+        let key = q.lowercased()
+        if let cached = memoryAnswers[key] { return .ok(cached) }
+        guard memoryAsks < 3 else {
+            return ToolResult(ok: false, output: "ask_memory was already used 3 times for this request. Continue from the conversation and files.")
+        }
+        memoryAsks += 1
+        do {
+            let answer = try await NotebookMemory.shared.ask(q, root: memoryRoot ?? ctx.root, notebook: attachedNotebook)
+            memoryAnswers[key] = answer
+            return .ok(answer)
+        } catch {
+            return ToolResult(ok: false, output: NotebookMemory.message(error))
+        }
     }
 
     /// Picks up tools that appeared since the last step. Returns catalog lines for the new ones.
@@ -198,12 +268,31 @@ final class Agent {
         return b
     }
 
+    /// The model to retry a failed turn on, or nil when none is left. Favorites come first, then the other ready models.
+    /// A bad key, quota or account problem also rules out every model from the failed model's provider.
+    nonisolated static func fallbackModel(after failed: String, error: BrainError?, favorites: [String], available: [String],
+                                          sameProvider: (String, String) -> Bool, ready: (String) -> Bool) -> String? {
+        let authProblem = error.map { e in
+            ["no_key", "unauthorized", "revoked"].contains(e.code) || e.status == 401 || e.status == 403 || e.message.lowercased().contains("revoked")
+        } ?? false
+        var seen = Set<String>()
+        for m in favorites.filter({ available.contains($0) }) + available {
+            if m == failed || seen.contains(m) { continue }
+            seen.insert(m)
+            guard ready(m) else { continue }
+            if authProblem && sameProvider(m, failed) { continue }
+            return m
+        }
+        return nil
+    }
+
     static let reanchorText = "You do have access. This app executes the actions you list in the json block, on the owner's project, with their permission, and sends you the results. You never need the owner to paste files or run commands."
 
     // MARK: Run
 
     func run(goal: String, images: [(Data, String)] = [], attachmentsNote: String = "") async -> AgentOutcome {
         brain.effortCap = nil
+        memoryAsks = 0
         let activity = ProcessInfo.processInfo.beginActivity(options: [.idleSystemSleepDisabled, .userInitiated], reason: "Anvil is working on a task")
         defer { ProcessInfo.processInfo.endActivity(activity) }
         let taskStart = Date()
@@ -255,6 +344,8 @@ final class Agent {
         var verifiedBy: String?
         var planApproved = false
         var planShown = false
+        var fallbackSwitches = 0
+        var forcedModel: String?
         var lastMode = mode
         let maxSteps = max(3, self.maxSteps)
 
@@ -279,7 +370,10 @@ final class Agent {
             var turnEffort: String? = nil
             var cap: Int? = nil
             let escalating = escalateNext && !escalationModel.isEmpty && escalationModel != brain.model
-            if escalating {
+            if let forcedModel {
+                // This request switched models after a failure: keep using the replacement.
+                turnModel = forcedModel
+            } else if escalating {
                 turnModel = escalationModel
                 host?.agentStatus("Thinking harder (\(escalationModel))")
             } else if size == .simple && !quickModel.isEmpty && !lastBatchFailed {
@@ -312,8 +406,23 @@ final class Agent {
                 onHistory?()
                 return finish("Stopped.", ok: false, steps: step)
             } catch {
-                keepAfterFailure(goal: goal, step: step)
                 let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                // The model failed for good: retry this same turn on another ready model (two switches at most).
+                let failed = turnModel ?? brain.model
+                if autoFallback && fallbackSwitches < 2,
+                   let next = Self.fallbackModel(after: failed, error: error as? BrainError, favorites: AppSettings.shared.favoriteModels,
+                                                 available: ModelCatalog.shared.choices.map(\.id),
+                                                 sameProvider: { Providers.label(for: $0) == Providers.label(for: $1) },
+                                                 ready: { AppSettings.shared.ready(model: $0) }) {
+                    fallbackSwitches += 1
+                    forcedModel = next
+                    brain.model = next
+                    onModelFallback?(next)
+                    host?.agentError("\(failed) failed: \(Fmt.line(msg, 120)). Switched to \(next) and retrying.")
+                    if messages.last?.role == "user" { messages.removeLast(); onHistory?() }
+                    continue
+                }
+                keepAfterFailure(goal: goal, step: step)
                 host?.agentError(msg)
                 return finish(msg, ok: false, steps: step, silent: true)
             }
@@ -914,6 +1023,16 @@ final class Agent {
             summary = try await rollingSummary(focus: focus)
         }
         let clean = summary.replacingOccurrences(of: #"```json[\s\S]*?```"#, with: "", options: .regularExpression)
+        if !isSubagent, AppSettings.shared.notebookMemory {
+            // Only what memory doesn't have yet: the messages after the last upload (the first message is the briefing).
+            let from = min(max(memoryUploadedCount?() ?? 1, 1), messages.count)
+            let root = memoryRoot ?? ctx.root
+            if from < messages.count {
+                let day = Date().formatted(date: .abbreviated, time: .omitted)
+                NotebookMemory.shared.upload(title: "\(memoryTitle ?? root.lastPathComponent) · compacted \(day)",
+                                             text: NotebookMemory.transcript(Array(messages[from...])), root: root)
+            }
+        }
         let base = briefing.isEmpty ? (messages.first?.text ?? "") : briefing
         messages = Compactor.compacted(briefing: base, summary: clean)
         readCache = [:]

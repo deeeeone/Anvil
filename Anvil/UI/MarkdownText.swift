@@ -190,17 +190,17 @@ private struct BlockView: View {
         switch block {
         case .heading(let level, let t):
             Text(MarkdownText.inline(t))
-                .font(.system(size: level == 1 ? 20 : level == 2 ? 17 : 15, weight: .semibold))
+                .font(.system(size: level == 1 ? 19 : level == 2 ? 16.5 : 15, weight: level <= 2 ? .semibold : .medium))
                 .foregroundStyle(Theme.text)
                 .padding(.top, level <= 2 ? 6 : 2)
         case .paragraph(let t):
-            Text(MarkdownText.inline(t)).font(.system(size: 14.5)).foregroundStyle(Theme.text).lineSpacing(3.5)
+            Text(MarkdownText.inline(t)).font(.system(size: 14.5)).foregroundStyle(Theme.body).lineSpacing(3.5)
         case .bullets(let items):
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, it in
                     HStack(alignment: .firstTextBaseline, spacing: 9) {
                         Circle().fill(Theme.text3).frame(width: 4.5, height: 4.5).alignmentGuide(.firstTextBaseline) { $0[.bottom] + 4 }
-                        Text(MarkdownText.inline(it)).font(.system(size: 14.5)).foregroundStyle(Theme.text).lineSpacing(3)
+                        Text(MarkdownText.inline(it)).font(.system(size: 14.5)).foregroundStyle(Theme.body).lineSpacing(3)
                     }
                 }
             }
@@ -210,7 +210,7 @@ private struct BlockView: View {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, it in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("\(it.0).").font(.system(size: 14, weight: .medium).monospacedDigit()).foregroundStyle(Theme.text3).frame(minWidth: 18, alignment: .trailing)
-                        Text(MarkdownText.inline(it.1)).font(.system(size: 14.5)).foregroundStyle(Theme.text).lineSpacing(3)
+                        Text(MarkdownText.inline(it.1)).font(.system(size: 14.5)).foregroundStyle(Theme.body).lineSpacing(3)
                     }
                 }
             }

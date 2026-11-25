@@ -284,7 +284,10 @@ final class Brain {
     }
 
     /// Errors that mean "this account can't answer right now": try the next one.
-    private static let fallThrough: Set<String> = ["revoked", "unauthorized", "network", "upstream_error", "upstream_timeout", "server_busy", "bad_response"]
+    private static let fallThrough: Set<String> = ["revoked", "unauthorized", "network", "upstream_error", "upstream_timeout", "server_busy", "bad_response", "usage_limit"]
+
+    /// How long an account rests after its usage limit is hit.
+    private static let usageRest: TimeInterval = 3600
 
     /// Tries the signed-in ChatGPT accounts, active first. A dead session or a rate limit moves to the next.
     /// An expired session is revived from Safari when Safari is signed in as the same person.
@@ -312,6 +315,7 @@ final class Brain {
                     ? BrainError(status: 401, code: e.code, message: "\(account.label) is signed out of ChatGPT. Open Settings → Provider and click Sign in again.")
                     : e
                 store.markError(account.id, shown.message)
+                if e.code == "usage_limit" { store.coolDown(account.id, until: Date().addingTimeInterval(Self.usageRest)) }
                 last = shown
                 guard Self.fallThrough.contains(e.code) else { throw e }
             }
@@ -325,13 +329,13 @@ final class Brain {
         var last: BrainError?
         for account in store.candidates(for: .gemini) {
             do {
-                let client = GeminiWebClient(accountID: account.id, cookies: store.cookies(account.id))
+                let client = GeminiWebClient(accountID: account.id, cookies: store.cookies(account.id), authUser: account.authUser)
                 let reply = try await client.chat(prompt, images: images, model: m, onText: stream, shouldStop: stop)
                 store.record(account.id, prompt: prompt.count / 4, completion: reply.count / 4)
                 return reply
             } catch let e as BrainError {
                 if e.code == "unauthorized", let fresh = await WebSignIn.safariSession(matching: account),
-                   let reply = try? await GeminiWebClient(accountID: account.id, cookies: fresh.cookies).chat(prompt, images: images, model: m, onText: stream, shouldStop: stop) {
+                   let reply = try? await GeminiWebClient(accountID: account.id, cookies: fresh.cookies, authUser: account.authUser).chat(prompt, images: images, model: m, onText: stream, shouldStop: stop) {
                     store.save(fresh, provider: .gemini, replacing: account.id)
                     store.record(account.id, prompt: prompt.count / 4, completion: reply.count / 4)
                     return reply
@@ -340,6 +344,7 @@ final class Brain {
                     ? BrainError(status: 401, code: e.code, message: "\(account.label) is signed out of Gemini. Open Settings → Provider and click Sign in again.")
                     : e
                 store.markError(account.id, shown.message)
+                if e.code == "usage_limit" { store.coolDown(account.id, until: Date().addingTimeInterval(Self.usageRest)) }
                 last = shown
                 guard Self.fallThrough.contains(e.code) else { throw e }
             }

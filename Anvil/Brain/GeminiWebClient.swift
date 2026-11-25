@@ -14,6 +14,8 @@ nonisolated final class GeminiWebClient: @unchecked Sendable {
     private var lastRotation = Date.distantPast
     /// The signed-in Google address, read from the app shell (empty if Google stops embedding it).
     private(set) var email = ""
+    /// Which signed-in Google account in the browser to talk as (`authuser`). Nil uses the browser's first.
+    let authUser: Int?
 
     static let base = URL(string: "https://gemini.google.com")!
     static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15"
@@ -21,8 +23,9 @@ nonisolated final class GeminiWebClient: @unchecked Sendable {
     /// The cookie jar after any rotations (for saving a validated account).
     var currentCookies: [String: String] { jar.snapshot }
 
-    init(accountID: UUID, cookies: [String: String]) {
+    init(accountID: UUID, cookies: [String: String], authUser: Int? = nil) {
         self.accountID = accountID
+        self.authUser = authUser
         jar = CookieJar(accountID: accountID, cookies: cookies)
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 300
@@ -36,7 +39,8 @@ nonisolated final class GeminiWebClient: @unchecked Sendable {
     /// Loads the app shell and the tokens it carries. Throws when the cookies aren't signed in.
     @discardableResult
     func prepare() async throws -> String {
-        var req = URLRequest(url: Self.base.appendingPathComponent("app"))
+        let app = authUser.map { URL(string: "https://gemini.google.com/u/\($0)/app")! } ?? Self.base.appendingPathComponent("app")
+        var req = URLRequest(url: app)
         decorate(&req)
         req.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
         let (data, resp) = try await sendData(req)
@@ -114,6 +118,7 @@ nonisolated final class GeminiWebClient: @unchecked Sendable {
         var items = [URLQueryItem(name: "hl", value: language), URLQueryItem(name: "_reqid", value: String(reqID)), URLQueryItem(name: "rt", value: "c")]
         if !buildLabel.isEmpty { items.append(URLQueryItem(name: "bl", value: buildLabel)) }
         if !sessionID.isEmpty { items.append(URLQueryItem(name: "f.sid", value: sessionID)) }
+        if let authUser { items.append(URLQueryItem(name: "authuser", value: String(authUser))) }
         comps.queryItems = items
         guard let url = comps.url else { throw BrainError(status: 0, code: "network", message: "Bad Gemini URL") }
 
@@ -139,7 +144,8 @@ nonisolated final class GeminiWebClient: @unchecked Sendable {
             var data = Data()
             for try await b in bytes { data.append(b); if data.count > 4000 { break } }
             let unauthorized = http.statusCode == 401 || http.statusCode == 403
-            throw BrainError(status: http.statusCode, code: unauthorized ? "unauthorized" : "upstream_error",
+            let code = unauthorized ? "unauthorized" : http.statusCode == 429 ? "usage_limit" : "upstream_error"
+            throw BrainError(status: http.statusCode, code: code,
                              message: Fmt.line(String(decoding: data, as: UTF8.self), 300))
         }
 
@@ -157,7 +163,7 @@ nonisolated final class GeminiWebClient: @unchecked Sendable {
             for frame in frames where frame.array?.first?.string == "wrb.fr" {
                 guard let raw = frame.array?[safe: 2]?.string, let innerJSON = JSON.parse(raw) else { continue }
                 if let code = innerJSON[5]?[2]?[0]?[1]?[0]?.int {
-                    fatal = BrainError(status: 0, code: code == 7 ? "unauthorized" : "upstream_error",
+                    fatal = BrainError(status: 0, code: code == 7 ? "unauthorized" : code == 1 ? "usage_limit" : "upstream_error",
                                        message: Self.errorText(code))
                 }
                 guard let candidates = innerJSON[4]?.array else { continue }
@@ -176,10 +182,20 @@ nonisolated final class GeminiWebClient: @unchecked Sendable {
         if full.isEmpty {
             throw BrainError(status: 0, code: "upstream_error", message: "Gemini returned an empty reply. Try again, or add another account.")
         }
+        if Self.isUsageLimitText(full) {
+            throw BrainError(status: 0, code: "usage_limit", message: "Gemini usage limit reached for this account. Try another account or model.")
+        }
         if Self.isServiceError(full) {
             throw BrainError(status: 0, code: "gemini_error", message: "Gemini answered with its own error (\"\(Fmt.line(full, 80))\"), usually because the message was too long for it.")
         }
         return full
+    }
+
+    /// A short reply that says the account hit its usage limit (wording varies, so match the common phrases).
+    static func isUsageLimitText(_ reply: String) -> Bool {
+        let t = reply.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+        guard t.count < 300, !t.contains("```") else { return false }
+        return ["usage limit", "reached your limit", "reached the limit", "hit your limit", "too many requests"].contains { t.contains($0) }
     }
 
     /// Gemini's web app answers some failures (most often a message too long for it) with a canned sentence
@@ -219,6 +235,7 @@ nonisolated final class GeminiWebClient: @unchecked Sendable {
         req.setValue("https://gemini.google.com/", forHTTPHeaderField: "Referer")
         req.setValue("bard-storage", forHTTPHeaderField: "X-Tenant-Id")
         req.setValue(pushID, forHTTPHeaderField: "Push-ID")
+        if let authUser { req.setValue(String(authUser), forHTTPHeaderField: "X-Goog-AuthUser") }
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         req.httpBody = body
         let (response, resp) = try await sendData(req)
@@ -257,6 +274,7 @@ nonisolated final class GeminiWebClient: @unchecked Sendable {
         req.setValue(jar.header, forHTTPHeaderField: "Cookie")
         req.setValue("https://gemini.google.com", forHTTPHeaderField: "Origin")
         req.setValue("https://gemini.google.com/", forHTTPHeaderField: "Referer")
+        if let authUser { req.setValue(String(authUser), forHTTPHeaderField: "X-Goog-AuthUser") }
     }
 
     private static func encode(_ s: String) -> String {

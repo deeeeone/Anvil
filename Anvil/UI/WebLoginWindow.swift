@@ -223,7 +223,7 @@ final class WebLoginWindow: NSObject, NSWindowDelegate, WKUIDelegate, WKNavigati
                 say("Safari is signed in as \(same.label), which is already added. Sign in as someone else in Safari, or Cancel.", tone: .warning)
                 return
             }
-            let id = accounts.save(verified, provider: provider, replacing: replacing)
+            let id = accounts.save(verified, provider: provider, replacing: replacing).id
             let who = verified.email.isEmpty ? "your \(site) account" : verified.email
             if let reconnecting, replacing == nil {
                 say("That's \(who), not \(reconnecting.label). Added it as another account.", tone: .success)
