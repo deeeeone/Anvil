@@ -593,13 +593,86 @@ final class AgentLoopTests: XCTestCase {
         ])
         let out = await agent.run(goal: "build a landing page")
         XCTAssertEqual(out.text, "Here is the answer.", "the false 'no tools' answer wasn't accepted")
-        XCTAssertTrue(sent[2].last!.text.contains("You already used them successfully"), sent[2].last!.text)
+        XCTAssertTrue(sent[2].last!.text.contains("You already ran actions successfully"), sent[2].last!.text)
     }
 
     func testCantActPhrasesCoverToolAvailabilityClaims() {
         XCTAssertTrue(Agent.looksLikeCantAct("I need file, shell, and browser tools that aren't available in this environment."))
         XCTAssertTrue(Agent.looksLikeCantAct("I don't have access to your file system."))
         XCTAssertFalse(Agent.looksLikeCantAct("The parser reads the config, then the tools module registers handlers."))
+    }
+
+    func testMilestoneProgressNoteKeepsThePlanGoing() async {
+        let agent = makeAgent([
+            fence(#"{"say": "Plan.", "plan": ["Map the structure", "Read the loop", "Write it up"], "actions": [], "done": false}"#),
+            fence(#"{"actions": [{"tool": "list_dir", "args": {}}]}"#),
+            fence(#"{"say": "Milestone 1 done. It is a SwiftUI app.", "milestone": 1, "actions": [], "done": false}"#),
+            fence(#"{"actions": [{"tool": "list_dir", "args": {}}], "milestone": 2}"#),
+            fence(#"{"say": "Full write-up.", "milestone": 3, "done": true}"#),
+        ])
+        let out = await agent.run(goal: "read this codebase and analyse it")
+        XCTAssertEqual(out.text, "Full write-up.")
+        XCTAssertTrue(sent[3].last!.text.contains("milestone 2: Read the loop"), sent[3].last!.text)
+    }
+
+    func testNextStepDecisions() {
+        let plan = ["a", "b", "c"]
+        XCTAssertEqual(Agent.nextStep(done: false, explicitDone: true, planSteps: plan, milestonesDone: 1, text: "Milestone 1 done."), "milestone 2: b")
+        XCTAssertNil(Agent.nextStep(done: true, explicitDone: true, planSteps: plan, milestonesDone: 3, text: "All done."))
+        XCTAssertNil(Agent.nextStep(done: false, explicitDone: true, planSteps: plan, milestonesDone: 1, text: "Which file should I start with?"))
+        XCTAssertNil(Agent.nextStep(done: false, explicitDone: false, planSteps: [], milestonesDone: 0, text: "An answer."))
+        XCTAssertEqual(Agent.nextStep(done: false, explicitDone: true, planSteps: [], milestonesDone: 0, text: "Halfway."), "the next step of the request")
+    }
+
+    func testAnswersThatOnlyAnnounceContentAreCaught() {
+        XCTAssertTrue(Agent.announcesContent("Here are unconventional, non-standard marketing ideas for Mirrage that fit how it actually works."))
+        XCTAssertTrue(Agent.announcesContent("Here are a few unconventional marketing angles for Mirage:"))
+        XCTAssertFalse(Agent.announcesContent("Here's what happened: the token expired after 5 minutes."))
+        XCTAssertFalse(Agent.announcesContent("The login fails because the token expires after 5 minutes."))
+        XCTAssertFalse(Agent.announcesContent("Here are the ideas:\n- one\n- two"))
+    }
+
+    func testAnnouncedButMissingContentIsAskedForOnce() async {
+        let agent = makeAgent([
+            fence(#"{"say": "Here are unconventional marketing ideas for the app.", "actions": [], "done": true}"#),
+            fence(#"{"say": "1. Reply to comments on related videos.\n2. Share screen recordings.", "done": true}"#),
+        ])
+        let out = await agent.run(goal: "give me unusual marketing ideas")
+        XCTAssertTrue(out.text.contains("Reply to comments"), out.text)
+        XCTAssertTrue(sent[1].last!.text.contains("only introduces the content"), sent[1].last!.text)
+    }
+
+    func testGeminiCannedErrorIsNeverTheAnswer() async {
+        XCTAssertTrue(GeminiWebClient.isServiceError("I seem to be encountering an error. Can I try something else for you?"))
+        let agent = makeAgent([
+            "I seem to be encountering an error. Can I try something else for you?",
+            fence(#"{"say": "Done properly.", "done": true}"#),
+        ])
+        let out = await agent.run(goal: "what is this project?")
+        XCTAssertEqual(out.text, "Done properly.")
+    }
+
+    func testScreenshotClaimIsCaught() {
+        XCTAssertTrue(Agent.looksLikeCantAct("I cannot run shell commands or write files in this turn because those actions are not available here, so I have not created scraper.py yet."))
+    }
+
+    func testReanchorBudgetFollowsProgress() {
+        XCTAssertTrue(Agent.mayReanchor(total: 0, sinceAction: 0))
+        XCTAssertTrue(Agent.mayReanchor(total: 4, sinceAction: 0), "slips separated by real work keep being corrected")
+        XCTAssertTrue(Agent.mayReanchor(total: 2, sinceAction: 2), "one more after the model switch")
+        XCTAssertFalse(Agent.mayReanchor(total: 3, sinceAction: 3), "three in a row with no action: stop")
+        XCTAssertFalse(Agent.mayReanchor(total: 8, sinceAction: 0))
+    }
+
+    /// The pattern from a live Gemini web session: it works, claims it has no tools, works again, claims again...
+    /// Every claim between real work is corrected instead of becoming the final answer after the second one.
+    func testRepeatedNoToolClaimsBetweenWorkAreAllCorrected() async {
+        let claim = fence(#"{"say": "I cannot run shell commands or write files in this turn because those actions are not available here.", "actions": [], "done": true}"#)
+        let work = fence(#"{"actions": [{"tool": "list_dir", "args": {}}]}"#)
+        let agent = makeAgent([work, claim, work, claim, work, claim, work, claim, fence(#"{"say": "Finished.", "done": true}"#)])
+        agent.autoFallback = false
+        let out = await agent.run(goal: "look around the project and summarise it")
+        XCTAssertEqual(out.text, "Finished.")
     }
 
     func testLongSandboxExcuseIsCaught() {

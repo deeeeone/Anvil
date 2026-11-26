@@ -20,6 +20,8 @@ struct Composer: View {
     @State private var selection = 0
     @State private var pasteMonitor: Any?
     @FocusState private var focused: Bool
+    /// False in a split view's unfocused pane: it doesn't take focus or pasted images.
+    @Environment(\.anvilPaneFocused) private var paneFocused
 
     var suggestions: [SlashCommand] { SlashCommands.suggestions(text, project: controller.root).prefix(8).map { $0 } }
     @State private var mentionFiles: [String] = []
@@ -121,12 +123,16 @@ struct Composer: View {
             .onDrop(of: [.fileURL, .image], isTargeted: nil) { providers in drop(providers) }
             .onTapGesture { focused = true }
         }
-        .onChange(of: controller.draft) { _, d in if let d { text = d; controller.draft = nil; focused = true } }
+        .onChange(of: controller.draft) { _, d in if let d { text = d; controller.draft = nil; if paneFocused { focused = true } } }
+        .onChange(of: paneFocused) { _, f in if f { focused = true } }
         .onAppear {
-            focused = true
+            if paneFocused { focused = true }
             if let d = controller.draft { text = d; controller.draft = nil }
+            // Every composer installs this monitor: only the focused session's pane takes a pasted image.
+            let state = app, sid = controller.session.id
             pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
-                guard e.charactersIgnoringModifiers?.lowercased() == "v", e.modifierFlags.contains(.command) else { return e }
+                guard e.charactersIgnoringModifiers?.lowercased() == "v", e.modifierFlags.contains(.command),
+                      state.panes.focused == sid else { return e }
                 return pasteImage() ? nil : e
             }
         }

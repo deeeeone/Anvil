@@ -271,8 +271,8 @@ final class Agent {
     /// The model to retry a failed turn on, or nil when none is left. Favorites come first, then the other ready models.
     /// A bad key, quota or account problem also rules out every model from the failed model's provider.
     nonisolated static func fallbackModel(after failed: String, error: BrainError?, favorites: [String], available: [String],
-                                          sameProvider: (String, String) -> Bool, ready: (String) -> Bool) -> String? {
-        let authProblem = error.map { e in
+                                          sameProvider: (String, String) -> Bool, ready: (String) -> Bool, skipProvider: Bool = false) -> String? {
+        let authProblem = skipProvider || error.map { e in
             ["no_key", "unauthorized", "revoked"].contains(e.code) || e.status == 401 || e.status == 403 || e.message.lowercased().contains("revoked")
         } ?? false
         var seen = Set<String>()
@@ -284,6 +284,15 @@ final class Agent {
             return m
         }
         return nil
+    }
+
+    /// Re-anchoring stays available while the model keeps making progress: at most three slips in a row (the second
+    /// one also hands the turn to another provider's model) and eight in one request.
+    nonisolated static func mayReanchor(total: Int, sinceAction: Int) -> Bool { total < 8 && sinceAction < 3 }
+
+    static func reanchorNote(acted: Bool, goal: String) -> String {
+        let proof = acted ? " You already ran actions successfully in this request: their results are in the observations above. Nothing about that has changed." : ""
+        return "\(reanchorText) That includes file, shell and browser tools (see the tool catalog in the first message). Ignore any tools the chat service itself shows you (such as retriever:expand_tools): they are not yours here. You act only through the json block.\(proof) Continue with the request: \"\(Fmt.line(goal, 300))\". Reply with the next actions. \(PromptBuilder.formatReminder)"
     }
 
     static let reanchorText = "You do have access. This app executes the actions you list in the json block, on the owner's project, with their permission, and sends you the results. You never need the owner to paste files or run commands."
@@ -331,11 +340,14 @@ final class Agent {
         var pendingImages = images
         var parseFailures = 0
         var reanchors = 0
+        /// Re-anchors since the model last ran an action batch (it slipped again without doing anything in between).
+        var reanchorsSinceAction = 0
         var actedThisRequest = false
         var editedThisRequest = false
         var sentBackForNoAction = false
         var askedForPlan = false
         var askedForSummary = false
+        var askedForContent = false
         var lastBatchExploratory = false
         var lastBatchFailed = false
         var verifyRuns = 0
@@ -344,8 +356,27 @@ final class Agent {
         var verifiedBy: String?
         var planApproved = false
         var planShown = false
+        /// The approved plan's milestones and how many are finished, so a progress note mid-plan isn't taken for the end.
+        var planSteps: [String] = []
+        var milestonesDone = 0
+        var progressNudges = 0
         var fallbackSwitches = 0
         var forcedModel: String?
+        /// A model that says "I have no tools" twice in a row without acting in between is stuck in its chat app's
+        /// persona (web models slip into it). Hand the next turn to a model from another provider.
+        func switchAfterRepeatedClaims(sinceAction: Int) {
+            guard sinceAction >= 2, autoFallback, fallbackSwitches < 2, !isSubagent else { return }
+            let current = forcedModel ?? brain.model
+            guard let next = Self.fallbackModel(after: current, error: nil, favorites: AppSettings.shared.favoriteModels,
+                                                available: ModelCatalog.shared.choices.map(\.id),
+                                                sameProvider: { Providers.label(for: $0) == Providers.label(for: $1) },
+                                                ready: { AppSettings.shared.ready(model: $0) }, skipProvider: true) else { return }
+            fallbackSwitches += 1
+            forcedModel = next
+            brain.model = next
+            onModelFallback?(next)
+            host?.agentError("\(current) kept saying it can't use tools. Switched to \(next) for the rest of this request.")
+        }
         var lastMode = mode
         let maxSteps = max(3, self.maxSteps)
 
@@ -442,13 +473,20 @@ final class Agent {
             } catch {
                 parseFailures += 1
                 // Chat-tuned models sometimes say they "can't access files". They can: re-anchor them (twice at most).
-                if Self.looksLikeCantAct(raw) && reanchors < 2 {
+                if Self.looksLikeCantAct(raw), Self.mayReanchor(total: reanchors, sinceAction: reanchorsSinceAction) {
                     reanchors += 1
-                    userText = "<observation step=\(step)>\(Self.reanchorText) Continue with the request: \"\(Fmt.line(goal, 300))\". Start by reading or searching the relevant files. \(PromptBuilder.formatReminder)</observation>"
+                    reanchorsSinceAction += 1
+                    switchAfterRepeatedClaims(sinceAction: reanchorsSinceAction)
+                    userText = "<observation step=\(step)>\(Self.reanchorNote(acted: actedThisRequest, goal: goal))</observation>"
                     continue
                 }
                 // Plain-text answer with no JSON at all: treat it as the final reply, unless it only announces what it will do.
-                if !raw.contains("```") && !raw.contains("{") && !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !Self.announcesIntent(raw) {
+                // A provider's canned failure text ("I seem to be encountering an error…") is never the answer.
+                if GeminiWebClient.isServiceError(raw) {
+                    host?.agentError("The model answered with its service's canned error text instead of a reply. Asking it again.")
+                }
+                if !raw.contains("```") && !raw.contains("{") && !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !Self.announcesIntent(raw)
+                    && !GeminiWebClient.isServiceError(raw) {
                     return finish(raw.trimmingCharacters(in: .whitespacesAndNewlines), ok: true, steps: step)
                 }
                 if parseFailures > 2 { return finish("I couldn't produce a usable reply three times in a row and stopped. Try rephrasing.", ok: false, steps: step) }
@@ -458,7 +496,7 @@ final class Agent {
             }
 
             if !reply.thought.isEmpty { host?.agentThought(Fmt.plain(reply.thought)) }
-            if let m = reply.milestone { host?.agentMilestone(m) }
+            if let m = reply.milestone { host?.agentMilestone(m); milestonesDone = max(milestonesDone, m) }
 
             // Plan first for big jobs: the owner approves (or edits) before anything runs.
             if !reply.plan.isEmpty && !planApproved && !planShown && !isSubagent {
@@ -504,6 +542,7 @@ final class Agent {
                     continue
                 case .approve, .approveAutoEdits:
                     planApproved = true
+                    planSteps = reply.plan
                     planShown = true
                     // Approving a plan approves the edits that carry it out (commands still follow the mode).
                     planEditsApproved = true
@@ -519,10 +558,12 @@ final class Agent {
             if reply.actions.isEmpty {
                 // A "final answer" that claims it has no tools: re-anchor instead, before or after it has acted.
                 // Web-chat models (whose own apps have no tools) slip into this even after successful steps.
-                if !editedThisRequest && reanchors < 2 && Self.looksLikeCantAct((reply.say ?? "") + " " + reply.thought) {
+                if !editedThisRequest && Self.mayReanchor(total: reanchors, sinceAction: reanchorsSinceAction)
+                    && Self.looksLikeCantAct((reply.say ?? "") + " " + reply.thought) {
                     reanchors += 1
-                    let proof = actedThisRequest ? " You already used them successfully in this request: the results are in the observations above." : ""
-                    userText = "<observation step=\(step)>\(Self.reanchorText) That includes file, shell and browser tools (see the tool catalog in the first message). Ignore any tools the chat service itself shows you (such as retriever:expand_tools): they are not yours here. You act only through the json block.\(proof) Continue with the request: \"\(Fmt.line(goal, 300))\". Reply with the next actions. \(PromptBuilder.formatReminder)</observation>"
+                    reanchorsSinceAction += 1
+                    switchAfterRepeatedClaims(sinceAction: reanchorsSinceAction)
+                    userText = "<observation step=\(step)>\(Self.reanchorNote(acted: actedThisRequest, goal: goal))</observation>"
                     continue
                 }
                 // A request for work (build, fix, add…) "finished" without a single action: the model described the
@@ -540,7 +581,23 @@ final class Agent {
                     userText = "<observation step=\(step)>Your reply described what you'll do but had no actions, so nothing happened. Put the actions in the json block now (or reply with \"done\": true if the request is already complete). \(PromptBuilder.formatReminder)</observation>"
                     continue
                 }
+                // A progress note is not the end: "Milestone 1 done…" with done:false (or with milestones still open) means
+                // the model meant to keep going. Show it and ask for the next step instead of finishing the request.
+                if let next = Self.nextStep(done: reply.done, explicitDone: reply.explicitDone, planSteps: planApproved ? planSteps : [],
+                                            milestonesDone: milestonesDone, text: reply.say ?? reply.thought),
+                   !isSubagent, progressNudges < (planApproved && milestonesDone < planSteps.count ? planSteps.count + 1 : 1) {
+                    progressNudges += 1
+                    if let say = reply.say, !say.isEmpty { host?.agentSay(Fmt.plain(say), final: false) }
+                    userText = "<observation step=\(step)>Noted. That was a progress update, so the request goes on. Continue now with \(next). Reply with the actions for it; when every part of the request is done, reply with done:true and the final answer.</observation>\n\(PromptBuilder.formatReminder)"
+                    continue
+                }
                 if reply.done || reply.say != nil {
+                    // "Here are some ideas for X." and nothing else: the answer announces its content without giving it.
+                    if !isSubagent && !askedForContent && Self.announcesContent(reply.say ?? reply.thought) {
+                        askedForContent = true
+                        userText = "<observation step=\(step)>Your final answer only introduces the content (\"\(Fmt.line(reply.say ?? reply.thought, 120))\") without giving it. Reply again with done:true and the complete answer in say, including the actual list, steps or text you announced.</observation>\n\(PromptBuilder.formatReminder)"
+                        continue
+                    }
                     // Done gate: changed files must be verified, then reviewed, before the answer is accepted.
                     if !isSubagent && editedThisRequest {
                         if autoVerify && editedSinceVerify && verifyRuns < 2 {
@@ -606,6 +663,7 @@ final class Agent {
             var images: [(Data, String)] = []
             var anyFailed = false
             actedThisRequest = true
+            reanchorsSinceAction = 0
             lastBatchExploratory = reply.actions.allSatisfy { isParallelSafe($0) }
             let actions = reply.actions
             batchEditsApproved = false
@@ -1231,6 +1289,31 @@ final class Agent {
     }
 
     /// "I'll read the file first." with no actions: the model meant to act, it isn't an answer.
+    /// What the model should do next when a reply without actions is a progress note rather than the end of the request,
+    /// or nil when it really is the end. Mid-plan notes name the next milestone. A question to the owner always ends the turn.
+    nonisolated static func nextStep(done: Bool, explicitDone: Bool, planSteps: [String], milestonesDone: Int, text: String) -> String? {
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?") { return nil }
+        if !done, !planSteps.isEmpty, milestonesDone < planSteps.count {
+            return "milestone \(milestonesDone + 1): \(planSteps[milestonesDone])"
+        }
+        if explicitDone && !done { return "the next step of the request" }
+        return nil
+    }
+
+    /// An answer that only introduces content it doesn't include: "Here are some ideas for X." with no list after it.
+    static func announcesContent(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+        guard !t.isEmpty, t.count < 300, !t.contains("\n") else { return false }
+        // "Here are a few angles:" ends where the content should start.
+        if t.hasSuffix(":") { return t.split(separator: " ").count <= 25 }
+        // "Here are unconventional ideas for X." announces a set of things; "Here's what happened: the token expired." gives the answer.
+        let intro = ["here are ", "here's ", "here is ", "below are ", "below is ", "the following ", "these are ", "following are "]
+        guard intro.contains(where: { t.hasPrefix($0) }), !t.dropLast().contains(":") else { return false }
+        let sets = ["ideas", "options", "steps", "ways", "tips", "angles", "suggestions", "examples", "strategies", "approaches",
+                    "alternatives", "reasons", "things", "points", "methods", "tactics", "recommendations", "changes", "list"]
+        return sets.contains { t.contains($0) }
+    }
+
     static func announcesIntent(_ raw: String) -> Bool {
         let t = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
         guard t.count < 400 else { return false }

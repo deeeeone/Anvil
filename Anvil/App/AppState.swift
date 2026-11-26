@@ -18,7 +18,20 @@ enum InspectorTab: String, CaseIterable, Identifiable {
 final class AppState {
     private(set) var project: URL?
     private(set) var sessions: [SessionSummary] = []
-    private(set) var current: SessionController?
+    /// Pins, sections, archive and nesting for this project's sessions (see SessionMeta.swift).
+    private(set) var meta = SessionMeta()
+    /// What each loaded session is doing, for the sidebar's indicators (see workingChanged).
+    private(set) var activity: [UUID: SessionActivity] = [:]
+    /// One session, or two side by side (see PaneLayout).
+    private(set) var panes = PaneLayout()
+    /// The focused pane's session. The inspector, ⌘., undo and the model pill follow it.
+    var current: SessionController? { panes.focused.flatMap { controllers[$0] } }
+    /// The other pane's session, while split.
+    var secondary: SessionController? { panes.other.flatMap { controllers[$0] } }
+    /// The left pane's share of the split (the divider's position).
+    var paneRatio: CGFloat = 0.5
+    /// The main area is wide enough for two panes side by side (the layout keeps this current).
+    var splitFits = true
     let processes = ProcessManager()
     var inspectorTab: InspectorTab? = .changes
     var showInspector = false
@@ -64,6 +77,12 @@ final class AppState {
     /// A session started or stopped working: hold the Mac awake while anything runs.
     func workingChanged() {
         let busy = controllers.values.contains { $0.running }
+        var states: [UUID: SessionActivity] = [:]
+        for c in controllers.values {
+            if c.pendingPermission != nil || c.pendingQuestion != nil || c.pendingPlan != nil { states[c.session.id] = .needsYou }
+            else if c.running { states[c.session.id] = .running }
+        }
+        if states != activity { activity = states }
         KeepAwake.shared.update(working: busy)
         keepingAwake = KeepAwake.shared.held
         if busy != presenceBusy { presenceBusy = busy; presenceTaskStart = busy ? Date() : nil }
@@ -127,6 +146,7 @@ final class AppState {
         current?.saveNow()
         processes.stopAll()
         controllers = [:]
+        panes = PaneLayout()
         restoringSubSessions = true
         subSessions = []
         project = root
@@ -134,8 +154,10 @@ final class AppState {
         restoringSubSessions = false
         RecentProjects.add(root)
         queue = QueuedTask.load(root)
+        meta = SessionMeta.load(root: root)
         MCPManager.shared.start(project: root)
         refreshSessions()
+        meta.prune(keeping: Set(sessions.map(\.id)))
         if let first = sessions.first { select(first.id) } else { newSession() }
         refreshGit()
         refreshBrief(root)
@@ -165,7 +187,23 @@ final class AppState {
         }
         if let c = current, !list.contains(where: { $0.id == c.session.id }) {}
         if let c = current, let i = list.firstIndex(where: { $0.id == c.session.id }) { list[i].title = c.session.title; list[i].branch = c.session.branch }
+        // A session in a pane that's gone from the list closes its pane (an unsaved one is still listed, as the current one is).
+        let focusedBefore = panes.focused
+        for id in panes.ids where !list.contains(where: { $0.id == id }) {
+            if let c = controllers[id] {
+                list.insert(SessionSummary(id: id, title: c.session.title, updated: c.session.updated, cost: c.session.usage.cost, branch: c.session.branch), at: 0)
+            } else {
+                panes.remove(id)
+            }
+        }
+        if panes.focused != focusedBefore { focusChanged() }
         sessions = list
+    }
+
+    /// The focused pane changed: the diff and git views follow it.
+    private func focusChanged() {
+        selectedDiff = current?.changedDiffs.last
+        refreshGit()
     }
 
     func newSession() {
@@ -175,9 +213,69 @@ final class AppState {
         let c = SessionController(session: s, root: project, processes: processes)
         c.app = self
         controllers[s.id] = c
-        current = c
+        panes.replaceFocused(s.id)
         selectedDiff = nil
         refreshSessions()
+    }
+
+    /// Shows `id` in a second pane next to the focused session (or focuses it if it's already shown).
+    func openInSplit(_ id: UUID) {
+        guard let project else { return }
+        if panes.contains(id) { focus(id); return }
+        guard loadController(id, root: project) != nil else { return }
+        panes.open(id)
+        focusChanged()
+    }
+
+    /// Focuses the pane showing `id`. The inspector and shortcuts follow the focused pane.
+    func focus(_ id: UUID) {
+        guard panes.contains(id), panes.focused != id else { return }
+        markSeen(id)
+        panes.focus(id)
+        focusChanged()
+    }
+
+    /// Focuses the left or right pane, while split.
+    func focusPane(_ side: PaneSide) {
+        guard panes.isSplit else { return }
+        let before = panes.focused
+        panes.focus(side)
+        if panes.focused != before { focusChanged() }
+    }
+
+    /// Focuses the other pane (the one not focused), while split.
+    func focusOtherPane() {
+        if let o = panes.other { focus(o) }
+    }
+
+    /// Closes the split. The focused session stays.
+    func closeSplit() {
+        panes.closeSplit()
+    }
+
+    /// Closes one pane of the split; the other session stays.
+    func closePane(_ id: UUID) {
+        let before = panes.focused
+        panes.close(id)
+        if panes.focused != before { focusChanged() }
+    }
+
+    /// ⌘\: closes the split, or opens the most recent other session beside the focused one.
+    func toggleSplit() {
+        if panes.isSplit { closeSplit(); return }
+        guard let other = sessions.first(where: { $0.id != current?.session.id }) else { return }
+        openInSplit(other.id)
+    }
+
+    /// The controller for `id`, loaded from disk if it isn't open yet.
+    private func loadController(_ id: UUID, root project: URL) -> SessionController? {
+        if let c = controllers[id] { return c }
+        guard let s = SessionStore.load(id, root: project) else { return nil }
+        let c = SessionController(session: s, root: s.root, processes: processes)
+        c.app = self
+        controllers[id] = c
+        if subSessions.contains(where: { $0.id == id }) { wireSubSession(c) }
+        return c
     }
 
     /// A session on its own branch in its own git worktree (folder next to the project), merged back when done.
@@ -198,7 +296,7 @@ final class AppState {
                 let c = SessionController(session: s, root: dir, processes: processes)
                 c.app = self
                 controllers[s.id] = c
-                current = c
+                panes.replaceFocused(s.id)
                 c.append(ChatItem(kind: .system, text: "Working in a git worktree on branch \(branch) (from \(base)), folder \(Paths.display(dir, root: nil)). Your checkout of \(project.lastPathComponent) stays untouched. Merge it from the Git tab when you're happy."))
                 selectedDiff = nil
                 refreshSessions()
@@ -207,19 +305,15 @@ final class AppState {
         }
     }
 
+    /// Shows `id` in the focused pane (replacing its session). A session already in the other pane is focused instead.
     func select(_ id: UUID) {
         guard let project, current?.session.id != id else { return }
+        markSeen(id)
+        if panes.contains(id) { focus(id); return }
         current?.saveNow()
-        if let c = controllers[id] { current = c }
-        else if let s = SessionStore.load(id, root: project) {
-            let c = SessionController(session: s, root: s.root, processes: processes)
-            c.app = self
-            controllers[id] = c
-            if subSessions.contains(where: { $0.id == id }) { wireSubSession(c) }
-            current = c
-        }
-        selectedDiff = current?.changedDiffs.last
-        refreshGit()
+        guard loadController(id, root: project) != nil else { return }
+        panes.replaceFocused(id)
+        focusChanged()
     }
 
     /// A new session that continues `id`'s conversation: all of it, or (with `itemID`, one of your messages) up to just
@@ -269,7 +363,7 @@ final class AppState {
         c.app = self
         c.draft = draft
         controllers[s.id] = c
-        current = c
+        panes.replaceFocused(s.id)
         c.saveNow()
         selectedDiff = nil
         refreshSessions()
@@ -281,7 +375,9 @@ final class AppState {
         controllers[id] = nil
         subSessions.removeAll { $0.id == id }
         SessionStore.delete(id, root: project)
-        if current?.session.id == id { current = nil }
+        let focusedBefore = panes.focused
+        panes.remove(id)
+        if panes.focused != focusedBefore { focusChanged() }
         refreshSessions()
         if current == nil { if let f = sessions.first { select(f.id) } else { newSession() } }
     }
@@ -314,9 +410,10 @@ final class AppState {
     }
 
     /// The agent changed files: show the diff beside the chat when there's room for it.
+    /// Not while split: the inspector is an overlay there, and it shouldn't pop over the panes on every edit.
     func revealChanges() {
         inspectorTab = .changes
-        if isWide && !inspectorDismissed { showInspector = true }
+        if isWide && !inspectorDismissed && !panes.isSplit { showInspector = true }
     }
 
     func resetAgents() { controllers.values.forEach { $0.resetAgent() } }

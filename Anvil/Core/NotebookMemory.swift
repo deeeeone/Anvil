@@ -120,20 +120,42 @@ final class NotebookMemory {
 
     // MARK: Accounts and scopes
 
-    /// The Google account memory uses: the active one first, then the others.
-    private var account: WebAccount? { WebAccounts.shared.candidates(for: .gemini).first }
+    /// Accounts NotebookLM turned away, with the cookies it saw (signing in again changes them and earns a retry).
+    /// Gemini works on its session cookie alone, but NotebookLM's sign-in hand-off also needs Google's own
+    /// accounts.google.com cookies, which some saved sign-ins don't have.
+    @ObservationIgnored private var refused: [UUID: [String: String]] = [:]
+
+    /// The account memory will most likely use, without asking Google: the first one not turned away.
+    private var account: WebAccount? {
+        WebAccounts.shared.candidates(for: .gemini).first { refused[$0.id] == nil || refused[$0.id] != WebAccounts.shared.cookies($0.id) }
+    }
 
     var plan: NotebookPlan { NotebookPlan.named(AppSettings.shared.notebookPlan) }
 
-    private func makeClient() throws -> (NotebookLMClient, UUID) {
-        guard let account else {
+    /// A client for the first Google account NotebookLM accepts: the active Gemini account first, then the others.
+    private func makeClient() async throws -> (NotebookLMClient, UUID) {
+        let accounts = WebAccounts.shared.candidates(for: .gemini)
+        guard !accounts.isEmpty else {
             throw BrainError(status: 401, code: "unauthorized", message: "Sign in to Gemini with a Google account first. NotebookLM uses that account.")
         }
-        let cookies = WebAccounts.shared.cookies(account.id)
-        if let cached = clients[account.id], cached.cookies == cookies { return (cached.client, account.id) }
-        let client = NotebookLMClient(cookies: cookies)
-        clients[account.id] = (cookies, client)
-        return (client, account.id)
+        var lastRefusal: Error?
+        for account in accounts {
+            let cookies = WebAccounts.shared.cookies(account.id)
+            guard !cookies.isEmpty, refused[account.id] != cookies else { continue }
+            if let cached = clients[account.id], cached.cookies == cookies { return (cached.client, account.id) }
+            let client = NotebookLMClient(cookies: cookies)
+            do {
+                try await client.establishSession()
+            } catch let e as BrainError where e.code == "unauthorized" {
+                refused[account.id] = cookies
+                lastRefusal = e
+                continue
+            }
+            clients[account.id] = (cookies, client)
+            return (client, account.id)
+        }
+        throw lastRefusal ?? BrainError(status: 401, code: "unauthorized",
+            message: "None of your Google accounts could open NotebookLM. In Settings → Provider, add a Gemini account with \"Use Safari\" (that sign-in carries the cookies NotebookLM needs).")
     }
 
     /// The scope key: "account" for one notebook for everything, else the project's path.
@@ -160,14 +182,14 @@ final class NotebookMemory {
 
     /// Every notebook in the account (for `/notebook` and the connection test).
     func notebooks() async throws -> [NotebookLMClient.Notebook] {
-        let (client, _) = try makeClient()
+        let (client, _) = try await makeClient()
         return try await client.listNotebooks()
     }
 
     /// The notebook for this project (or the account). Found by its saved id, else by its title, else created.
     /// Concurrent callers for the same scope share one lookup.
     func notebook(for root: URL) async throws -> String {
-        let (client, accountID) = try makeClient()
+        let (client, accountID) = try await makeClient()
         let scope = scopeKey(for: root)
         if let id = store.notebooks[accountID.uuidString]?[scope] { return id }
         let key = accountID.uuidString + "|" + scope
@@ -206,7 +228,7 @@ final class NotebookMemory {
     func uploadNow(title: String, text: String, root: URL) async throws {
         let clean = String(Redactor.redact(text).suffix(NotebookLMClient.maxSourceChars))
         let nb = try await notebook(for: root)
-        let (client, _) = try makeClient()
+        let (client, _) = try await makeClient()
         let current = try await client.sources(notebook: nb).count
         for id in NotebookLMClient.sourcesToEvict(count: current, recorded: store.uploads[nb] ?? [], keep: plan.evictAt) {
             try? await client.deleteSource(id)
@@ -228,7 +250,7 @@ final class NotebookMemory {
     /// Asks the attached notebook when `override` is set, else this project's memory (which must already exist).
     /// Every question counts against the account's daily budget.
     func ask(_ question: String, root: URL, notebook override: String? = nil) async throws -> String {
-        let (client, accountID) = try makeClient()
+        let (client, accountID) = try await makeClient()
         let nb: String
         if let override {
             nb = override

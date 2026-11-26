@@ -2,7 +2,12 @@ import SwiftUI
 
 struct SidebarView: View {
     @Environment(AppState.self) private var app
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var collapsed = Set<UUID>()
+    @State private var query = ""
+    @State private var archivedOpen = false
+    /// The section whose name is being edited in place (a new section starts this way).
+    @State private var renamingSection: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -61,19 +66,12 @@ struct SidebarView: View {
 
             if !app.queue.isEmpty { QueueSection() }
 
-            Text("Recents")
-                .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.text3)
-                .padding(.horizontal, 18).padding(.top, 18).padding(.bottom, 6)
+            SidebarSearch(text: $query)
+                .padding(.horizontal, 10).padding(.top, 14)
 
             ScrollView {
                 LazyVStack(spacing: 1) {
-                    ForEach(SessionTree.rows(app.sessions, collapsed: collapsed)) { row in
-                        SessionRow(summary: row.summary, selected: app.current?.session.id == row.id,
-                                   running: app.current?.session.id == row.id && (app.current?.running ?? false),
-                                   depth: row.depth, childCount: row.childCount, collapsed: collapsed.contains(row.id)) {
-                            if collapsed.contains(row.id) { collapsed.remove(row.id) } else { collapsed.insert(row.id) }
-                        }
-                    }
+                    organized
                 }
                 .padding(.horizontal, 8)
             }
@@ -95,6 +93,121 @@ struct SidebarView: View {
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Theme.sidebar)
+    }
+
+    /// Pinned, then your sections, then Recents, then Archived.
+    @ViewBuilder private var organized: some View {
+        let layout = app.organizedRows(query: query, collapsed: collapsed)
+        if !layout.pinned.isEmpty {
+            GroupTitle(text: "Pinned")
+            rows(layout.pinned)
+        }
+        ForEach(layout.sections) { group in
+            SectionHeader(section: group.section, count: group.rows.count, renaming: $renamingSection)
+            if !group.section.collapsed { rows(group.rows) }
+        }
+        GroupTitle(text: "Recents")
+        rows(layout.recents)
+        if !layout.archived.isEmpty {
+            Button { organise(reduceMotion) { archivedOpen.toggle() } } label: {
+                HoverRow {
+                    HStack(spacing: 6) {
+                        Image(systemName: archivedOpen ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.text3).frame(width: 12)
+                        Text("Archived").font(.system(size: 12.5)).foregroundStyle(Theme.text2)
+                        Spacer(minLength: 4)
+                        Text("\(layout.archived.count)").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Theme.text3)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 10)
+            if archivedOpen { rows(layout.archived) }
+        }
+    }
+
+    private func rows(_ rows: [SessionTree.Row]) -> some View {
+        ForEach(rows) { row in
+            SessionRow(summary: row.summary, depth: row.depth, childCount: row.childCount,
+                       collapsed: collapsed.contains(row.id), reduceMotion: reduceMotion,
+                       toggle: {
+                           organise(reduceMotion) {
+                               if collapsed.contains(row.id) { collapsed.remove(row.id) } else { collapsed.insert(row.id) }
+                           }
+                       },
+                       beginSectionRename: { renamingSection = $0 })
+        }
+    }
+}
+
+/// Runs an organise change, sliding rows between groups unless Reduce Motion is on.
+func organise(_ reduceMotion: Bool, _ change: () -> Void) {
+    if reduceMotion { change() } else { withAnimation(.snappy(duration: 0.22)) { change() } }
+}
+
+/// The search field above the session list.
+struct SidebarSearch: View {
+    @Binding var text: String
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.text3)
+            TextField("Search sessions", text: $text)
+                .textFieldStyle(.plain).font(.system(size: 12.5)).foregroundStyle(Theme.text)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .card(9, fill: Theme.surface)
+    }
+}
+
+/// The plain heading over a group that isn't a user section.
+struct GroupTitle: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.text3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10).padding(.top, 14).padding(.bottom, 6)
+    }
+}
+
+/// A user section's heading: click to fold it, right-click to rename or delete it.
+struct SectionHeader: View {
+    @Environment(AppState.self) private var app
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let section: MetaSection
+    let count: Int
+    @Binding var renaming: UUID?
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+
+    private var isRenaming: Bool { renaming == section.id }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: section.collapsed ? "chevron.right" : "chevron.down")
+                .font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.text3).frame(width: 12)
+            if isRenaming {
+                TextField("Section name", text: $draft)
+                    .textFieldStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.text)
+                    .focused($focused)
+                    .onSubmit { app.renameSection(section.id, to: draft); renaming = nil }
+                    .onExitCommand { renaming = nil }
+                    .onAppear { focused = true }
+            } else {
+                Text(section.name)
+                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.text3).lineLimit(1)
+                Spacer(minLength: 4)
+                Text("\(count)").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Theme.text3)
+            }
+        }
+        .padding(.horizontal, 10).padding(.top, 14).padding(.bottom, 6)
+        .contentShape(Rectangle())
+        .onTapGesture { if !isRenaming { organise(reduceMotion) { app.toggleSection(section.id) } } }
+        .contextMenu {
+            Button("Rename") { draft = section.name; renaming = section.id }
+            Button("Delete", role: .destructive) { organise(reduceMotion) { app.deleteSection(section.id) } }
+        }
+        .onChange(of: renaming) { _, now in if now == section.id { draft = section.name } }
     }
 }
 
@@ -130,13 +243,25 @@ struct ProjectSwitcher: View {
 struct SessionRow: View {
     @Environment(AppState.self) private var app
     let summary: SessionSummary
-    let selected: Bool
-    let running: Bool
     var depth = 0
     var childCount = 0
     var collapsed = false
+    var reduceMotion = false
     var toggle: () -> Void = {}
+    /// Starts the inline name editor of a section this row just created.
+    var beginSectionRename: (UUID) -> Void = { _ in }
     @State private var confirmDelete = false
+    @State private var hovering = false
+    @State private var renaming = false
+    @State private var draft = ""
+    @State private var nesting = false
+    @FocusState private var nameFocused: Bool
+
+    private var selected: Bool { app.current?.session.id == summary.id }
+    private var activity: SessionActivity? { app.activity[summary.id] }
+    private var isPinned: Bool { app.meta.pinned.contains(summary.id) }
+    private var isUnread: Bool { app.meta.unread.contains(summary.id) }
+    private var isArchived: Bool { app.meta.archived.contains(summary.id) }
 
     /// How a sub-session is doing (nil for an ordinary session).
     private var subState: SubSession.State? { app.subSessions.first { $0.id == summary.id }?.state }
@@ -154,9 +279,10 @@ struct SessionRow: View {
             } else if depth > 0 {
                 Color.clear.frame(width: 16, height: 24)
             }
-            rowButton
+            if renaming { nameField } else { rowButton }
         }
         .padding(.leading, CGFloat(depth) * 14)
+        .transition(reduceMotion ? .identity : .opacity.combined(with: .move(edge: .top)))
     }
 
     private var rowButton: some View {
@@ -170,27 +296,74 @@ struct SessionRow: View {
                     else if summary.branch != nil { Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .semibold)).foregroundStyle(summary.worktreeRemoved ? Theme.text3 : Theme.accent).help(summary.branch ?? "") }
                     Text(summary.title).font(.system(size: 13)).foregroundStyle(selected ? Theme.text : Theme.text2).lineLimit(1)
                         .strikethrough(summary.worktreeRemoved, color: Theme.text3)
+                    if isUnread { Circle().fill(Theme.accent).frame(width: 6, height: 6).help("Unread") }
                     Spacer(minLength: 4)
-                    if running { Spinner().scaleEffect(0.8) }
-                    else if childCount > 0 && collapsed { Text("\(childCount)").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Theme.text3) }
-                    else { Text(Self.age(summary.updated)).font(.system(size: 10.5)).foregroundStyle(Theme.text3).lineLimit(1) }
+                    if isPinned && hovering { Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(Theme.text3) }
+                    indicator
                 }
             }
         }
         .buttonStyle(.plain)
-        .contextMenu {
-            Button("Fork Session") { app.fork(summary.id, at: nil) }
-            if summary.workdir != nil && !summary.worktreeRemoved {
-                Button("Clean Up Worktrees…") { app.showWorktreeCleanup = true }
-            }
-            Divider()
-            Button("Delete Session…", role: .destructive) { confirmDelete = true }
-        }
+        .onHover { hovering = $0 }
+        .contextMenu { menu }
+        .popover(isPresented: $nesting, arrowEdge: .trailing) { NestPicker(id: summary.id, dismiss: { nesting = false }) }
         .confirmationDialog("Delete \u{201C}\(summary.title)\u{201D}?", isPresented: $confirmDelete) {
             Button("Move to Trash", role: .destructive) { app.delete(summary.id) }
         } message: {
             Text("The conversation goes to the Trash, so you can still get it back from there. Files the agent changed are not touched.")
         }
+    }
+
+    /// Running, waiting on the owner, or the child count or age.
+    @ViewBuilder private var indicator: some View {
+        if activity == .running { Spinner().scaleEffect(0.8) }
+        else if activity == .needsYou { Circle().fill(Theme.amber).frame(width: 7, height: 7).help("Needs you") }
+        else if childCount > 0 && collapsed { Text("\(childCount)").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Theme.text3) }
+        else { Text(Self.age(summary.updated)).font(.system(size: 10.5)).foregroundStyle(Theme.text3).lineLimit(1) }
+    }
+
+    private var nameField: some View {
+        HoverRow(selected: true) {
+            TextField("Name", text: $draft)
+                .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(Theme.text)
+                .focused($nameFocused)
+                .onSubmit { app.rename(summary.id, to: draft); renaming = false }
+                .onExitCommand { renaming = false }
+        }
+        .onAppear { nameFocused = true }
+    }
+
+    /// The row's menu, in Claude's order.
+    @ViewBuilder private var menu: some View {
+        Button("Open in Split View") { app.openInSplit(summary.id) }
+            .disabled(app.current?.session.id == summary.id && !app.panes.isSplit)
+        Divider()
+        Button(isPinned ? "Unpin" : "Pin") { organise(reduceMotion) { app.togglePin(summary.id) } }
+        Button(isUnread ? "Mark as Read" : "Mark as Unread") { app.setUnread(summary.id, !isUnread) }
+        Button("Rename") { draft = summary.title; renaming = true }
+        Button("Fork Session") { app.fork(summary.id, at: nil) }
+        Menu("Move to Section") {
+            ForEach(app.meta.sections) { sec in Button(sec.name) { move(to: sec.id) } }
+            Button("New Section…") {
+                let sid = app.createSection(name: "New Section")
+                organise(reduceMotion) { app.move(summary.id, toSection: sid) }
+                beginSectionRename(sid)
+            }
+            Button("Recents") { move(to: nil) }
+        }
+        Button("Nest Under…") { nesting = true }
+        Divider()
+        if isArchived { Button("Unarchive") { organise(reduceMotion) { app.unarchive(summary.id) } } }
+        else { Button("Archive") { organise(reduceMotion) { app.archive(summary.id) } } }
+        if summary.workdir != nil && !summary.worktreeRemoved {
+            Button("Clean Up Worktrees…") { app.showWorktreeCleanup = true }
+        }
+        Divider()
+        Button("Delete Session…", role: .destructive) { confirmDelete = true }
+    }
+
+    private func move(to section: UUID?) {
+        organise(reduceMotion) { app.move(summary.id, toSection: section) }
     }
 
     @ViewBuilder private func subIcon(_ st: SubSession.State) -> some View {
@@ -218,6 +391,44 @@ struct SessionRow: View {
     }
 }
 
+
+/// Pick the session this one is shown under in the sidebar (a quick search, like a menu).
+struct NestPicker: View {
+    @Environment(AppState.self) private var app
+    let id: UUID
+    let dismiss: () -> Void
+    @State private var query = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Search sessions", text: $query).textFieldStyle(.roundedBorder)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 1) {
+                    pick(nil, "Don't Nest")
+                    ForEach(candidates) { s in pick(s.id, s.title) }
+                }
+            }
+            .frame(height: 240)
+        }
+        .padding(10).frame(width: 260)
+    }
+
+    private func pick(_ parent: UUID?, _ label: String) -> some View {
+        Button { app.nest(id, under: parent); dismiss() } label: {
+            HoverRow { Text(label).font(.system(size: 12.5)).foregroundStyle(Theme.text2).lineLimit(1) }
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Other sessions, minus any that would put this one in a loop.
+    private var candidates: [SessionSummary] {
+        let parents = app.nestingParents
+        return app.sessions.filter { s in
+            s.id != id && (query.isEmpty || s.title.localizedCaseInsensitiveContains(query))
+                && !SessionMeta.wouldCycle(child: id, parent: s.id, parents: parents)
+        }
+    }
+}
 
 struct QueueSection: View {
     @Environment(AppState.self) private var app

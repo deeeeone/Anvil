@@ -191,7 +191,7 @@ nonisolated final class NotebookLMClient: @unchecked Sendable {
         throw BrainError(status: 0, code: "upstream_error", message: "NotebookLM's sign-in took too many steps.")
     }
 
-    private static let signInMessage = "Google needs you to sign in again for NotebookLM."
+    private static let signInMessage = "Google wouldn't open NotebookLM with this account's saved sign-in."
 
     /// Runs one request on an established session. An "unauthorized" answer re-establishes the session once.
     private func authorized<T>(_ op: () async throws -> T) async throws -> T {

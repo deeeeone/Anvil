@@ -204,7 +204,8 @@ nonisolated final class GeminiWebClient: @unchecked Sendable {
         let t = reply.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
         guard t.count < 300, !t.contains("```") else { return false }
         let canned = ["sorry, something went wrong", "something went wrong. please try", "i'm having a hard time fulfilling your request",
-                      "i'm unable to process this request right now", "an error occurred. please try again"]
+                      "i'm unable to process this request right now", "an error occurred. please try again",
+                      "i seem to be encountering an error", "i'm encountering an error", "can i try something else for you"]
         return canned.contains { t.hasPrefix($0) || t.contains($0) }
     }
 

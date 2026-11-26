@@ -21,12 +21,13 @@ struct ContentView: View {
                     }
                     MainColumn(leadingInset: app.showSidebar && sidebarInline ? 0 : 76)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if app.showInspector && wide {
+                    // While split the inspector is an overlay, so the two panes keep the room.
+                    if app.showInspector && wide && !app.panes.isSplit {
                         Hairline(vertical: true)
                         InspectorView().frame(width: min(max(w * 0.36, 360), 620))
                     }
                 }
-                if app.showInspector && !wide {
+                if app.showInspector && (!wide || app.panes.isSplit) {
                     overlayScrim { app.showInspector = false }
                     HStack {
                         Spacer(minLength: 0)
@@ -70,6 +71,7 @@ struct ContentView: View {
             if let c = app.current { ModelPickerSheet(controller: c) }
         }
         .sheet(isPresented: $app.showWorktreeCleanup) { WorktreeCleanupView() }
+        .overlay { CommandPaletteOverlay() }
     }
 
     func overlayScrim(_ close: @escaping () -> Void) -> some View {
@@ -85,12 +87,9 @@ struct MainColumn: View {
     var body: some View {
         VStack(spacing: 0) {
             TopBar(leadingInset: leadingInset)
-            if let c = app.current {
-                ConversationView(controller: c).id(c.session.id)
-            } else {
-                WelcomeView()
-            }
+            PanesArea()
         }
+        .onGeometryChange(for: Bool.self) { $0.size.width >= PaneSizing.minSplitWidth } action: { app.splitFits = $0 }
     }
 }
 
@@ -126,6 +125,17 @@ struct TopBar: View {
                         .foregroundStyle(Theme.text3).help(c.session.usage.line)
                 }
                 ChangesPill(controller: c)
+            }
+            // Split, but too narrow for two panes: this switches which one is shown.
+            if app.panes.isSplit && !app.splitFits {
+                Button { app.focusOtherPane() } label: {
+                    Label("2 panes", systemImage: "rectangle.split.2x1")
+                        .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.text2)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Theme.surface2, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Too narrow to show both sessions. Click to switch the pane shown. Widen the window to see both.")
             }
             IconButton(symbol: "sidebar.right", help: "Inspector (⌥⌘I)") {
                 app.showInspector.toggle()

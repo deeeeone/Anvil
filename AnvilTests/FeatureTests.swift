@@ -260,6 +260,13 @@ final class BrowserTests: XCTestCase {
 }
 
 final class ForkAndTitleTests: XCTestCase {
+    func testCleanTitleReadsReplyFormatAndSkipsFences() {
+        XCTAssertEqual(Session.cleanTitle("```json\n{\"say\": \"Analyse the Anvil codebase\", \"actions\": [], \"done\": true}\n```"), "Analyse the Anvil codebase")
+        XCTAssertEqual(Session.cleanTitle("```\nFix the login bug\n```"), "Fix the login bug")
+        XCTAssertNil(Session.cleanTitle("json"))
+        XCTAssertNil(Session.cleanTitle("```json"))
+    }
+
     func testCleanTitleStripsWrappersAndLabels() {
         XCTAssertEqual(Session.cleanTitle("\"Fix the login bug\""), "Fix the login bug")
         XCTAssertEqual(Session.cleanTitle("`Add dark mode`"), "Add dark mode")

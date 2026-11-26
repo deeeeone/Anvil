@@ -356,6 +356,7 @@ struct PlanCardView: View {
     let itemID: UUID
     let controller: SessionController
     @State private var revision = ""
+    @Environment(\.anvilPaneFocused) private var paneFocused
 
     var pending: Bool { controller.pendingPlan?.itemID == itemID }
 
@@ -406,9 +407,9 @@ struct PlanCardView: View {
 
     @ViewBuilder func planButtons(_ p: PendingPlan) -> some View {
         if !revision.trimmingCharacters(in: .whitespaces).isEmpty {
-            Button("Revise plan") { p.resume(.revise(revision)) }.buttonStyle(Pill(kind: .primary)).keyboardShortcut(.return)
+            Button("Revise plan") { p.resume(.revise(revision)) }.buttonStyle(Pill(kind: .primary)).paneShortcut(.return, when: paneFocused)
         } else {
-            Button("Approve") { p.resume(.approve) }.buttonStyle(Pill(kind: .primary)).keyboardShortcut(.return)
+            Button("Approve") { p.resume(.approve) }.buttonStyle(Pill(kind: .primary)).paneShortcut(.return, when: paneFocused)
             Button("Approve, auto-accept edits") { p.resume(.approveAutoEdits) }.buttonStyle(Pill(kind: .secondary))
         }
     }
@@ -421,6 +422,7 @@ struct PlanCardView: View {
 struct PermissionCard: View {
     let pending: PendingPermission
     @State private var note = ""
+    @Environment(\.anvilPaneFocused) private var paneFocused
 
     var body: some View {
         let r = pending.request
@@ -465,7 +467,7 @@ struct PermissionCard: View {
 
     @ViewBuilder func allow(_ r: PermissionRequest) -> some View {
         Button { pending.resume(.allow) } label: { Text("Allow") + Text("  ⏎").foregroundColor(.white.opacity(0.6)) }
-            .buttonStyle(Pill(kind: .primary)).keyboardShortcut(.return, modifiers: [])
+            .buttonStyle(Pill(kind: .primary)).paneShortcut(.return, modifiers: [], when: paneFocused)
         if r.command != nil {
             if let key = r.commandKey, Permissions.dangerReason(r.command ?? "") == nil {
                 Button("Always allow \u{201C}\(Fmt.line(key, 28))\u{201D}") { pending.resume(.allowSession) }
@@ -483,7 +485,7 @@ struct PermissionCard: View {
 
     var decline: some View {
         Button { pending.resume(.deny(note.isEmpty ? nil : note)) } label: { Text("Decline") + Text("  esc").foregroundColor(Theme.text3) }
-            .buttonStyle(Pill(kind: .ghost)).keyboardShortcut(.escape, modifiers: [])
+            .buttonStyle(Pill(kind: .ghost)).paneShortcut(.escape, modifiers: [], when: paneFocused)
     }
 
     func title(_ r: PermissionRequest) -> String {

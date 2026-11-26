@@ -11,12 +11,13 @@ nonisolated enum SessionTree {
     }
 
     /// `list` keeps its order (newest first); a child whose parent isn't in the list is shown at the top level.
-    static func rows(_ list: [SessionSummary], collapsed: Set<UUID> = []) -> [Row] {
+    /// `nestedUnder` (the owner's own nesting) counts as the parent when a session has no real parent.
+    static func rows(_ list: [SessionSummary], collapsed: Set<UUID> = [], nestedUnder: [UUID: UUID] = [:]) -> [Row] {
         let ids = Set(list.map(\.id))
         var children: [UUID: [SessionSummary]] = [:]
         var top: [SessionSummary] = []
         for s in list {
-            if let p = s.parentID, p != s.id, ids.contains(p) { children[p, default: []].append(s) } else { top.append(s) }
+            if let p = s.parentID ?? nestedUnder[s.id], p != s.id, ids.contains(p) { children[p, default: []].append(s) } else { top.append(s) }
         }
         var out: [Row] = []
         var seen = Set<UUID>()

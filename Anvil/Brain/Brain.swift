@@ -229,7 +229,7 @@ final class Brain {
                         do {
                             text = try await webGemini(message.text, images: Self.images(message), model: m, stream: stream)
                         } catch let again as BrainError where again.code == "gemini_error" {
-                            throw BrainError(status: 413, code: "too_long", message: "Gemini's web app keeps failing on this conversation; it's too long for it. Run /compact, or switch to another model for this session.")
+                            throw BrainError(status: 413, code: "too_long", message: "Gemini's web app answered with its canned error twice (\"I seem to be encountering an error\" or similar). It does that when a conversation is too long for it, and sometimes for a request it won't handle. Run /compact, rephrase, or switch to another model.")
                         }
                     }
                     if agent { lastFinishReason = nil }

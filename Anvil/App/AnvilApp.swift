@@ -59,6 +59,17 @@ struct AnvilApp: App {
                 Button("New Session") { app.newSession() }.keyboardShortcut("n")
                 Button("Open Folder…") { app.chooseProject() }.keyboardShortcut("o")
             }
+            CommandMenu("Go") {
+                Button("Command Palette") { PaletteState.shared.toggle(app) }.keyboardShortcut("k")
+                Divider()
+                ForEach(1...9, id: \.self) { n in
+                    Button("Session \(n)") { if app.sessions.indices.contains(n - 1) { app.select(app.sessions[n - 1].id) } }
+                        .keyboardShortcut(KeyEquivalent(Character(String(n))), modifiers: .command)
+                }
+                Divider()
+                Button("Next Recent Session") { PaletteState.shared.switchRecent(app, backward: false) }.keyboardShortcut(.tab, modifiers: .control)
+                Button("Previous Recent Session") { PaletteState.shared.switchRecent(app, backward: true) }.keyboardShortcut(.tab, modifiers: [.control, .shift])
+            }
             CommandMenu("Agent") {
                 Button("Stop") { app.current?.stop() }.keyboardShortcut(".", modifiers: .command)
                 Button("Cycle Permission Mode") { if let c = app.current { c.mode = c.mode.next } }.keyboardShortcut("m", modifiers: [.command, .shift])
@@ -66,6 +77,10 @@ struct AnvilApp: App {
                 Divider()
                 Button("Toggle Sidebar") { app.showSidebar.toggle() }.keyboardShortcut("s", modifiers: [.command, .option])
                 Button("Toggle Inspector") { app.showInspector.toggle() }.keyboardShortcut("i", modifiers: [.command, .option])
+                Divider()
+                Button("Toggle Split View") { app.toggleSplit() }.keyboardShortcut("\\", modifiers: .command)
+                Button("Focus Left Pane") { app.focusPane(.left) }.keyboardShortcut(.leftArrow, modifiers: [.command, .option]).disabled(!app.panes.isSplit)
+                Button("Focus Right Pane") { app.focusPane(.right) }.keyboardShortcut(.rightArrow, modifiers: [.command, .option]).disabled(!app.panes.isSplit)
             }
         }
         Settings {

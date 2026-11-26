@@ -42,9 +42,10 @@ final class SessionController: AgentHost {
     /// The placeholder title the first request set, with that request, until its request ends (then an AI title may replace it).
     @ObservationIgnored private var autoTitle: (placeholder: String, goal: String)?
     private(set) var startedAt: Date?
-    var pendingPermission: PendingPermission?
-    var pendingPlan: PendingPlan?
-    var pendingQuestion: PendingQuestion?
+    // Sidebar indicators follow these (AppState.workingChanged), so tell it when one is set or cleared.
+    var pendingPermission: PendingPermission? { didSet { if (pendingPermission == nil) != (oldValue == nil) { app?.workingChanged() } } }
+    var pendingPlan: PendingPlan? { didSet { if (pendingPlan == nil) != (oldValue == nil) { app?.workingChanged() } } }
+    var pendingQuestion: PendingQuestion? { didSet { if (pendingQuestion == nil) != (oldValue == nil) { app?.workingChanged() } } }
     /// Messages typed while the agent works; delivered with its next observation, or run next if it finishes first.
     private(set) var steering: [String] = []
     private(set) var terminal: [TerminalChunk] = []
@@ -241,6 +242,7 @@ final class SessionController: AgentHost {
             let outcome = await agent.run(goal: goal, images: images, attachmentsNote: note)
             guard let self else { return }
             self.running = false
+            self.app?.markFinished(self.session.id)
             self.status = ""
             self.liveText = ""
             self.startedAt = nil

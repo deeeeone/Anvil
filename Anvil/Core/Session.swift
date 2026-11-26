@@ -125,6 +125,17 @@ nonisolated struct Session: Codable, Identifiable, Equatable, Sendable {
 
     /// The title a model wrote: first line, wrapping quotes and a "Title:" label removed. Nil when empty or over 12 words.
     static func cleanTitle(_ raw: String) -> String? {
+        // Models that always answer in Anvil's reply format send {"say": "Title"} in a ```json fence: use the text inside.
+        if let open = raw.range(of: "{"), let close = raw.range(of: "}", options: .backwards), open.lowerBound < close.lowerBound,
+           let data = String(raw[open.lowerBound...close.lowerBound]).data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let inner = (obj["title"] ?? obj["say"] ?? obj["answer"]) as? String, inner != raw {
+            return cleanTitle(inner)
+        }
+        // A bare fence or its language tag ("```json", "json") is never a title.
+        let lines = raw.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.hasPrefix("```") && !["json", "text", "markdown", "plaintext"].contains($0.lowercased()) }
+        if lines.count != raw.split(whereSeparator: \.isNewline).count { return cleanTitle(lines.joined(separator: "\n")) }
         let wrap = CharacterSet(charactersIn: "\"'`*#\u{201C}\u{201D}\u{2018}\u{2019} ")
         var line = raw.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: wrap) }.first { !$0.isEmpty } ?? ""
         if line.lowercased().hasPrefix("title:") { line = String(line.dropFirst(6)).trimmingCharacters(in: wrap) }
