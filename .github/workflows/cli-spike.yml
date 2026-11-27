@@ -1,0 +1,122 @@
+name: CLI spike
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "spike/**"
+      - ".github/workflows/cli-spike.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-26
+    defaults:
+      run:
+        working-directory: spike
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Build (release)
+        run: swift build -c release
+      - name: Start SSE stub
+        run: |
+          python3 sse_stub.py 8765 > stub.log 2>&1 &
+          sleep 1
+      - name: Run checks
+        env:
+          ANVIL_SPIKE_SSE_URL: http://127.0.0.1:8765/v1/chat/completions
+        run: .build/release/anvil-spike all
+
+  linux:
+    runs-on: ubuntu-latest
+    container: swift:6.2
+    defaults:
+      run:
+        working-directory: spike
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install python3
+        run: |
+          apt-get update
+          apt-get install -y python3
+      - name: Swift version
+        run: swift --version
+      - name: Build (release)
+        run: swift build -c release
+      - name: Start SSE stub
+        run: |
+          python3 sse_stub.py 8765 > stub.log 2>&1 &
+          sleep 1
+      - name: Run checks
+        env:
+          ANVIL_SPIKE_SSE_URL: http://127.0.0.1:8765/v1/chat/completions
+        run: .build/release/anvil-spike all
+      - name: Static stdlib build
+        run: |
+          swift build -c release --static-swift-stdlib
+          ldd .build/release/anvil-spike || true
+          ls -lh .build/release/anvil-spike
+      - name: Upload static binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: anvil-spike-linux-static
+          path: spike/.build/release/anvil-spike
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: spike
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Swift
+        uses: compnerd/gha-setup-swift@main
+        with:
+          swift-version: swift-6.2-release
+          swift-build: 6.2-RELEASE
+      - name: Swift version
+        run: swift --version
+      - name: Build (release)
+        run: swift build -c release
+      - name: Start SSE stub
+        run: |
+          Start-Process python -ArgumentList 'sse_stub.py','8765'
+          Start-Sleep -Seconds 2
+      - name: Run checks
+        env:
+          ANVIL_SPIKE_SSE_URL: http://127.0.0.1:8765/v1/chat/completions
+        run: .build\release\anvil-spike.exe all
+      - name: Package exe and Swift runtime DLLs
+        continue-on-error: true
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item -Path .build\release\anvil-spike.exe -Destination dist\
+          $roots = @("$env:LOCALAPPDATA\Programs\Swift\Runtimes", "C:\Program Files\Swift\runtime-development\usr\bin")
+          $core = Get-ChildItem -Path $roots -Recurse -Filter swiftCore.dll -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $core) { throw "swiftCore.dll not found under the Swift runtime roots" }
+          Write-Output "Runtime DLLs from $($core.DirectoryName)"
+          Get-ChildItem -Path $core.DirectoryName -Filter *.dll | Copy-Item -Destination dist\
+      - name: Clean-PATH run of packaged exe
+        continue-on-error: true
+        run: |
+          $exe = Join-Path $PWD 'dist\anvil-spike.exe'
+          $psi = [System.Diagnostics.ProcessStartInfo]::new($exe, 'observe')
+          $psi.UseShellExecute = $false
+          $psi.EnvironmentVariables.Clear()
+          $psi.EnvironmentVariables['PATH'] = 'C:\Windows\System32;C:\Windows'
+          $psi.EnvironmentVariables['SystemRoot'] = 'C:\Windows'
+          $p = [System.Diagnostics.Process]::Start($psi)
+          $p.WaitForExit()
+          Write-Output "packaged observe exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { throw "packaged exe failed with PATH reset" }
+      - name: Upload dist
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: anvil-spike-windows-dist
+          path: spike/dist
