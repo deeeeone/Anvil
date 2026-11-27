@@ -71,9 +71,18 @@ nonisolated enum ProcessRunner {
         await stream(executable, args, stdin: stdin, cwd: cwd, timeout: timeout, onOutput: nil)
     }
 
+    /// The shell that runs shell-tool commands: zsh on the Mac, /bin/sh where zsh is not installed.
+    static var shellPath: String {
+#if canImport(Darwin)
+        "/bin/zsh"
+#else
+        "/bin/sh"
+#endif
+    }
+
     /// Runs a shell command in `cwd`, calling `onOutput` with chunks as they arrive. Stops (whole process tree) on timeout or task cancellation.
     static func shell(_ command: String, cwd: URL, timeout: Double, onOutput: (@Sendable (String) -> Void)? = nil) async -> ProcessOutput {
-        await stream("/bin/zsh", ["-c", command], cwd: cwd, timeout: timeout, onOutput: onOutput)
+        await stream(shellPath, ["-c", command], cwd: cwd, timeout: timeout, onOutput: onOutput)
     }
 
     static func stream(_ executable: String, _ args: [String], stdin: String? = nil, cwd: URL? = nil, timeout: Double,
@@ -93,6 +102,7 @@ nonisolated enum ProcessRunner {
         let group = DispatchGroup()
         for (pipe, buf) in [(out, outBuf), (err, errBuf)] {
             group.enter()
+#if canImport(Darwin)
             pipe.fileHandleForReading.readabilityHandler = { h in
                 let d = h.availableData
                 if d.isEmpty { h.readabilityHandler = nil; group.leave(); return }
@@ -100,6 +110,13 @@ nonisolated enum ProcessRunner {
                 buf.append(s)
                 onOutput?(s)
             }
+#else
+            PipeReader.start(pipe.fileHandleForReading, onData: { d in
+                let s = String(decoding: d, as: UTF8.self)
+                buf.append(s)
+                onOutput?(s)
+            }, onEOF: { group.leave() })
+#endif
         }
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (cont: CheckedContinuation<ProcessOutput, Never>) in
@@ -191,7 +208,7 @@ final class ProcessManager {
     func start(name: String, command: String, cwd: URL, owner: String? = nil) throws -> Entry {
         if let old = entry(name), old.running { throw NSError(domain: "Anvil", code: 1, userInfo: [NSLocalizedDescriptionKey: "a process named \(name) is already running; stop it first or pick another name"]) }
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.executableURL = URL(fileURLWithPath: ProcessRunner.shellPath)
         p.arguments = ["-c", command]
         p.environment = ProcessRunner.environment()
         p.currentDirectoryURL = cwd
@@ -201,12 +218,19 @@ final class ProcessManager {
         p.standardError = pipe
         let e = Entry(name: name, command: command, cwd: cwd, process: p)
         e.owner = owner
+#if canImport(Darwin)
         pipe.fileHandleForReading.readabilityHandler = { [weak self] h in
             let d = h.availableData
             if d.isEmpty { h.readabilityHandler = nil; return }
             e.output.append(String(decoding: d, as: UTF8.self))
             Task { @MainActor in self?.tick += 1 }
         }
+#else
+        PipeReader.start(pipe.fileHandleForReading, onData: { [weak self] d in
+            e.output.append(String(decoding: d, as: UTF8.self))
+            Task { @MainActor in self?.tick += 1 }
+        }, onEOF: {})
+#endif
         p.terminationHandler = { [weak self] proc in
             let code = proc.terminationStatus
             Task { @MainActor in e.exitCode = code; self?.tick += 1 }

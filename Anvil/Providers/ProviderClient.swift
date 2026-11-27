@@ -147,17 +147,30 @@ struct ProviderClient {
         p.standardOutput = outPipe
         p.standardError = errPipe
         let stderr = OutputBuffer()
+#if canImport(Darwin)
         errPipe.fileHandleForReading.readabilityHandler = { h in
             let d = h.availableData
             if d.isEmpty { h.readabilityHandler = nil } else { stderr.append(String(decoding: d, as: UTF8.self)) }
         }
+#else
+        PipeReader.start(errPipe.fileHandleForReading, onData: { stderr.append(String(decoding: $0, as: UTF8.self)) }, onEOF: {})
+#endif
         let lines = AsyncStream<String> { cont in
             let splitter = LineSplitter()
+#if canImport(Darwin)
             outPipe.fileHandleForReading.readabilityHandler = { h in
                 let d = h.availableData
                 if d.isEmpty { h.readabilityHandler = nil; for l in splitter.finish() { cont.yield(l) }; cont.finish(); return }
                 for l in splitter.feed(d) { cont.yield(l) }
             }
+#else
+            PipeReader.start(outPipe.fileHandleForReading, onData: { d in
+                for l in splitter.feed(d) { cont.yield(l) }
+            }, onEOF: {
+                for l in splitter.finish() { cont.yield(l) }
+                cont.finish()
+            })
+#endif
         }
         do { try p.run() } catch {
             throw BrainError(status: 0, code: "no_key", message: "\(spec.name) couldn't start \((spec.command ?? []).joined(separator: " ")): \(error.localizedDescription)")

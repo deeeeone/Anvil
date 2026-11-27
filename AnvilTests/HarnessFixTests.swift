@@ -1,5 +1,9 @@
 import XCTest
+#if SWIFT_PACKAGE
+@testable import AnvilCore
+#else
 @testable import Anvil
+#endif
 
 /// Fixes from a benchmark run: failures hidden behind exit code 0, stopping foreign processes, stale project
 /// context, model switches for environment failures, and how long a previous request took.

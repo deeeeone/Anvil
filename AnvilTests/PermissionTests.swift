@@ -1,5 +1,9 @@
 import XCTest
+#if SWIFT_PACKAGE
+@testable import AnvilCore
+#else
 @testable import Anvil
+#endif
 
 final class PermissionTests: XCTestCase {
     let root = URL(fileURLWithPath: "/tmp/proj")

@@ -1,5 +1,9 @@
 import XCTest
+#if SWIFT_PACKAGE
+@testable import AnvilCore
+#else
 @testable import Anvil
+#endif
 
 /// NotebookLM protocol helpers, exercised on fixtures only (no network).
 final class NotebookLMTests: XCTestCase {

@@ -1,5 +1,9 @@
 import XCTest
+#if SWIFT_PACKAGE
+@testable import AnvilCore
+#else
 @testable import Anvil
+#endif
 
 final class BrowserQATests: XCTestCase {
     func testSupersededNavigationIsNotAFailure() {
@@ -88,6 +92,7 @@ final class BrowserQATests: XCTestCase {
         XCTAssertTrue(BrowserTools.all().filter { $0.name == "browser_styles" || $0.name == "browser_audit" }.allSatisfy { $0.group == .web && $0.kind == .network })
     }
 
+#if canImport(WebKit) // TODO(linux): BrowserController drives a WKWebView, so these two run only where WebKit exists.
     func testStylesAndAuditOnARealPage() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("anvil-qa-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -138,4 +143,5 @@ final class BrowserQATests: XCTestCase {
         XCTAssertTrue(status.hasPrefix("loaded"), status)
         XCTAssertTrue(status.contains("looks like a 404 page"), status)
     }
+#endif
 }

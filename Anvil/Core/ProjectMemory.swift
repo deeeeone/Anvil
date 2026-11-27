@@ -251,7 +251,7 @@ nonisolated enum Diagnostics {
         case "py": return ["/usr/bin/env", "python3", "-c", "import ast,sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])", p]
         case "js", "mjs", "cjs": return ["/usr/bin/env", "node", "--check", p]
         case "json": return ["/usr/bin/env", "python3", "-c", "import json,sys; json.load(open(sys.argv[1]))", p]
-        case "sh", "bash", "zsh": return ["/bin/zsh", "-n", p]
+        case "sh", "bash", "zsh": return [ProcessRunner.shellPath, "-n", p]
         case "rb": return ["/usr/bin/env", "ruby", "-c", p]
         case "swift": return ["/usr/bin/env", "swiftc", "-parse", p]
         case "php": return ["/usr/bin/env", "php", "-l", p]

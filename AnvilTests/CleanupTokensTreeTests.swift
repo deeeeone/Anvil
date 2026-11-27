@@ -1,5 +1,9 @@
 import XCTest
+#if SWIFT_PACKAGE
+@testable import AnvilCore
+#else
 @testable import Anvil
+#endif
 
 /// Worktree cleanup, sub-session persistence and the sidebar tree, and token calibration with the context gauge.
 final class CleanupTokensTreeTests: XCTestCase {

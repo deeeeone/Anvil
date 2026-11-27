@@ -1,5 +1,9 @@
 import XCTest
+#if SWIFT_PACKAGE
+@testable import AnvilCore
+#else
 @testable import Anvil
+#endif
 
 final class CommandPaletteTests: XCTestCase {
     private func item(_ title: String) -> PaletteItem {

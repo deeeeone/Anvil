@@ -1,5 +1,9 @@
 import XCTest
+#if SWIFT_PACKAGE
+@testable import AnvilCore
+#else
 @testable import Anvil
+#endif
 
 final class EditEngineTests: XCTestCase {
     func testUniqueReplace() throws {

@@ -212,6 +212,11 @@ nonisolated struct ProviderSpec: Codable, Equatable, Sendable {
     static func load(_ url: URL) throws -> ProviderSpec {
         let data: Data
         do { data = try Data(contentsOf: url) } catch { throw ToolFailure("no \(fileName) at \(url.deletingLastPathComponent().path)") }
+        return try load(data: data)
+    }
+
+    /// Decodes a spec from JSON bytes, with the same error messages as `load(_:)`.
+    static func load(data: Data) throws -> ProviderSpec {
         do { return try JSONDecoder().decode(ProviderSpec.self, from: data) }
         catch let DecodingError.keyNotFound(key, ctx) { throw ToolFailure("\(fileName): missing \"\(([key] + ctx.codingPath.reversed()).reversed().map(\.stringValue).joined(separator: "."))\"") }
         catch let DecodingError.typeMismatch(_, ctx) { throw ToolFailure("\(fileName): wrong type at \"\(ctx.codingPath.map(\.stringValue).joined(separator: "."))\"") }

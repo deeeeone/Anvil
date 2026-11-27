@@ -191,6 +191,7 @@ nonisolated final class MCPStdioClient: @unchecked Sendable {
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+#if canImport(Darwin)
         stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] h in
             let d = h.availableData
             if d.isEmpty { h.readabilityHandler = nil } else { self?.received(d) }
@@ -201,6 +202,13 @@ nonisolated final class MCPStdioClient: @unchecked Sendable {
             guard let self else { return }
             lock.withLock { self.stderrTail = String((self.stderrTail + String(decoding: d, as: UTF8.self)).suffix(2000)) }
         }
+#else
+        PipeReader.start(stdoutPipe.fileHandleForReading, onData: { [weak self] d in self?.received(d) }, onEOF: {})
+        PipeReader.start(stderrPipe.fileHandleForReading, onData: { [weak self] d in
+            guard let self else { return }
+            lock.withLock { self.stderrTail = String((self.stderrTail + String(decoding: d, as: UTF8.self)).suffix(2000)) }
+        }, onEOF: {})
+#endif
         process.terminationHandler = { [weak self] _ in self?.failAll(MCPError.closed(self?.lastStderr.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").last ?? "")) }
         // A server that already exited must give us EPIPE on write, not a SIGPIPE that kills the app.
 #if canImport(Darwin)
@@ -228,8 +236,10 @@ nonisolated final class MCPStdioClient: @unchecked Sendable {
     func notify(_ method: String, _ params: JSON? = nil) { write(MCPFraming.notification(method: method, params: params)) }
 
     func stop() {
+#if canImport(Darwin)
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         stderrPipe.fileHandleForReading.readabilityHandler = nil
+#endif
         try? stdinPipe.fileHandleForWriting.close()   // most servers exit on EOF
         if process.isRunning { process.terminate() }
         failAll(MCPError.closed("stopped"))

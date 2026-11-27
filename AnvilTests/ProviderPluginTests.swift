@@ -1,5 +1,9 @@
 import XCTest
+#if SWIFT_PACKAGE
+@testable import AnvilCore
+#else
 @testable import Anvil
+#endif
 
 /// The provider standard: anvil-provider.json, presets, installing, and both plugin kinds end to end.
 final class ProviderPluginTests: XCTestCase {

@@ -1,5 +1,9 @@
 import XCTest
+#if SWIFT_PACKAGE
+@testable import AnvilCore
+#else
 @testable import Anvil
+#endif
 
 /// Collects what the agent sent the model (a class so the test closures can share it).
 private final class PromptLog {

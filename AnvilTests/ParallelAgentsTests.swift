@@ -1,5 +1,9 @@
 import XCTest
+#if SWIFT_PACKAGE
+@testable import AnvilCore
+#else
 @testable import Anvil
+#endif
 
 /// Parallel queue, sub-session merging, LSP checks and GitHub helpers.
 final class ParallelAgentsTests: XCTestCase {

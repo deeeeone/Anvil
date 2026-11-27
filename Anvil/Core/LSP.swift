@@ -163,6 +163,7 @@ nonisolated enum LSP {
             p.standardOutput = outPipe
             p.standardError = FileHandle.nullDevice
             let reader = self.reader
+#if canImport(Darwin)
             outPipe.fileHandleForReading.readabilityHandler = { [weak self] h in
                 let data = h.availableData
                 if data.isEmpty { h.readabilityHandler = nil; return }
@@ -170,6 +171,13 @@ nonisolated enum LSP {
                     Task { await self?.handle(message) }
                 }
             }
+#else
+            PipeReader.start(outPipe.fileHandleForReading, onData: { [weak self] data in
+                for message in reader.feed(data) {
+                    Task { await self?.handle(message) }
+                }
+            }, onEOF: {})
+#endif
             do { try p.run() } catch { return false }
             process = p
             input = inPipe.fileHandleForWriting

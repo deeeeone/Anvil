@@ -1,5 +1,9 @@
 import XCTest
+#if SWIFT_PACKAGE
+@testable import AnvilCore
+#else
 @testable import Anvil
+#endif
 
 /// A tiny Python MCP server over stdio (no network or npm needed).
 final class MCPTests: XCTestCase {

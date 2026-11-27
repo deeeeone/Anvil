@@ -325,15 +325,18 @@ final class ProviderPlugins {
     // MARK: Presets
 
     /// Ready-made specs for popular OpenAI-compatible providers (Anvil/Providers/Presets/*.json).
+    /// On the Mac app these come from the bundle. Elsewhere (and in SwiftPM builds, which have no app bundle) they come
+    /// from `PresetData`, an embedded copy kept in sync by scripts/sync-presets.sh.
     static var presets: [ProviderSpec] {
-#if canImport(Darwin)
+#if canImport(Darwin) && !SWIFT_PACKAGE
         let urls = (Bundle.main.urls(forResourcesWithExtension: "json", subdirectory: nil) ?? [])
             .filter { $0.lastPathComponent.hasPrefix("preset-") }
         return urls.compactMap { try? ProviderSpec.load($0) }.filter { $0.problems().isEmpty }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 #else
-        // TODO(linux): presets ship as app-bundle resources, and the CLI has no bundle yet, so none load here.
-        return []
+        return PresetData.files.filter { $0.key.hasPrefix("preset-") }
+            .compactMap { try? ProviderSpec.load(data: Data($0.value.utf8)) }.filter { $0.problems().isEmpty }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 #endif
     }
 

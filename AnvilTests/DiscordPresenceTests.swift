@@ -1,5 +1,9 @@
 import XCTest
+#if SWIFT_PACKAGE
+@testable import AnvilCore
+#else
 @testable import Anvil
+#endif
 
 final class DiscordPresenceTests: XCTestCase {
     func testFrameLayout() {
@@ -87,6 +91,7 @@ final class DiscordPresenceTests: XCTestCase {
     }
 
     /// A fake Discord: accepts the handshake, answers READY, records the activity it's sent, answers again.
+#if canImport(Darwin) // TODO(linux): DiscordPresence talks over a Unix socket only on Darwin; the Linux socket layer is not ported yet.
     func testTalksToAFakeDiscord() throws {
         let dir = URL(fileURLWithPath: "/tmp/dp-\(UUID().uuidString.prefix(6))")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -144,6 +149,7 @@ final class DiscordPresenceTests: XCTestCase {
         let last = try XCTUnwrap(JSON.parse(lines.last!))
         XCTAssertNil(last[1]?["args"]?["activity"], "shutdown clears the presence")
     }
+#endif
 
     func testNoDiscordIsHarmless() {
         let presence = DiscordPresence()

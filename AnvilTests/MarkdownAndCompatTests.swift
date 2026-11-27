@@ -1,6 +1,10 @@
 import XCTest
 import SwiftUI
+#if SWIFT_PACKAGE
+@testable import AnvilCore
+#else
 @testable import Anvil
+#endif
 
 final class MarkdownTests: XCTestCase {
     static let sample = """

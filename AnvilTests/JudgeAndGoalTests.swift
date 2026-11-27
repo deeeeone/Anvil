@@ -1,5 +1,9 @@
 import XCTest
+#if SWIFT_PACKAGE
+@testable import AnvilCore
+#else
 @testable import Anvil
+#endif
 
 /// The completion judge (hidden check before "done") and the /goal state. No network: the judge and the agent are scripted.
 final class JudgeAndGoalTests: XCTestCase {

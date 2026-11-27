@@ -1,5 +1,9 @@
 import XCTest
+#if SWIFT_PACKAGE
+@testable import AnvilCore
+#else
 @testable import Anvil
+#endif
 
 /// Stress tests inspired by what Terminal-Bench tasks do to an agent harness: runaway output, detached children,
 /// interactive programs, odd files, hostile inputs and big histories. Each asserts the behavior a long autonomous

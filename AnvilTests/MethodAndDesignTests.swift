@@ -1,5 +1,9 @@
 import XCTest
+#if SWIFT_PACKAGE
+@testable import AnvilCore
+#else
 @testable import Anvil
+#endif
 
 /// The build method and design guidance in the prompt, UI request detection, design skill choice, and the first-turn
 /// effort. No network: the agent's replies are scripted.
