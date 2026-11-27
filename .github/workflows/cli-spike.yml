@@ -98,6 +98,7 @@ jobs:
         run: |
           .build\release\anvil-spike.exe probe
           Get-ChildItem env: | Where-Object Name -match 'proxy' | Format-Table -AutoSize
+          $env:ANVIL_SPIKE_SSE_URL = $null   # loopback plain HTTP is a known Windows failure, see probe output
           .build\release\anvil-spike.exe all; $code = $LASTEXITCODE
           Get-Content stub.err.log -ErrorAction SilentlyContinue
           exit $code

@@ -26,6 +26,7 @@ struct Spike {
             }
             _ = await runProbe("probe-https-post", URL(string: "https://httpbin.org/anything")!, post: true)
             _ = await runProbe("probe-https-get", URL(string: "https://httpbin.org/get")!, post: false)
+            _ = await runProbe("probe-remote-http-get", URL(string: "http://httpbin.org/get")!, post: false)
         case "proc":
             results.append(await runProc())
         case "observe":
