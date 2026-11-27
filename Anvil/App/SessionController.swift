@@ -673,6 +673,7 @@ final class SessionController: AgentHost {
         let s = AppSettings.shared
         a.judgeEnabled = s.judgeEnabled
         a.judgeSetting = s.judgeModel
+        a.designCheck = s.designCheck
         a.inGoal = goalMode
         a.goalCriteria = goalMode ? (session.goal?.criteria ?? []) : []
         a.queueApprovals = goalMode ? { [weak self] req in self?.queueForOwner(req) } : nil

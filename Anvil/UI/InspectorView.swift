@@ -593,14 +593,18 @@ struct PreviewPane: View {
             ZStack {
                 Group {
                     if let w = b.viewportWidth {
-                        // Emulated device size, centred.
-                        WebViewHost(webView: b.webView)
-                            .frame(width: w, height: b.viewportHeight)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.borderStrong))
-                            .padding(12)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(Theme.code)
+                        // Emulated device size, centred. Inside a scroll view: a fixed device size taller or wider than the
+                        // pane would otherwise force the whole window's layout past its edges (and push the composer off screen).
+                        ScrollView([.vertical, .horizontal]) {
+                            WebViewHost(webView: b.webView)
+                                .frame(width: w, height: b.viewportHeight)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.borderStrong))
+                                .padding(12)
+                        }
+                        .defaultScrollAnchor(.top)
+                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                        .background(Theme.code)
                     } else {
                         WebViewHost(webView: b.webView)
                     }

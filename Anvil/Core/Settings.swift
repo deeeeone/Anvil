@@ -49,6 +49,8 @@ final class AppSettings {
     var judgeEnabled: Bool { didSet { d.set(judgeEnabled, forKey: "judgeEnabled") } }
     /// The judge's model: "auto" (the session's model; gemini-4-hydrogen is judged by gemini-neon), or a model id.
     var judgeModel: String { didSet { d.set(judgeModel, forKey: "judgeModel") } }
+    /// After UI work, screenshot the page and have a vision model critique it (up to 3 fix rounds; see DesignCritique).
+    var designCheck: Bool { didSet { d.set(designCheck, forKey: "designCheck") } }
     /// /goal runs in its own git worktree on its own branch (anvil/goal-...), when the project is a git repo.
     var goalInWorktree: Bool { didSet { d.set(goalInWorktree, forKey: "goalInWorktree") } }
     /// How long a goal may run before it stops with a summary (minutes).
@@ -148,6 +150,7 @@ final class AppSettings {
         jailbreak = d.object(forKey: "jailbreak") as? Bool ?? false
         judgeEnabled = d.object(forKey: "judgeEnabled") as? Bool ?? true
         judgeModel = d.string(forKey: "judgeModel") ?? "auto"
+        designCheck = d.object(forKey: "designCheck") as? Bool ?? true
         goalInWorktree = d.object(forKey: "goalInWorktree") as? Bool ?? true
         goalMaxMinutes = d.object(forKey: "goalMaxMinutes") as? Int ?? 240
         notebookMemory = d.object(forKey: "notebookMemory") as? Bool ?? true

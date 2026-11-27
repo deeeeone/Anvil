@@ -233,6 +233,16 @@ final class Brain {
         return try await call(history, model: model, images: false, effort: effort, stop: nil, agent: false, maxTokens: nil)
     }
 
+    /// A single question about images, sent to a model that can see them (the session's model, else the vision model).
+    /// nil when no model that sees images is available: a critic that can't see the screenshots would invent problems.
+    func visionShot(_ prompt: String, images: [(Data, String)], effort: String = "medium") async throws -> String? {
+        let history = [ChatMessage.user(prompt, images: images)]
+        if let override { return try await override(history, model) }
+        let (m, sees) = Self.route(history, model: model, vision: visionModel)
+        guard sees else { return nil }
+        return try await call(history, model: m, images: true, effort: effort, stop: nil, agent: false, maxTokens: nil)
+    }
+
     /// Sends a history with a 1-token reply so the provider caches its prefix (prompt caching is automatic on
     /// Experiential Labs). The real request that follows reuses it. Errors are ignored: this is only a speed-up.
     func warm(_ history: [ChatMessage]) async {

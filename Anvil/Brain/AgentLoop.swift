@@ -36,6 +36,8 @@ final class Agent {
     var judgeEnabled = true
     /// The judge's model setting: "auto", or a model id.
     var judgeSetting = "auto"
+    /// After UI work with a page open in the browser, screenshot it and have a vision model critique it (see DesignCritique).
+    var designCheck = true
     /// This request is part of a /goal run: more judge rounds, and dangerous commands are queued, not asked.
     var inGoal = false
     /// The goal's checks (its definition of done) with their latest results.
@@ -358,6 +360,8 @@ final class Agent {
             let previous = lastRequest.map { Self.previousRequestLine(start: $0.start, end: $0.end, steps: $0.steps) + "\n\n" } ?? ""
             intro = previous + note + skillNote + jail + PromptBuilder.followUp(goal, attachments: attachmentsNote)
         }
+        // After the fixed briefing (prompt caching), next to the request.
+        if designCheck && !isSubagent && ctx.browser != nil && SkillLibrary.isUIRequest(goal) { intro += "\n\n" + DesignCritique.brief }
         var userText = (unsent.map { $0 + "\n\n" } ?? "") + intro + (isSubagent ? "" : PromptBuilder.modeNote(mode)) + PromptBuilder.formatReminder
         unsent = nil
         var pendingImages = images
@@ -380,6 +384,10 @@ final class Agent {
         var reviewed = false
         /// The completion check's rounds for this request (more in goal mode).
         var judge = CompletionJudge.Tracker(cap: inGoal ? 6 : 3)
+        /// The design check's rounds, the files as they were in its best-scoring round, and whether it has finished.
+        var design = DesignCritique.Tracker()
+        var designBest: [(path: String, text: String?)] = []
+        var designSettled = false
         var verifiedBy: String?
         var planApproved = false
         var planShown = false
@@ -526,12 +534,15 @@ final class Agent {
                 }
                 if !raw.contains("```") && !raw.contains("{") && !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !Self.announcesIntent(raw)
                     && !GeminiWebClient.isServiceError(raw) {
-                    return finish(raw.trimmingCharacters(in: .whitespacesAndNewlines), ok: true, steps: step)
+                    // Goes through the same done gate as a json answer (verify, design check, judge), not straight out.
+                    reply = AgentReply(thought: "", say: raw.trimmingCharacters(in: .whitespacesAndNewlines), actions: [], done: true)
+                    parseFailures = 0
+                } else {
+                    if parseFailures > 2 { return finish("I couldn't produce a usable reply three times in a row and stopped. Try rephrasing.", ok: false, steps: step) }
+                    if parseFailures == 2 && !escalationModel.isEmpty { escalateNext = true }
+                    userText = "<observation step=\(step)>Your last reply couldn't be used: \(error). If a file's content contains ``` fences, keep the JSON valid by escaping newlines and quotes. \(PromptBuilder.formatReminder)</observation>"
+                    continue
                 }
-                if parseFailures > 2 { return finish("I couldn't produce a usable reply three times in a row and stopped. Try rephrasing.", ok: false, steps: step) }
-                if parseFailures == 2 && !escalationModel.isEmpty { escalateNext = true }
-                userText = "<observation step=\(step)>Your last reply couldn't be used: \(error). If a file's content contains ``` fences, keep the JSON valid by escaping newlines and quotes. \(PromptBuilder.formatReminder)</observation>"
-                continue
             }
 
             if !reply.thought.isEmpty { host?.agentThought(Fmt.plain(reply.thought)) }
@@ -672,13 +683,40 @@ final class Agent {
                             }
                         }
                     }
+                    // Design check (hidden from the chat): UI work with a page open gets screenshotted at desktop and phone
+                    // size and critiqued by a vision model. Blockers and majors go back as a <design-check> note, for up to
+                    // 3 rounds; a round that scores worse than the best one restores the best version's files and stops.
+                    if !isSubagent && editedThisRequest && designCheck && !designSettled && ctx.browser != nil
+                        && DesignCritique.isUIWork(uiRequest: SkillLibrary.isUIRequest(goal), changedPaths: checkpoint.files.map(\.path))
+                        && !(step >= maxSteps - 2 || (maxCost > 0 && taskCost >= maxCost)) && !Task.isCancelled {
+                        if let c = await designCritique(goal: goal) {
+                            let fixes = DesignCritique.actionable(c.fixes)
+                            let next = design.record(score: c.score, actionable: fixes.count)
+                            if design.bestRound == design.rounds {
+                                designBest = checkpoint.files.map { ($0.path, try? String(contentsOfFile: $0.path, encoding: .utf8)) }
+                            }
+                            switch next {
+                            case .fix:
+                                userText = "<observation step=\(step)>Before accepting done, the app reviewed screenshots of the page.</observation>\n\(DesignCritique.note(score: c.score, fixes: fixes))\n\(PromptBuilder.formatReminder)"
+                                checkNotesPending = true
+                                continue
+                            case .revert:
+                                restoreDesignBest(designBest)
+                                designSettled = true
+                            case .accept:
+                                designSettled = true
+                            }
+                        } else {
+                            designSettled = true   // no page, no vision model, or no usable critique: skip quietly
+                        }
+                    }
                     // After real work, a one-liner ("Fixed the issues.") leaves the owner to ask what exists, where it is and
                     // how to use it. Ask for a proper summary once.
                     if !isSubagent && editedThisRequest && !askedForSummary && size != .simple
                         && goal.split(whereSeparator: \.isWhitespace).count >= 6
                         && Self.isThinAnswer(reply.say ?? reply.thought) {
                         askedForSummary = true
-                        userText = "<observation step=\(step)>Your final answer is too thin for the work you did. Reply again with done:true and a complete answer for the owner: what you built or changed (and why, if it matters), exactly where it is (file paths), how to run or use it (the exact command or steps, with a short example), how you verified it and what the real output showed, and any known limits or follow-ups. Plain prose or a few bullets, no filler.</observation>\n\(PromptBuilder.formatReminder)"
+                        userText = "<observation step=\(step)>Your final answer doesn't say enough for the work you did. Reply again with done:true and a short answer: what exists now and where, how to open or run it (the exact command or URL), how you checked it, and anything not done. 4 to 8 short lines, no file inventories.</observation>\n\(PromptBuilder.formatReminder)"
                         continue
                     }
                     // Completion check (hidden from the chat): the goal's command and file checks, then the judge. Open items go
@@ -926,13 +964,71 @@ final class Agent {
         return open
     }
 
-    /// The <check> note leaves the history once the model has answered it (the next turn doesn't need it).
+    // MARK: Design check
+
+    /// Screenshots the open page at desktop and phone size, runs the cheap checks at phone size, and asks a vision model
+    /// to critique it. nil when no page is open, no model can see images, or no usable critique came back.
+    func designCritique(goal: String) async -> DesignCritique.Critique? {
+        guard let b = ctx.browser else { return nil }
+        let here = ((try? await b.evaluate("location.href")) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard here.hasPrefix("http") || here.hasPrefix("file:") else { return nil }
+        let id = UUID()
+        host?.agentStepBegan(id, tool: "review", summary: "Design check")
+        host?.agentStatus("Checking the design")
+        let start = Date()
+        // Put the owner's emulated size back afterwards.
+        let controller = b as? BrowserController
+        let before = (controller?.viewportWidth.map { Int($0) }, controller?.viewportHeight.map { Int($0) })
+        defer { _ = b.setViewport(width: before.0, height: before.1) }
+        var images: [(Data, String)] = [], labels: [String] = []
+        var checks: [DesignCritique.Fix] = []
+        for (label, w, h) in [("desktop 1440x900", 1440, 900), ("phone 390x844", 390, 844)] {
+            _ = b.setViewport(width: w, height: h)
+            try? await Task.sleep(for: .milliseconds(600))   // let the layout settle at the new size
+            if let shot = try? await b.screenshot(), !BrowserQA.looksBlank(shot) { images.append((shot, "image/jpeg")); labels.append("\(label), above the fold") }
+            if w < 600 {
+                func object(_ js: String) async -> [String: Any] {
+                    guard let raw = try? await b.evaluate(js) else { return [:] }
+                    return (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] ?? [:]
+                }
+                checks = DesignCritique.checkFixes(audit: await object(BrowserQA.auditScript), extra: await object(DesignCritique.extraChecksScript))
+            }
+        }
+        func end(_ text: String) { host?.agentStepEnded(id, status: .ok, output: text, diffs: [], duration: Date().timeIntervalSince(start)) }
+        guard !images.isEmpty else { end("Design check skipped: couldn't screenshot the page"); return nil }
+        let prompt = DesignCritique.prompt(goal: goal, checks: checks.map { "[\($0.severity.rawValue)] \($0.location): \($0.change)" }, shots: labels)
+        let critic = brain.fork()
+        var critique: DesignCritique.Critique?
+        for _ in 0..<2 {
+            guard let reply = try? await critic.visionShot(prompt, images: images) else { break }
+            if let c = DesignCritique.parse(reply) { critique = c; break }
+        }
+        guard var critique else { end("Design check skipped: no model that sees images gave a usable review"); return nil }
+        critique.fixes = DesignCritique.merge(checks: checks, critic: critique.fixes)
+        let shown = DesignCritique.actionable(critique.fixes)
+        end(([DesignCritique.summary(score: critique.score, fixCount: shown.count)]
+             + shown.map { "- [\($0.severity.rawValue)] \(Fmt.line($0.location, 80)): \(Fmt.line($0.change, 240))" }).joined(separator: "\n"))
+        return critique
+    }
+
+    /// Puts the files back as they were in the design check's best round (a later fix scored worse).
+    private func restoreDesignBest(_ best: [(path: String, text: String?)]) {
+        for f in best {
+            if let t = f.text { try? t.write(toFile: f.path, atomically: true, encoding: .utf8) }
+            else { try? FileManager.default.removeItem(atPath: f.path) }
+        }
+        host?.agentStatus("Kept the best-scoring design")
+    }
+
+    /// The <check> and <design-check> notes leave the history once the model has answered them (the next turn doesn't need them).
     private func clearCheckNotes() {
         guard checkNotesPending else { return }
         checkNotesPending = false
         for i in messages.indices where messages[i].role == "user" {
             messages[i].parts = messages[i].parts.map { part in
-                if case .text(let t) = part, t.contains("<check>") { return ChatPart.text(CompletionJudge.strippingChecks(t)) }
+                if case .text(let t) = part, t.contains("<check>") || t.contains("<design-check>") {
+                    return ChatPart.text(DesignCritique.strippingNotes(CompletionJudge.strippingChecks(t)))
+                }
                 return part
             }
         }
@@ -1529,7 +1625,10 @@ final class Agent {
         let starts = ["i'll ", "i will ", "let me ", "let's ", "i'm going to ", "i am going to ", "first, i", "next, i", "now i'll", "now let me", "i need to "]
         if starts.contains(where: { t.hasPrefix($0) }) || t.hasSuffix(":") { return true }
         // "...state machine. I'll implement that behavior and check it." : the last sentence is a promise.
-        let last = t.split(whereSeparator: { ".!?\n".contains($0) }).last.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        // Sentences end at punctuation followed by a space, so "index.html" stays whole; "Small tweak: I'll ..." counts too.
+        let clauses = t.components(separatedBy: CharacterSet(charactersIn: "\n")).flatMap { $0.components(separatedBy: ". ") }
+            .flatMap { $0.components(separatedBy: ": ") }.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let last = clauses.last ?? ""
         return ["i'll ", "i will ", "let me ", "next i'll", "now i'll"].contains { last.hasPrefix($0) }
     }
 

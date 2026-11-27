@@ -381,6 +381,20 @@ final class BrowserController: NSObject, WKNavigationDelegate, AgentBrowser {
     }
 
     func screenshot() async throws -> Data {
+        // A web view in no window (headless runs, or the Preview tab hidden) doesn't render, and its snapshot comes back
+        // blank white. Park it in an off-screen window for the shot, then take it out again.
+        var parked: NSWindow?
+        if webView.window == nil {
+            let size = NSSize(width: viewportWidth ?? 1280, height: viewportHeight ?? 860)
+            let w = NSWindow(contentRect: NSRect(origin: NSPoint(x: -30_000, y: -30_000), size: size), styleMask: .borderless, backing: .buffered, defer: false)
+            w.isReleasedWhenClosed = false
+            webView.frame = NSRect(origin: .zero, size: size)
+            w.contentView?.addSubview(webView)
+            w.orderBack(nil)
+            parked = w
+            try? await Task.sleep(for: .milliseconds(500))   // first paint
+        }
+        defer { if let w = parked { webView.removeFromSuperview(); w.orderOut(nil) } }
         let img = try await webView.takeSnapshot(configuration: nil)
         guard let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
               let jpg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else { throw ToolFailure("couldn't capture the page") }
@@ -578,6 +592,17 @@ enum BrowserQA {
 
     static let defaultStyleProps = ["color", "background-color", "font-family", "font-size", "font-weight", "line-height", "padding", "margin",
                                     "border", "border-radius", "display", "gap", "width", "height"]
+
+    /// True when an image is one flat colour (a page that never painted, or an empty one): sampled on a 24x24 grid.
+    static func looksBlank(_ data: Data) -> Bool {
+        guard let rep = NSBitmapImageRep(data: data), rep.pixelsWide > 0, rep.pixelsHigh > 0,
+              let first = rep.colorAt(x: 0, y: 0)?.usingColorSpace(.deviceRGB) else { return false }
+        for i in 0..<24 { for j in 0..<24 {
+            guard let c = rep.colorAt(x: i * (rep.pixelsWide - 1) / 23, y: j * (rep.pixelsHigh - 1) / 23)?.usingColorSpace(.deviceRGB) else { continue }
+            if abs(c.redComponent - first.redComponent) + abs(c.greenComponent - first.greenComponent) + abs(c.blueComponent - first.blueComponent) > 0.06 { return false }
+        } }
+        return true
+    }
 
     static func number(_ v: Any?) -> Double? { (v as? NSNumber)?.doubleValue }
 

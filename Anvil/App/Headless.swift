@@ -21,6 +21,8 @@ enum Headless {
     }
 
     static func main() {
+        // Line-buffered output: a run that is killed (or piped to a log) still shows everything it printed.
+        setvbuf(stdout, nil, _IOLBF, 0)
         // A real AppKit run loop (no Dock icon, no windows) so WebKit works: the agent gets the browser here too.
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
@@ -76,6 +78,7 @@ enum Headless {
         agent.autoVerify = !args.contains("--no-verify")
         agent.selfReview = !args.contains("--no-review")
         agent.judgeEnabled = !args.contains("--no-judge")   // evals keep the same checks on or off
+        agent.designCheck = !args.contains("--no-design-check")
         agent.streaming = !args.contains("--no-stream")
         agent.escalationModel = args.contains("--no-escalate") ? "" : (value("--escalate") ?? AppSettings.shared.escalation(for: brain.model))
         agent.exploreModel = value("--explore-model") ?? ""

@@ -841,7 +841,7 @@ final class AgentLoopTests: XCTestCase {
         agent.selfReview = false
         let out = await agent.run(goal: goal)
         XCTAssertTrue(out.text.contains("python3 scraper.py"), out.text)
-        XCTAssertTrue(sent[2].last!.text.contains("too thin"), "the one-liner was sent back once")
+        XCTAssertTrue(sent[2].last!.text.contains("doesn't say enough"), "the one-liner was sent back once")
     }
 
     func testThinAnswerDetection() {

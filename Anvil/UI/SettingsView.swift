@@ -127,6 +127,7 @@ struct AgentSettings: View {
                     ForEach(ModelCatalog.shared.choices) { Text($0.id).tag($0.id) }
                 }
                 .disabled(!s.judgeEnabled)
+                Toggle("Screenshot UI work and fix what a design review finds (needs a vision model)", isOn: $s.designCheck)
                 Toggle("Run /goal in its own git worktree and branch", isOn: $s.goalInWorktree)
                 Stepper("Goal time limit: \(s.goalMaxMinutes) min", value: $s.goalMaxMinutes, in: 15...1440, step: 15)
             } header: { Text("Completion checks and goals") } footer: {
