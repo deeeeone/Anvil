@@ -1,24 +1,45 @@
 import Foundation
 
-/// Discord Rich Presence: shows "Working on a task · model" on your Discord profile, with a button to the repo.
+/// Discord Rich Presence, styled like VS Code's: "Editing AppState.swift" / "Workspace: my-app" on your Discord profile,
+/// with the Anvil logo, a status badge and a button to the repo.
 /// It speaks Discord's local IPC protocol (a Unix socket the Discord app opens in the temp folder), so nothing
 /// leaves your Mac except what Discord itself shows. It does nothing when Discord isn't running and retries quietly.
 ///
-/// The project name is only shown when the owner turns that on.
+/// File names, hosts, commands and the project name are only shown when the owner turns project names on.
 nonisolated final class DiscordPresence: @unchecked Sendable {
     static let shared = DiscordPresence()
-    /// The Discord application the presence belongs to (its name and art come from the Developer Portal).
+    /// The default Discord application the presence belongs to (its name comes from the Developer Portal; the owner can change it in Settings).
     static let clientID = "918234595579805776"
     static let repoURL = "https://github.com/deeeeone/Anvil"
     /// The large image: a public URL, so no art has to be uploaded to the Developer Portal. It loads once the repo is public.
     static let logoURL = "https://raw.githubusercontent.com/deeeeone/Anvil/main/design/anvil-icon-1024.png"
+    /// Status badges (small image), one per state, in design/presence/.
+    static func badgeURL(_ name: String) -> String { "https://raw.githubusercontent.com/deeeeone/Anvil/main/design/presence/\(name).png" }
+    /// Discord rate-limits SET_ACTIVITY, so updates are spaced at least this far apart.
+    static let minInterval: TimeInterval = 5
 
     struct State: Equatable, Sendable {
         var working: Bool
         var model: String
         var project: String?
         var taskStart: Date?
+        /// The tool of the step running now (nil between steps), its summary, and whether the model is being waited on.
+        var tool: String? = nil
+        var summary: String = ""
+        var thinking: Bool = false
+        /// The owner's "include project names" setting. When false, nothing from the project reaches Discord.
+        var showProject: Bool = false
     }
+
+    /// What the profile says: the first line, the second line, and which status badge to show.
+    struct Lines: Equatable, Sendable {
+        var details: String
+        var state: String
+        var badge: String
+    }
+
+    /// The Discord application ID used for the handshake (changing it reconnects).
+    var clientID = DiscordPresence.clientID
 
     /// Where to look for Discord's socket (tests point this at a fake one).
     var socketDirectories: [String] = {
@@ -32,14 +53,29 @@ nonisolated final class DiscordPresence: @unchecked Sendable {
     private var fd: Int32 = -1
     private var wanted: State?
     private var retry: DispatchWorkItem?
+    private var throttle: DispatchWorkItem?
+    private var lastSent: Date?
 
     // MARK: Public
 
-    /// Shows this state, or removes the presence when nil (turned off, or quitting).
-    func update(_ state: State?) {
+    /// Shows this state, or removes the presence when nil (turned off, or quitting). `clientID` is the Discord application
+    /// to show it under; a different one reconnects. Updates come at most every `minInterval` seconds; the newest state wins.
+    func update(_ state: State?, clientID id: String = DiscordPresence.clientID) {
         queue.async { [self] in
+            let wantedID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            let newID = wantedID.isEmpty ? Self.clientID : wantedID
+            if newID != clientID { clientID = newID; close() }
             wanted = state
-            push()
+            throttle?.cancel()
+            throttle = nil
+            let wait = state == nil ? 0 : Self.throttleWait(now: Date(), last: lastSent)
+            guard wait > 0 else { push(); return }
+            let item = DispatchWorkItem { [weak self] in
+                self?.throttle = nil
+                self?.push()
+            }
+            throttle = item
+            queue.asyncAfter(deadline: .now() + wait, execute: item)
         }
     }
 
@@ -48,8 +84,68 @@ nonisolated final class DiscordPresence: @unchecked Sendable {
         queue.sync { [self] in
             wanted = nil
             retry?.cancel()
+            throttle?.cancel()
+            throttle = nil
             if fd >= 0 { _ = send(opcode: 1, json: Self.activityCommand(nil, pid: ProcessInfo.processInfo.processIdentifier)); close() }
         }
+    }
+
+    // MARK: Pure decisions (tested directly)
+
+    /// Seconds to wait before the next SET_ACTIVITY may go out (0 = send now).
+    static func throttleWait(now: Date, last: Date?) -> TimeInterval {
+        guard let last else { return 0 }
+        return max(0, minInterval - now.timeIntervalSince(last))
+    }
+
+    /// The first line, the second line and the badge, from what the agent is doing.
+    /// Without `showProject`, nothing from the project (file names, hosts, commands, folder) is used.
+    static func lines(_ s: State) -> Lines {
+        let working = s.working
+        let badge = !working ? "idle" : (s.thinking ? "thinking" : "working")
+        let project = s.showProject ? (s.project?.isEmpty == false ? s.project : nil) : nil
+        let state: String
+        if let project { state = "Workspace: \(project)" }
+        else { state = working ? "Working on a task" : "Ready for the next task" }
+        guard working else { return Lines(details: "Idling", state: state, badge: badge) }
+        guard s.showProject else { return Lines(details: "Coding", state: state, badge: badge) }
+        return Lines(details: details(tool: s.tool, summary: s.summary, thinking: s.thinking), state: state, badge: badge)
+    }
+
+    /// "Editing AppState.swift", "Running npm", "Browsing example.com", "Thinking" or "Coding" (project names on).
+    static func details(tool: String?, summary: String, thinking: Bool) -> String {
+        if thinking { return "Thinking" }
+        guard let tool else { return "Coding" }
+        switch tool {
+        case "edit_file", "write_file", "replace_lines", "multi_edit":
+            // Summaries read "Edit <path>" or "Write <path>"; anything else (several files, replace_lines) has no single name.
+            for verb in ["Edit ", "Write "] where summary.hasPrefix(verb) {
+                let rest = summary.dropFirst(verb.count).trimmingCharacters(in: .whitespaces)
+                if !rest.isEmpty, !rest.hasSuffix("files") {
+                    return "Editing \((rest as NSString).lastPathComponent)"
+                }
+            }
+            return "Editing a file"
+        case "shell", "start_process":
+            var command = summary
+            if command.hasPrefix("$ ") { command = String(command.dropFirst(2)) }
+            else if tool == "start_process", let colon = command.range(of: ": ") { command = String(command[colon.upperBound...]) }
+            else { return "Running a command" }
+            guard let first = command.split(whereSeparator: { $0 == " " || $0 == "\t" }).first, !first.isEmpty else { return "Running a command" }
+            return "Running \(first)"
+        case _ where tool.hasPrefix("browser_") || tool == "fetch_url" || tool == "web_search":
+            return "Browsing \(host(in: summary) ?? "the web")"
+        default:
+            return "Coding"
+        }
+    }
+
+    /// The host of the first web address in a step summary, if any.
+    static func host(in text: String) -> String? {
+        guard let r = text.range(of: #"https?://([^/\s:?#"']+)"#, options: .regularExpression) else { return nil }
+        let url = text[r]
+        guard let host = URLComponents(string: String(url))?.host, !host.isEmpty else { return nil }
+        return host
     }
 
     // MARK: Protocol
@@ -64,18 +160,20 @@ nonisolated final class DiscordPresence: @unchecked Sendable {
         return d
     }
 
-    static func activity(_ s: State, appStart: Date, showProject: Bool = true) -> [String: Any] {
-        var state = s.model
-        if showProject, let p = s.project, !p.isEmpty { state += " · \(p)" }
-        var a: [String: Any] = [
-            "details": s.working ? "Working on a task" : "Ready for the next task",
-            "state": state,
+    static func activity(_ s: State, appStart: Date) -> [String: Any] {
+        let lines = lines(s)
+        return [
+            "details": lines.details,
+            "state": lines.state,
             "timestamps": ["start": Int((s.working ? (s.taskStart ?? appStart) : appStart).timeIntervalSince1970)],
-            "assets": ["large_image": logoURL, "large_text": "Anvil, a native macOS coding agent"],
+            "assets": [
+                "large_image": logoURL,
+                "large_text": "Anvil \(AppInfo.version), a native macOS coding agent",
+                "small_image": badgeURL(lines.badge),
+                "small_text": s.model,
+            ],
             "buttons": [["label": "Anvil on GitHub", "url": repoURL]],
         ]
-        if s.working { a["assets"] = ["large_image": logoURL, "large_text": "Anvil, a native macOS coding agent"] }
-        return a
     }
 
     static func activityCommand(_ activity: [String: Any]?, pid: Int32) -> [String: Any] {
@@ -88,12 +186,13 @@ nonisolated final class DiscordPresence: @unchecked Sendable {
 
     private func push() {
         retry?.cancel()
+        lastSent = Date()
         guard let s = wanted else {
             if fd >= 0 { _ = send(opcode: 1, json: Self.activityCommand(nil, pid: ProcessInfo.processInfo.processIdentifier)) }
             return
         }
         if fd < 0, !connect() { scheduleRetry(); return }
-        let command = Self.activityCommand(Self.activity(s, appStart: appStart, showProject: true), pid: ProcessInfo.processInfo.processIdentifier)
+        let command = Self.activityCommand(Self.activity(s, appStart: appStart), pid: ProcessInfo.processInfo.processIdentifier)
         if !send(opcode: 1, json: command) {
             close()
             if connect(), send(opcode: 1, json: command) { return }   // Discord restarted: one immediate retry
@@ -114,7 +213,7 @@ nonisolated final class DiscordPresence: @unchecked Sendable {
                 let path = (dir as NSString).appendingPathComponent("discord-ipc-\(i)")
                 guard FileManager.default.fileExists(atPath: path), let s = openSocket(path) else { continue }
                 fd = s
-                let hello: [String: Any] = ["v": 1, "client_id": Self.clientID]
+                let hello: [String: Any] = ["v": 1, "client_id": clientID]
                 if send(opcode: 0, json: hello) { return true }
                 close()
             }

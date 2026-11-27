@@ -15,6 +15,29 @@ nonisolated enum ProjectContext {
         }
     }
 
+    /// Whether a test file (*.test.*, *.spec.*, or a code file under tests/, test/ or __tests__/) sits within `depth` levels.
+    static func hasTestFiles(_ root: URL, depth: Int = 3) -> Bool {
+        let fm = FileManager.default
+        let testDirs: Set<String> = ["__tests__", "tests", "test"]
+        let codeExts: Set<String> = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "swift", "go", "rs", "rb", "php", "kt", "java"]
+        func walk(_ dir: URL, level: Int, inTests: Bool) -> Bool {
+            guard level <= depth,
+                  let items = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return false }
+            for u in items {
+                let name = u.lastPathComponent
+                if (try? u.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                    if skipDirs.contains(name) { continue }
+                    if walk(u, level: level + 1, inTests: inTests || testDirs.contains(name)) { return true }
+                } else if codeExts.contains(u.pathExtension.lowercased()),
+                          name.contains(".test.") || name.contains(".spec.") || inTests {
+                    return true
+                }
+            }
+            return false
+        }
+        return walk(root, level: 1, inTests: false)
+    }
+
     /// A shallow listing of the project (2 levels, skipping vendor/build folders).
     static func layout(_ root: URL, maxEntries: Int = 120) -> String {
         var lines: [String] = []

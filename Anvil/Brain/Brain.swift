@@ -21,6 +21,12 @@ final class Brain {
     var onStream: ((String) -> Void)?
     /// Why the last agent reply ended ("stop", "length"...), when the provider says.
     private(set) var lastFinishReason: String?
+    /// Called on every streamed chunk while a reply comes in (the host's heartbeat).
+    var onActivity: (() -> Void)?
+    /// Test hook: shortens the watchdog deadlines (seconds: first token, idle, whole turn). nil = the settings.
+    static var deadlines: (firstToken: Double, idle: Double, turn: Double)?
+    /// The progress of the reply in flight (see `watched`).
+    private var watchClock: ProgressClock?
 
     /// The Gemini proxy keeps history server-side: the session id and how many messages it already holds.
     private var geminiSession: (id: String, seen: Int)?
@@ -82,7 +88,7 @@ final class Brain {
     }
 
     nonisolated static func retryable(_ e: BrainError) -> Bool {
-        ["network", "upstream_error", "server_busy", "upstream_timeout", "bad_response", "not_ready", "upstream_blocked"].contains(e.code)
+        ["network", "upstream_error", "server_busy", "upstream_timeout", "bad_response", "not_ready", "upstream_blocked", "empty_reply"].contains(e.code)
             || e.status == 503 || e.status == 429 || e.message.lowercased().contains("retry")
     }
 
@@ -106,17 +112,58 @@ final class Brain {
         return body.hasPrefix("{") && ActionParser.parseLenient(String(body), repair: false) != nil
     }
 
+    /// True when a reply was cut off: the provider stopped at its length limit, or its JSON never closed or never balanced
+    /// (web providers don't report a finish reason).
+    nonisolated static func isCutOff(_ raw: String, finishReason: String?) -> Bool {
+        if finishReason == "length" { return true }
+        let body: Substring
+        if let open = raw.range(of: "```json") ?? raw.range(of: "```JSON") {
+            let rest = raw[open.upperBound...]
+            guard let close = rest.range(of: "\n```") ?? rest.range(of: "```") else { return true }
+            body = rest[..<close.lowerBound]
+        } else {
+            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard t.hasPrefix("{") else { return false }
+            body = Substring(t)
+        }
+        // Braces and brackets must balance outside JSON strings.
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for ch in body {
+            if inString {
+                if escaped { escaped = false } else if ch == "\\" { escaped = true } else if ch == "\"" { inString = false }
+                continue
+            }
+            switch ch {
+            case "\"": inString = true
+            case "{", "[": depth += 1
+            case "}", "]": depth -= 1
+            default: break
+            }
+        }
+        return inString || depth != 0
+    }
+
     /// One agent turn. `model` overrides the session model for this turn (escalation, exploration routing).
     func reply(_ history: [ChatMessage], model requested: String? = nil, effort requestedEffort: String? = nil, maxTokens: Int? = nil) async throws -> String {
         let (m, images) = Self.route(history, model: requested ?? model, vision: visionModel)
         lastFinishReason = nil
-        if let override { return try await override(history, m) }
         var turnEffort = Self.capped(images ? visionEffort : (requestedEffort ?? effort), by: effortCap)
         // Streaming has no built-in retry: retry transient failures here.
         var attempt = 0
         while true {
+            let attemptEffort = turnEffort
             do {
-                return try await call(history, model: m, images: images, effort: turnEffort, stop: OpenAIClient.agentStops, agent: true, maxTokens: maxTokens)
+                let text = try await watched { [self] in
+                    if let override = self.override { return try await override(history, m) }
+                    return try await self.call(history, model: m, images: images, effort: attemptEffort, stop: OpenAIClient.agentStops, agent: true, maxTokens: maxTokens)
+                }
+                // An empty reply is a failed turn: retry it rather than finishing on nothing.
+                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    throw BrainError(status: 0, code: "empty_reply", message: "the model sent an empty reply")
+                }
+                return text
             } catch let e as BrainError where e.code == "thinking_too_long" && Self.lowerEffort(turnEffort) != nil {
                 // Runaway reasoning: redo this turn with less of it instead of burning the whole task budget.
                 turnEffort = Self.lowerEffort(turnEffort)!
@@ -124,9 +171,58 @@ final class Brain {
             } catch let e as BrainError where Self.retryable(e) && attempt < (e.code == "server_busy" ? 5 : 2) {
                 // Rate limits and "not ready, retry shortly" get a real backoff (about 45 s in total); other blips a short one.
                 attempt += 1
-                let wait = e.retryAfter ?? (e.code == "server_busy" ? 3 * pow(2, Double(attempt - 1)) : Double(2 * attempt))
+                let wait = e.retryAfter ?? (e.code == "server_busy" ? 3 * pow(2, Double(attempt - 1)) : e.code == "upstream_timeout" ? 1 : Double(2 * attempt))
                 try await Task.sleep(for: .seconds(min(20, wait)))
             }
+        }
+    }
+
+    /// Runs one provider call under the watchdog. A child task makes the call; this checks its deadlines (first token,
+    /// idle after the first token, whole turn) and, when one trips, cancels the call and throws upstream_timeout.
+    private func watched(_ op: @escaping () async throws -> String) async throws -> String {
+        let clock = ProgressClock()
+        watchClock = clock
+        defer { watchClock = nil }
+        var limits = Self.deadlines ?? (Double(AppSettings.shared.firstTokenSeconds), Double(AppSettings.shared.stallSeconds), 900)
+        // Without streaming there is no "first token" until the whole reply arrives: only the turn limit applies.
+        if onStream == nil { limits.firstToken = limits.turn }
+        return try await withThrowingTaskGroup(of: String.self) { group in
+            group.addTask { try await op() }
+            group.addTask { () async throws -> String in
+                while true {
+                    try await Task.sleep(for: .milliseconds(100))
+                    if let e = Self.stall(clock, limits) { throw e }
+                }
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else {
+                throw BrainError(status: 0, code: "network", message: "the reply ended without a result")
+            }
+            return first
+        }
+    }
+
+    /// The error for a reply that has gone quiet past its deadline, or nil while it is within them.
+    nonisolated static func stall(_ c: ProgressClock, _ l: (firstToken: Double, idle: Double, turn: Double)) -> BrainError? {
+        if c.age > l.turn {
+            return BrainError(status: 0, code: "upstream_timeout", message: "the reply took longer than \(Int(l.turn)) seconds")
+        }
+        if !c.contentStarted, c.idle > l.firstToken {
+            return BrainError(status: 0, code: "upstream_timeout", message: "the model went silent for \(Int(l.firstToken)) seconds")
+        }
+        if c.contentStarted, c.idle > l.idle {
+            return BrainError(status: 0, code: "upstream_timeout", message: "the model went silent for \(Int(l.idle)) seconds")
+        }
+        return nil
+    }
+
+    /// The streaming callback the providers get: reports progress to the watchdog and to the host.
+    private var progressStream: ((String) -> Void)? {
+        guard let onStream else { return nil }
+        return { [weak self] text in
+            self?.watchClock?.contentArrived()
+            self?.onActivity?()
+            onStream(text)
         }
     }
 
@@ -147,7 +243,7 @@ final class Brain {
     }
 
     private func call(_ history: [ChatMessage], model m: String, images: Bool, effort e: String, stop: [String]?, agent: Bool, maxTokens: Int?) async throws -> String {
-        let stream = agent ? onStream : nil
+        let stream = agent ? progressStream : nil
         if let (plugin, name) = ProviderPlugins.shared.route(m) {
             // A provider plugin: its spec says what it supports; ignored stop sequences mean ending the stream ourselves.
             let client = ProviderClient(plugin)

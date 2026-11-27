@@ -104,6 +104,8 @@ final class ToolContext {
     let processes: ProcessManager
     weak var host: AgentHost?
     var stepID: UUID?
+    /// Identifies this agent: the background processes it starts are its own (stop_process asks before stopping others').
+    let owner = UUID().uuidString
     var shellTimeout: Double = 300
     var todos: [TodoItem] = []
     /// Files read this session (edit hints).

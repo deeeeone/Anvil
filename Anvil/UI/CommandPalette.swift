@@ -127,6 +127,10 @@ enum CommandPalette {
             if current.running {
                 out.append(PaletteItem(id: "stop", title: "Stop the agent", symbol: "stop.circle", shortcut: "⌘.", group: "Actions") { app.current?.stop() })
             }
+            if let goal = current.session.goal, GoalSummary.isLive(goal.phase) {
+                out.append(PaletteItem(id: "goal.stop", title: "Stop Goal", detail: GoalSummary.chip(goal.phase).text, symbol: "stop.circle", group: "Actions") { app.current?.stopGoal() })
+                out.append(PaletteItem(id: "goal.status", title: "Goal Status", symbol: "scope", group: "Actions") { app.current?.send("/goal status") })
+            }
         }
         out.append(PaletteItem(id: "sidebar", title: "Toggle sidebar", symbol: "sidebar.left", shortcut: "⌥⌘S", group: "Actions") { app.showSidebar.toggle() })
         out.append(PaletteItem(id: "inspector", title: "Toggle inspector", symbol: "sidebar.right", shortcut: "⌥⌘I", group: "Actions") { app.showInspector.toggle() })

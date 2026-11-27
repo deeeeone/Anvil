@@ -121,6 +121,18 @@ struct AgentSettings: View {
             Stepper("Auto-compact above ~\(Fmt.tokens(s.autoCompactTokens)) tokens", value: $s.autoCompactTokens, in: 40_000...900_000, step: 20_000)
             Stepper("Shell timeout: \(Int(s.shellTimeout))s", value: $s.shellTimeout, in: 30...1800, step: 30)
             Section {
+                Toggle("Check that a request is really done before finishing (hidden judge)", isOn: $s.judgeEnabled)
+                Picker("Judge model", selection: $s.judgeModel) {
+                    Text("Auto (the session's model)").tag("auto")
+                    ForEach(ModelCatalog.shared.choices) { Text($0.id).tag($0.id) }
+                }
+                .disabled(!s.judgeEnabled)
+                Toggle("Run /goal in its own git worktree and branch", isOn: $s.goalInWorktree)
+                Stepper("Goal time limit: \(s.goalMaxMinutes) min", value: $s.goalMaxMinutes, in: 15...1440, step: 15)
+            } header: { Text("Completion checks and goals") } footer: {
+                Text("The judge reads the request, its changes and the final answer, and lists only concrete misses; Anvil fixes them before it finishes. /goal keeps working until the checks pass or its limits are reached.").font(.caption)
+            }
+            Section {
                 Toggle("Verify before finishing (run the project's tests after edits)", isOn: $s.autoVerify)
                 Toggle("Review the diff before finishing (one extra model call)", isOn: $s.selfReview)
                 Toggle("Stream replies", isOn: $s.streaming)
@@ -271,6 +283,10 @@ struct DiscordSettings: View {
         if s.discordPresence {
             Toggle("Include the project folder name", isOn: $s.discordShowProject)
                 .onChange(of: s.discordShowProject) { app.refreshPresence() }
+                .padding(.leading, 18)
+            TextField("Application ID", text: $s.discordClientID)
+                .onSubmit { app.refreshPresence() }
+                .help("Create an application named Anvil at discord.com/developers/applications and paste its Application ID here; Discord shows that name.")
                 .padding(.leading, 18)
         }
     }

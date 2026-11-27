@@ -93,6 +93,7 @@ nonisolated enum Permissions {
             (#"(curl|wget)\s[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|python3?)\b"#, "pipes a download into a shell"),
             (#"(^|[;&|\s])(shutdown|reboot|halt)(\s|$)"#, "shuts down the Mac"),
             (#"(^|[;&|\s])(killall|pkill)\s"#, "kills processes by name"),
+            (#"(^|\s)kill-foreign-process\s"#, "stops a process this session didn't start"),
             (#"launchctl\s+(unload|remove|bootout)"#, "changes system services"),
             (#"(npm|yarn|pnpm|cargo|gem|twine)\s+publish"#, "publishes a package"),
             (#"(^|[;&|\s])gh\s+(pr|issue)\s+(create|comment|merge|close|reopen|edit|review|delete)\b"#, "publishes to GitHub"),

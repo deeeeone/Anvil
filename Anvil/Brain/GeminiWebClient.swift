@@ -154,6 +154,7 @@ nonisolated final class GeminiWebClient: @unchecked Sendable {
         var fatal: BrainError?
         var lines = 0
         for try await line in bytes.lines {
+            try Task.checkCancellation()   // the watchdog cancels a silent or runaway turn
             lines += 1
             if lines % 30 == 0, shouldStop?(full) == true { break }
             var body = line

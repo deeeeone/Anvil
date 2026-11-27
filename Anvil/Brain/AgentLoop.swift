@@ -7,6 +7,8 @@ struct AgentOutcome {
     var changedFiles: [String] = []
     /// The command the app ran to verify the change, when it passed.
     var verifiedBy: String?
+    /// Open items the completion check still found when the request stopped (the answer says so).
+    var missing: [String] = []
 }
 
 /// Observe, think, act loop over the text action protocol (ported from Peep, specialised for coding).
@@ -28,8 +30,24 @@ final class Agent {
     var autoCompactTokens = 160_000
     /// Run the project's tests (or ask the model to verify) before accepting "done" after edits.
     var autoVerify = true
-    /// Have a second call review the final diff.
+    /// Have a second call review the final diff (used only when the completion judge is off).
     var selfReview = true
+    /// Judge the final answer with a hidden second model call before accepting it (see CompletionJudge).
+    var judgeEnabled = true
+    /// The judge's model setting: "auto", or a model id.
+    var judgeSetting = "auto"
+    /// This request is part of a /goal run: more judge rounds, and dangerous commands are queued, not asked.
+    var inGoal = false
+    /// The goal's checks (its definition of done) with their latest results.
+    var goalCriteria: [GoalCriterion] = []
+    /// Goal mode: a dangerous command that needs approval is handed to this instead of asking the owner.
+    var queueApprovals: ((PermissionRequest) -> Void)?
+    /// Commands the owner approved after they were queued: each runs once.
+    var approvedOnce = Set<String>()
+    private var verifyReport = ""
+    private var criteriaReport = ""
+    /// Set when a <check> note went into the conversation; it leaves the history after the next reply.
+    private var checkNotesPending = false
     /// Model for a turn after the same action failed twice ("" = never escalate).
     var escalationModel = ""
     /// Model for exploration turns and explore helpers ("" = the session model).
@@ -77,6 +95,10 @@ final class Agent {
     private var failureCounts: [String: Int] = [:]
     private var escalateNext = false
     private var lastFailure: String?
+    /// When the current request started (set in run).
+    private var requestStart = Date()
+    /// The last finished request: start, end and steps. Answers "how long did that take" on a follow-up.
+    var lastRequest: (start: Date, end: Date, steps: Int)?
     /// read_file results recently shown to the model: path|offset|limit → (modification date, step).
     private var readCache: [String: (Date, Int)] = [:]
 
@@ -222,7 +244,7 @@ final class Agent {
     func projectInfo() async -> PromptBuilder.ProjectInfo {
         let root = ctx.root
         let skills = SkillLibrary.all(project: root)
-        var info = PromptBuilder.ProjectInfo(root: root, git: await Git.status(root), layout: ProjectContext.layout(root),
+        var info = PromptBuilder.ProjectInfo(root: root, git: await Git.status(root, untrackedAll: false), layout: ProjectContext.layout(root),
                                              memory: ProjectContext.memory(root), skills: [], skillCount: skills.count)
         info.repoMap = await Task.detached { RepoMap.build(root) }.value
         if let t = memory.testCommand { info.testCommand = t; info.testCommandProven = true }
@@ -305,6 +327,7 @@ final class Agent {
         let activity = ProcessInfo.processInfo.beginActivity(options: [.idleSystemSleepDisabled, .userInitiated], reason: "Anvil is working on a task")
         defer { ProcessInfo.processInfo.endActivity(activity) }
         let taskStart = Date()
+        requestStart = taskStart
         checkpoint = Checkpoint(label: Fmt.line(goal, 80))
         editedSinceVerify = false
         failureCounts = [:]
@@ -322,8 +345,7 @@ final class Agent {
         let size: RequestSize = isSubagent ? .question : RequestSize.classify(goal)
         planEditsApproved = false
         var intro: String
-        let skills = SkillLibrary.matching(goal, project: ctx.root)
-        let skillNote = skills.isEmpty ? "" : "SKILLS THAT MAY HELP (load with use_skill before starting)\n" + skills.map { "- \($0.name): \(Fmt.line($0.description, 160))" }.joined(separator: "\n") + "\n\n"
+        let skillNote = SkillLibrary.skillNote(for: goal, project: ctx.root, firstTurn: messages.isEmpty && !isSubagent)
         if messages.isEmpty {
             briefing = await buildBriefing()
             prepared = nil
@@ -333,12 +355,15 @@ final class Agent {
             // A resumed conversation may predate tools Anvil has gained since: list them before the request.
             let fresh = unannouncedTools()
             let note = fresh.isEmpty ? "" : "NEW TOOLS AVAILABLE NOW (added since this conversation started; same reply format):\n" + fresh.joined(separator: "\n") + "\n\n"
-            intro = note + skillNote + jail + PromptBuilder.followUp(goal, attachments: attachmentsNote)
+            let previous = lastRequest.map { Self.previousRequestLine(start: $0.start, end: $0.end, steps: $0.steps) + "\n\n" } ?? ""
+            intro = previous + note + skillNote + jail + PromptBuilder.followUp(goal, attachments: attachmentsNote)
         }
         var userText = (unsent.map { $0 + "\n\n" } ?? "") + intro + (isSubagent ? "" : PromptBuilder.modeNote(mode)) + PromptBuilder.formatReminder
         unsent = nil
         var pendingImages = images
         var parseFailures = 0
+        /// Replies this request that were cut off (see Brain.isCutOff); their actions never run.
+        var cutOffs = 0
         var reanchors = 0
         /// Re-anchors since the model last ran an action batch (it slipped again without doing anything in between).
         var reanchorsSinceAction = 0
@@ -353,6 +378,8 @@ final class Agent {
         var verifyRuns = 0
         var askedToVerify = false
         var reviewed = false
+        /// The completion check's rounds for this request (more in goal mode).
+        var judge = CompletionJudge.Tracker(cap: inGoal ? 6 : 3)
         var verifiedBy: String?
         var planApproved = false
         var planShown = false
@@ -459,6 +486,7 @@ final class Agent {
             }
             host?.agentStream("")
             messages.append(.assistant(raw))
+            clearCheckNotes()
             if maxCost > 0 && taskCost >= maxCost && !isSubagent {
                 onHistory?()
                 return finish("Stopped at this request's cost limit (\(Fmt.dollars(maxCost)); spent \(Fmt.dollars(taskCost))). Say \"continue\" to keep going, or raise the limit with /limit.", ok: false, steps: step)
@@ -468,6 +496,17 @@ final class Agent {
 
             let reply: AgentReply
             do {
+                // A cut-off reply may hold a half-written file the lenient parser would repair and run: nothing from it runs.
+                if Brain.isCutOff(raw, finishReason: brain.lastFinishReason) {
+                    // Never fall through to the lenient parser: it would "repair" the reply and could write a truncated file.
+                    guard cutOffs < 3 else {
+                        host?.agentError("The model's replies were cut off three times in a row.")
+                        return finish("The model's replies kept getting cut off before they finished, so nothing from them ran. Try a shorter request, /compact, or another model.", ok: false, steps: step)
+                    }
+                    cutOffs += 1
+                    userText = "<observation step=\(step)>Your last reply was cut off before it finished (the json block never closed). Nothing from it ran. Send it again, shorter: split big file writes into several smaller edits.</observation>"
+                    continue
+                }
                 reply = try ActionParser.parse(raw)
                 parseFailures = 0
             } catch {
@@ -607,7 +646,10 @@ final class Agent {
                             if let cmd = ProjectMemory.verifyCommand(changed: changed, root: ctx.root, remembered: memory.testCommand) {
                                 host?.agentStatus("Verifying")
                                 let r = await execute(AgentAction(tool: "shell", args: .object(["command": .string(cmd)])), label: "Verify: \(cmd)")
-                                if r.result.ok {
+                                // A check that exits 0 but shows a failure, or hides one behind ||, doesn't pass.
+                                let passed = r.result.ok && !OutputCheck.hasOrChain(cmd)
+                                verifyReport = "Ran `\(cmd)`: \(passed ? "passed" : "FAILED")\n" + Fmt.clip(r.result.output, max: 2000)
+                                if passed {
                                     editedSinceVerify = false
                                     verifiedBy = cmd
                                     remember(command: cmd)
@@ -621,7 +663,8 @@ final class Agent {
                                 continue
                             }
                         }
-                        if selfReview && !reviewed {
+                        // Without the completion judge, a second call reviews the diff (the judge takes its place).
+                        if selfReview && !reviewed && !judgeEnabled {
                             reviewed = true
                             if let issues = await review(goal) {
                                 userText = "<observation step=\(step)>A reviewer read your diff for this request and flagged:\n\(issues)\nFix the real problems and verify again, or reply done:true if none of these are real problems (say why in one line).</observation>\n\(PromptBuilder.formatReminder)"
@@ -638,9 +681,33 @@ final class Agent {
                         userText = "<observation step=\(step)>Your final answer is too thin for the work you did. Reply again with done:true and a complete answer for the owner: what you built or changed (and why, if it matters), exactly where it is (file paths), how to run or use it (the exact command or steps, with a short example), how you verified it and what the real output showed, and any known limits or follow-ups. Plain prose or a few bullets, no filler.</observation>\n\(PromptBuilder.formatReminder)"
                         continue
                     }
+                    // Completion check (hidden from the chat): the goal's command and file checks, then the judge. Open items go
+                    // back to the model in a <check> note. A repeated miss, the round cap or the budget ends it, and the
+                    // answer says what stayed unresolved.
+                    var open: [String] = []
+                    if !isSubagent {
+                        var misses = await criteriaMisses()
+                        if judgeEnabled && (actedThisRequest || size != .question),
+                           let judged = await judgeAnswer(goal: goal, answer: reply.say ?? reply.thought) {
+                            misses += judged.filter { !misses.contains($0) }
+                        }
+                        if !misses.isEmpty {
+                            let fix = judge.record(misses)
+                            let budgetOut = step >= maxSteps - 1 || (maxCost > 0 && taskCost >= maxCost)
+                            if !fix.isEmpty && !judge.exhausted && !budgetOut && !Task.isCancelled {
+                                userText = "<observation step=\(step)>The request isn't finished yet.</observation>\n\(CompletionJudge.checkNote(fix))\n\(PromptBuilder.formatReminder)"
+                                checkNotesPending = true
+                                continue
+                            }
+                            open = judge.unresolved + fix.filter { !judge.unresolved.contains($0) }
+                        }
+                    }
                     var answer = reply.say ?? reply.thought
                     if let v = verifiedBy, !answer.contains(v) { answer += "\n\nVerified: `\(v)` passed." }
-                    return finish(answer, ok: true, steps: step, verifiedBy: verifiedBy)
+                    if !open.isEmpty { answer += "\n\n" + CompletionJudge.unresolvedLine(open) }
+                    var outcome = finish(answer, ok: true, steps: step, verifiedBy: verifiedBy)
+                    outcome.missing = open
+                    return outcome
                 }
                 userText = "<observation step=\(step)>No actions were given. If the request is complete, reply with \"done\": true and the answer in \"say\". \(PromptBuilder.formatReminder)</observation>"
                 continue
@@ -686,8 +753,11 @@ final class Agent {
                     if r.verified, ProjectMemory.covers(r.command ?? "", changed: checkpoint.files.map(\.path)) { editedSinceVerify = false }
                     if !r.result.ok {
                         let key = "\(r.action.tool) \(r.action.args["path"]?.string ?? r.command ?? "")"
-                        failureCounts[key, default: 0] += 1
-                        if failureCounts[key]! >= (size == .hard ? 1 : 2) && !escalationModel.isEmpty { escalateNext = true }
+                        // Only failures of the model's own work count toward a model switch (not the environment).
+                        if Self.countsTowardEscalation(tool: r.action.tool, command: r.command, output: r.result.output, declined: r.line.contains("→ DECLINED")) {
+                            failureCounts[key, default: 0] += 1
+                            if failureCounts[key]! >= (size == .hard ? 2 : 3) && !escalationModel.isEmpty { escalateNext = true }
+                        }
                         lastFailure = "\(r.action.tool) \(Fmt.line(Self.argsForLog(r.action), 100)) failed: \(Fmt.line(r.result.output, 140))"
                     }
                     if !r.result.ok || r.result.stopBatch { anyFailed = anyFailed || !r.result.ok; stop = true }
@@ -794,10 +864,85 @@ final class Agent {
                 #"\bdeno\b"#, #"\bbun\b"#, #"\bnpx\b"#, #"\bnpm\s+run\b"#, #"\bcurl\b"#, #"\bphp\b"#, #"\bjava\b"#].contains { c.range(of: $0, options: .regularExpression) != nil }
     }
 
+    // MARK: Completion check
+
+    /// Runs the goal's command and file criteria (the owner's definition of done) and returns the ones not met.
+    /// The results go to the judge as check output. Empty outside goal mode.
+    func criteriaMisses() async -> [String] {
+        guard inGoal else { return [] }
+        if goalCriteria.isEmpty, let found = GoalState.criteria(in: messages) { goalCriteria = found }
+        guard !goalCriteria.isEmpty else { return [] }
+        var misses: [String] = []
+        var lines: [String] = []
+        for i in goalCriteria.indices {
+            let c = goalCriteria[i]
+            switch c.kind {
+            case .command:
+                guard let cmd = c.command else { continue }
+                let r = await execute(AgentAction(tool: "shell", args: .object(["command": .string(cmd)])), label: "Check: \(c.text)")
+                goalCriteria[i].met = r.result.ok
+                lines.append("\(r.result.ok ? "PASS" : "FAIL") \(c.text) (`\(cmd)`): \(Fmt.clip(r.result.output, max: 1500))")
+                if !r.result.ok { misses.append("\(c.text): `\(cmd)` fails (\(Fmt.line(r.result.output, 160)))") }
+            case .file:
+                guard let path = c.path else { continue }
+                let exists = FileManager.default.fileExists(atPath: ctx.resolve(path).path)
+                goalCriteria[i].met = exists
+                lines.append("\(exists ? "PASS" : "FAIL") \(c.text): \(path) \(exists ? "exists" : "is missing")")
+                if !exists { misses.append("\(c.text): \(path) is missing") }
+            case .manual:
+                continue
+            }
+        }
+        criteriaReport = lines.joined(separator: "\n")
+        return misses
+    }
+
+    /// The judge reads this request's changes and final answer. Returns its open items, or nil when no usable verdict
+    /// came back (the check is skipped; a judge failure never blocks the answer).
+    func judgeAnswer(goal: String, answer: String) async -> [String]? {
+        let (diff, files, _) = changeContext()
+        let jm = CompletionJudge.judgeModel(for: brain.model, setting: judgeSetting, available: ModelCatalog.shared.choices.map(\.id)).model
+        let prompt = CompletionJudge.prompt(goal: goal, criteria: goalCriteria.map(\.text), diff: diff, files: files,
+                                            lastCheck: [verifyReport, criteriaReport].filter { !$0.isEmpty }.joined(separator: "\n"),
+                                            answer: answer)
+        let id = UUID()
+        host?.agentStepBegan(id, tool: "review", summary: "Checking it's done")
+        host?.agentStatus("Checking it's done")
+        let start = Date()
+        let judgeBrain = brain.fork(model: jm)
+        var verdict: Verdict?
+        for _ in 0..<2 {
+            guard let text = try? await judgeBrain.oneShot(prompt, effort: "high") else { break }
+            if let v = CompletionJudge.parse(text) { verdict = v; break }
+        }
+        let duration = Date().timeIntervalSince(start)
+        guard let verdict else {
+            host?.agentStepEnded(id, status: .ok, output: "Check skipped: the judge gave no usable verdict", diffs: [], duration: duration)
+            return nil
+        }
+        let open = verdict.open
+        host?.agentStepEnded(id, status: .ok, output: open.isEmpty ? "Done" : open.map { "- \(Fmt.line($0, 300))" }.joined(separator: "\n"),
+                             diffs: [], duration: duration)
+        return open
+    }
+
+    /// The <check> note leaves the history once the model has answered it (the next turn doesn't need it).
+    private func clearCheckNotes() {
+        guard checkNotesPending else { return }
+        checkNotesPending = false
+        for i in messages.indices where messages[i].role == "user" {
+            messages[i].parts = messages[i].parts.map { part in
+                if case .text(let t) = part, t.contains("<check>") { return ChatPart.text(CompletionJudge.strippingChecks(t)) }
+                return part
+            }
+        }
+    }
+
     // MARK: Review
 
     /// A second model call reads the request's diff and returns concrete problems, or nil if it looks right.
-    func review(_ goal: String) async -> String? {
+    /// The request's changes: a unified diff, the changed files' current text, and how many lines changed.
+    func changeContext() -> (diff: String, files: String, lines: Int) {
         var diff = ""
         var changed = 0
         for f in checkpoint.files {
@@ -809,15 +954,20 @@ final class Agent {
             changed += st.added + st.removed
             diff += u.isEmpty ? "" : u + "\n"
         }
-        guard changed >= 3, !diff.isEmpty else { return nil }
         // The diff alone hides requirements stated in the unchanged parts of a file (a docstring that says what the
-        // function must do, a comment, a spec in a header), so the reviewer also gets the changed files' current text.
+        // function must do, a comment, a spec in a header), so the reader also gets the changed files' current text.
         var files = ""
         for f in checkpoint.files.prefix(6) {
             let url = URL(fileURLWithPath: f.path)
             guard let now = try? String(contentsOf: url, encoding: .utf8), !now.isEmpty, files.count < 18_000 else { continue }
             files += "\n--- \(Paths.display(url, root: ctx.root)) ---\n" + Fmt.clip(now, max: 7000) + "\n"
         }
+        return (diff, files, changed)
+    }
+
+    func review(_ goal: String) async -> String? {
+        let (diff, files, changed) = changeContext()
+        guard changed >= 3, !diff.isEmpty else { return nil }
         let id = UUID()
         host?.agentStepBegan(id, tool: "review", summary: "Review the changes")
         host?.agentStatus("Reviewing the changes")
@@ -923,6 +1073,33 @@ final class Agent {
         var verified = false
     }
 
+    /// Thrown by `withBudget` when the work ran past its budget.
+    struct BudgetExceeded: Error { let seconds: Double }
+
+    /// Runs `op` for at most `seconds`. Past that its task is cancelled and this throws BudgetExceeded.
+    static func withBudget<T: Sendable>(seconds: Double, _ op: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await op() }
+            group.addTask { () async throws -> T in
+                try await Task.sleep(for: .seconds(seconds))
+                throw BudgetExceeded(seconds: seconds)
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw BudgetExceeded(seconds: seconds) }
+            return first
+        }
+    }
+
+    /// How long a tool may run before it is stopped. Nil for tools with their own limits or that wait on the owner.
+    static func toolBudget(_ tool: String, group: ToolGroup, args: JSON) -> Double? {
+        if tool == "browser_wait" { return min(60, args["timeout"]?.double ?? 10) + 10 }
+        if tool.hasPrefix("browser_") { return 60 }
+        if tool.hasPrefix("sim_") { return 90 }
+        if group == .mcp && tool.contains(".") { return 120 }   // MCP tools are named server.tool
+        if tool == "fetch_url" || tool == "web_search" { return 45 }
+        return nil
+    }
+
     func execute(_ action: AgentAction, label: String? = nil) async -> Executed {
         let argsShort = Fmt.line(action.args.compact, 160)
         guard let spec = tools[action.tool] else {
@@ -998,8 +1175,14 @@ final class Agent {
             return Executed(line: "- \(action.tool) \(Self.argsForLog(action)) → ok: \(desc)\(checked)", result: .ok(desc), action: action, edited: true)
         }
 
-        let kind = spec.effectiveKind(action.args)
-        let command = spec.command?(action.args)
+        var kind = spec.effectiveKind(action.args)
+        var command = spec.command?(action.args)
+        // Stopping a process another agent or the app started is not this session's call: it goes to the owner.
+        if action.tool == "stop_process", let name = action.args["name"]?.string ?? action.args["value"]?.string,
+           let e = ctx.processes.entry(name), e.running, ShellTools.stopNeedsApproval(owner: e.owner, session: ctx.owner) {
+            kind = .exec
+            command = ShellTools.foreignStopMarker(name)
+        }
         let decision = Permissions.decide(mode: mode, kind: kind, command: command, root: ctx.root, allowed: allowedCommands)
         if let denied = await gate(decision, tool: action.tool, command: command, diffs: []) {
             host?.agentStepBegan(id, tool: action.tool, summary: summary)
@@ -1011,7 +1194,14 @@ final class Agent {
         var r: ToolResult
         do {
             guard let run = spec.run else { throw ToolFailure("tool has no implementation") }
-            r = try await run(action.args, ctx)
+            if let budget = Self.toolBudget(action.tool, group: spec.group, args: action.args) {
+                let context = ctx
+                r = try await Self.withBudget(seconds: budget) { try await run(action.args, context) }
+            } else {
+                r = try await run(action.args, ctx)
+            }
+        } catch let b as BudgetExceeded {
+            r = .fail("\(action.tool) took longer than \(Int(b.seconds)) s and was stopped. Try a different approach or a smaller step.")
         } catch is CancellationError {
             r = .fail("stopped by the owner")
         } catch {
@@ -1027,15 +1217,26 @@ final class Agent {
                 extra = "\nCODE AROUND THE HITS:\n" + code
             }
         }
+        // A command can exit 0 and still have failed (a build that prints errors, a runner that prints a failed test).
+        if action.tool == "shell", r.ok, let line = OutputCheck.outputShowsFailure(r.output) {
+            r.ok = false
+            r.stopBatch = true
+            r.output = "exit code 0, but the output shows a failure: \(line)\n" + r.output
+        }
         if action.tool == "shell" { FileIndex.of(ctx.root).invalidate() }
         host?.agentStepEnded(id, status: r.ok ? .ok : .failed, output: r.output, diffs: [], duration: Date().timeIntervalSince(start))
         if r.ok, let key = readKey, let d = readDate { readCache[key] = (d, currentStep) }
+        // A check with || can pass on the second command while the first one failed: it doesn't verify anything.
+        var orNote = ""
+        if action.tool == "shell", let cmd = command, Self.exercisesCode(cmd), OutputCheck.hasOrChain(cmd) {
+            orNote = "\n(This command uses ||, which can hide a failing first command; run the checks separately.)"
+        }
         var verified = false
-        if action.tool == "shell", r.ok, let cmd = command, Self.exercisesCode(cmd) {
+        if action.tool == "shell", r.ok, let cmd = command, Self.exercisesCode(cmd), orNote.isEmpty {
             verified = true
             remember(command: cmd)
         }
-        return Executed(line: "- \(action.tool) \(argsShort) → \(r.ok ? "ok" : "FAILED"): \(Fmt.clip(r.output, max: 16000))\(extra)", result: r, action: action, command: command, verified: verified)
+        return Executed(line: "- \(action.tool) \(argsShort) → \(r.ok ? "ok" : "FAILED"): \(Fmt.clip(r.output, max: 16000))\(extra)\(orNote)", result: r, action: action, command: command, verified: verified)
     }
 
     /// Applies the permission decision, asking the owner when needed. Returns the refusal text, or nil to proceed.
@@ -1048,9 +1249,16 @@ final class Agent {
             // Edits inside the project that an approved plan or a "whole reply" approval already covers.
             if command == nil && reason == "edit" && (planEditsApproved || batchEditsApproved) { return nil }
             let key = command.map(Permissions.commandKey)
-            host?.agentStatus("Waiting for your approval")
             let req = PermissionRequest(tool: tool, reason: reason, command: command, diffs: diffs, commandKey: key,
                                         batchRemaining: command == nil ? batchEditsLeft : 0)
+            // A dangerous command the owner approved after it was queued runs once.
+            if let command, approvedOnce.contains(command) { approvedOnce.remove(command); return nil }
+            // Goal mode runs unattended: a dangerous command is queued for the owner and the goal carries on.
+            if let queue = queueApprovals, let command, Permissions.dangerReason(command) != nil {
+                queue(req)
+                return "queued for the owner's approval; carry on with other work"
+            }
+            host?.agentStatus("Waiting for your approval")
             let answer = await host?.agentPermission(req) ?? .deny(nil)
             switch answer {
             case .allow: return nil
@@ -1142,6 +1350,7 @@ final class Agent {
 
     private func finish(_ raw: String, ok: Bool, steps: Int, silent: Bool = false, verifiedBy: String? = nil) -> AgentOutcome {
         var text = Fmt.plain(raw)
+        lastRequest = (requestStart, Date(), steps)
         if ok && !isSubagent { text = checkpoint.files.isEmpty ? Self.trimFiller(text) : Self.stripLeadingPointer(text) }
         if !checkpoint.files.isEmpty { onCheckpoint?(checkpoint) }
         let changed = checkpoint.files.map { Paths.display(URL(fileURLWithPath: $0.path), root: ctx.root) }
@@ -1348,6 +1557,26 @@ final class Agent {
                     "tools", "shell", "terminal", "browser", "this environment", "sandbox"]
         let sandboxed = t.contains("sandboxed environment") || t.contains("running in a sandbox")
         return sandboxed || (cant.contains { t.contains($0) } && what.contains { t.contains($0) })
+    }
+
+    /// Whether a failed action says something about the model's work (edits, builds, tests, runs), not the environment:
+    /// browsing, network, waiting, looking for files and actions the owner declined don't count toward a model switch.
+    static func countsTowardEscalation(tool: String, command: String?, output: String, declined: Bool) -> Bool {
+        if declined { return false }
+        if tool == "shell" {
+            guard let cmd = command, exercisesCode(cmd) else { return false }
+            return !output.contains("command not found")
+        }
+        return ["edit_file", "multi_edit", "write_file", "replace_lines", "delete_file"].contains(tool)
+    }
+
+    /// "Previous request: started 10:02:11, finished 10:05:59 (3 min 48 s), 14 steps." for follow-up turns.
+    static func previousRequestLine(start: Date, end: Date, steps: Int) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        let secs = max(0, Int(end.timeIntervalSince(start)))
+        let dur = secs >= 60 ? "\(secs / 60) min \(secs % 60) s" : "\(secs) s"
+        return "Previous request: started \(f.string(from: start)), finished \(f.string(from: end)) (\(dur)), \(steps) step\(steps == 1 ? "" : "s")."
     }
 
     static func timeNote(since start: Date) -> String {

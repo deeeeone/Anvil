@@ -24,6 +24,9 @@ enum Segment: Identifiable {
 struct ConversationView: View {
     let controller: SessionController
     static let column: CGFloat = 760
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// When the owner dismissed the ended goal's panel (its start time).
+    @State private var goalDismissed: Date?
 
     var body: some View {
         if controller.session.items.isEmpty && !controller.running {
@@ -65,11 +68,16 @@ struct ConversationView: View {
                     .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
                 VStack(spacing: 10) {
+                    if let g = GoalSummary.shown(controller.session.goal, dismissed: goalDismissed) {
+                        GoalPanel(controller: controller, goal: g, onDismiss: { goalDismissed = g.startedAt })
+                            .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                    }
                     if let p = controller.pendingPermission { PermissionCard(pending: p) }
                     if let q = controller.pendingQuestion { QuestionCard(pending: q) }
                     StatusLine(controller: controller)
                     Composer(controller: controller)
                 }
+                .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: GoalSummary.shown(controller.session.goal, dismissed: goalDismissed) != nil)
                 .padding(.horizontal, 20).padding(.bottom, 16)
                 .frame(maxWidth: Self.column + 80)
                 .frame(maxWidth: .infinity)
@@ -514,6 +522,24 @@ struct QuestionCard: View {
     }
 }
 
+/// "· 4s ago" once the agent has been quiet for 10 s; amber "· no activity for 1m 20s" past a minute. Redraws itself.
+struct IdleLabel: View {
+    let since: Date
+    var body: some View {
+        HStack(spacing: 0) {
+            TickingLabel(font: .monospacedDigitSystemFont(ofSize: 12, weight: .regular), color: NSColor(Theme.text3), interval: 1, size: nil) { now in
+                let idle = now.timeIntervalSince(since)
+                return idle > 10 && idle <= 60 ? "· \(Int(idle))s ago" : ""
+            }
+            TickingLabel(font: .monospacedDigitSystemFont(ofSize: 12, weight: .regular), color: NSColor(Theme.amber), interval: 1, size: nil) { now in
+                let idle = Int(now.timeIntervalSince(since))
+                return idle > 60 ? "· no activity for \(idle / 60)m \(idle % 60)s" : ""
+            }
+        }
+        .fixedSize()
+    }
+}
+
 /// "✻ Running npm test… 12s · esc to interrupt"
 struct StatusLine: View {
     let controller: SessionController
@@ -526,6 +552,7 @@ struct StatusLine: View {
                     .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.accent.opacity(0.95))
                     .lineLimit(1).truncationMode(.middle)
                 if let s = controller.startedAt { ElapsedLabel(start: s) }
+                if let since = [controller.lastActivity, controller.startedAt].compactMap({ $0 }).max() { IdleLabel(since: since) }
                 Text("· esc to interrupt").font(.system(size: 12)).foregroundStyle(Theme.text3).lineLimit(1).layoutPriority(-1)
                 Spacer(minLength: 0)
             }

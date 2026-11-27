@@ -146,6 +146,7 @@ final class ProviderPluginTests: XCTestCase {
         let dir = tmp.appendingPathComponent("project")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let agent = Agent(ctx: ToolContext(root: dir, processes: ProcessManager(), host: nil), brain: brain)
+        agent.judgeEnabled = false
         agent.autoVerify = false
         agent.selfReview = false
         let out = await agent.run(goal: "say hi")

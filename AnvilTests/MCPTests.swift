@@ -48,6 +48,7 @@ final class MCPTests: XCTestCase {
         brain.override = { h, _ in sent.append(h); return replies.removeFirst() }
         let host = TestHost()
         let agent = Agent(ctx: ToolContext(root: dir, processes: ProcessManager(), host: host), brain: brain, extraTools: specs)
+        agent.judgeEnabled = false
         agent.mode = .bypass
         agent.autoVerify = false; agent.selfReview = false; agent.streaming = false; agent.memory = ProjectMemory()
         let out = await agent.run(goal: "echo hi")
@@ -73,6 +74,7 @@ final class MCPTests: XCTestCase {
         let brain = Brain(client: OpenAIClient(baseURL: URL(string: "http://localhost:1")!, apiKey: ""), model: "m", visionModel: "", effort: "high", visionEffort: "low")
         brain.override = { h, _ in sent.append(h); return replies.removeFirst() }
         let agent = Agent(ctx: ToolContext(root: dir, processes: ProcessManager(), host: TestHost()), brain: brain)
+        agent.judgeEnabled = false
         agent.mode = .bypass
         agent.autoVerify = false; agent.selfReview = false; agent.streaming = false; agent.memory = ProjectMemory()
         var available: [ToolSpec] = []

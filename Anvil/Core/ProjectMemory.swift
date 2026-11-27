@@ -109,7 +109,7 @@ nonisolated struct ProjectMemory: Codable, Equatable, Sendable {
         func has(_ p: String) -> Bool { fm.fileExists(atPath: dir.appendingPathComponent(p).path) }
         if has("package.json") {
             let pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : has("bun.lockb") || has("bun.lock") ? "bun" : "npm"
-            let install = has("node_modules") ? "" : (pm == "npm" ? "npm install --no-audit --no-fund && " : "\(pm) install && ")
+            let install = depsInstalled(dir) ? "" : (pm == "npm" ? "npm install --no-audit --no-fund && " : "\(pm) install && ")
             if let d = try? Data(contentsOf: dir.appendingPathComponent("package.json")), let j = JSON.parse(String(decoding: d, as: UTF8.self)) {
                 for script in ["build", "typecheck", "lint"] where j["scripts"]?[script]?.string != nil {
                     return install + (pm == "npm" ? "npm run \(script)" : "\(pm) run \(script)")
@@ -124,6 +124,11 @@ nonisolated struct ProjectMemory: Codable, Equatable, Sendable {
         return nil
     }
 
+    /// JavaScript dependencies count as installed only when the folder's own node_modules/.bin exists.
+    static func depsInstalled(_ dir: URL) -> Bool {
+        FileManager.default.fileExists(atPath: dir.appendingPathComponent("node_modules/.bin").path)
+    }
+
     private static func shellQuote(_ s: String) -> String {
         s.range(of: #"^[A-Za-z0-9_./~-]+$"#, options: .regularExpression) != nil ? s : "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
@@ -134,6 +139,15 @@ nonisolated struct ProjectMemory: Codable, Equatable, Sendable {
         if has("package.json"), let d = try? Data(contentsOf: root.appendingPathComponent("package.json")),
            let j = JSON.parse(String(decoding: d, as: UTF8.self)), let t = j["scripts"]?["test"]?.string, !t.contains("no test specified") {
             return has("pnpm-lock.yaml") ? "pnpm test" : has("yarn.lock") ? "yarn test" : has("bun.lockb") ? "bun test" : "npm test"
+        }
+        // Test files without a test script: run them with the runner the project depends on.
+        if has("package.json"), ProjectContext.hasTestFiles(root) {
+            let pkg = (try? Data(contentsOf: root.appendingPathComponent("package.json"))).flatMap { JSON.parse(String(decoding: $0, as: UTF8.self)) }
+            func dep(_ n: String) -> Bool { pkg?["devDependencies"]?[n] != nil || pkg?["dependencies"]?[n] != nil }
+            if dep("vitest") { return "npx vitest run" }
+            if dep("jest") { return "npx jest" }
+            if dep("tsx") { return "npx tsx --test" }
+            return "node --test"
         }
         if has("Cargo.toml") { return "cargo test" }
         if has("go.mod") { return "go test ./..." }

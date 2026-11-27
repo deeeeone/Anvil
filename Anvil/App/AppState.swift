@@ -61,6 +61,10 @@ final class AppState {
     @ObservationIgnored var scheduleTimer: Task<Void, Never>?
     @ObservationIgnored var presenceBusy = false
     @ObservationIgnored var presenceTaskStart: Date? { didSet { persistSubSessions() } }
+    /// What the agent is doing now, for Discord (set by SessionController's step hooks; cleared when work stops).
+    @ObservationIgnored var presenceTool: String?
+    @ObservationIgnored var presenceSummary = ""
+    @ObservationIgnored var presenceThinking = false
     /// True while a project's saved links are being loaded (so loading doesn't write them back).
     @ObservationIgnored var restoringSubSessions = false
     /// Polls GitHub for labeled issues to queue (see TaskQueue.swift).
@@ -85,7 +89,28 @@ final class AppState {
         if states != activity { activity = states }
         KeepAwake.shared.update(working: busy)
         keepingAwake = KeepAwake.shared.held
-        if busy != presenceBusy { presenceBusy = busy; presenceTaskStart = busy ? Date() : nil }
+        if busy != presenceBusy {
+            presenceBusy = busy
+            presenceTaskStart = busy ? Date() : nil
+            if !busy { presenceTool = nil; presenceSummary = ""; presenceThinking = false }
+        }
+        refreshPresence()
+    }
+
+    /// A step began in a running session (a tool call, or nil between steps while the model is being waited on).
+    func presenceStep(tool: String?, summary: String) {
+        presenceTool = tool
+        presenceSummary = summary
+        presenceThinking = false
+        refreshPresence()
+    }
+
+    /// The agent's status line changed: "Thinking…" means the model is being waited on.
+    func presenceStatus(_ text: String) {
+        guard text.hasPrefix("Thinking") || text.hasPrefix("Compacting") else { return }
+        presenceTool = nil
+        presenceSummary = ""
+        presenceThinking = true
         refreshPresence()
     }
 
@@ -94,8 +119,10 @@ final class AppState {
         let s = AppSettings.shared
         guard s.discordPresence, !AppInfo.isTesting else { DiscordPresence.shared.update(nil); return }
         let model = current?.model ?? s.model
-        let project = s.discordShowProject ? project?.lastPathComponent : nil
-        DiscordPresence.shared.update(.init(working: presenceBusy, model: model, project: project, taskStart: presenceTaskStart))
+        DiscordPresence.shared.update(.init(
+            working: presenceBusy, model: model, project: project?.lastPathComponent, taskStart: presenceTaskStart,
+            tool: presenceTool, summary: presenceSummary, thinking: presenceThinking, showProject: s.discordShowProject
+        ), clientID: s.discordClientID)
     }
 
     func controller(for id: UUID) -> SessionController? { controllers[id] }
@@ -159,6 +186,7 @@ final class AppState {
         refreshSessions()
         meta.prune(keeping: Set(sessions.map(\.id)))
         if let first = sessions.first { select(first.id) } else { newSession() }
+        resumeGoals()
         refreshGit()
         refreshBrief(root)
         processQueue()
@@ -302,6 +330,43 @@ final class AppState {
                 refreshSessions()
                 refreshGit()
             }
+        }
+    }
+
+    /// /goal in a git repo: the goal runs in its own worktree on its own branch, and the session it came from says where.
+    /// If no worktree can be made (not a repo, no commits yet), the goal runs in place.
+    func startGoalInWorktree(_ goal: String, display: String, from origin: SessionController) {
+        guard let project else { origin.startGoalHere(goal, display: display); return }
+        Task {
+            switch await Git.addWorktree(project, name: "goal " + goal) {
+            case .failure:
+                origin.startGoalHere(goal, display: display)
+            case .success(let (dir, branch, base)):
+                origin.append(ChatItem(kind: .system, text: "The goal runs in its own worktree on branch \(branch) (from \(base)), folder \(Paths.display(dir, root: nil)). Your uncommitted changes in \(project.lastPathComponent) aren't in it. Open that session from the sidebar to follow the goal."))
+                var s = Session(projectPath: project.path)
+                s.workdir = dir.path
+                s.branch = branch
+                s.baseBranch = base
+                s.title = Session.title(from: "Goal: " + goal)
+                let c = SessionController(session: s, root: dir, processes: processes)
+                c.app = self
+                controllers[s.id] = c
+                c.append(ChatItem(kind: .system, text: "Working in a git worktree on branch \(branch) (from \(base)), folder \(Paths.display(dir, root: nil)). Merge it from the Git tab when the goal is done."))
+                c.startGoalHere(goal, display: display, branch: branch)
+                c.saveNow()
+                refreshSessions()
+            }
+        }
+    }
+
+    /// Goals that were running when Anvil quit pick up again.
+    private func resumeGoals() {
+        guard let project else { return }
+        // Only sessions whose saved goal is mid-run: loading every controller would also re-save (and re-date) every session.
+        let live: Set<String> = ["working", "checking", "fixing", "waitingForProvider"]
+        for s in sessions where s.goalPhase.map(live.contains) == true {
+            guard let c = loadController(s.id, root: project), c.session.goal?.isActive == true else { continue }
+            c.resumeGoal()
         }
     }
 

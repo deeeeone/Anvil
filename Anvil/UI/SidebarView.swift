@@ -266,6 +266,12 @@ struct SessionRow: View {
     /// How a sub-session is doing (nil for an ordinary session).
     private var subState: SubSession.State? { app.subSessions.first { $0.id == summary.id }?.state }
 
+    /// The session's goal phase: live from its controller when it is open, else from the session file.
+    private var goalPhase: GoalState.Phase? {
+        if let g = app.controller(for: summary.id)?.session.goal { return g.phase }
+        return summary.goalPhase.flatMap { GoalState.Phase(rawValue: $0) }
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             if childCount > 0 {
@@ -294,6 +300,10 @@ struct SessionRow: View {
                 HStack(spacing: 8) {
                     if let st = subState { subIcon(st) }
                     else if summary.branch != nil { Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .semibold)).foregroundStyle(summary.worktreeRemoved ? Theme.text3 : Theme.accent).help(summary.branch ?? "") }
+                    if let gp = goalPhase, GoalSummary.isLive(gp) {
+                        Image(systemName: "scope").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.accent)
+                            .help("Goal: \(GoalSummary.chip(gp).text)").accessibilityLabel("Goal running")
+                    }
                     Text(summary.title).font(.system(size: 13)).foregroundStyle(selected ? Theme.text : Theme.text2).lineLimit(1)
                         .strikethrough(summary.worktreeRemoved, color: Theme.text3)
                     if isUnread { Circle().fill(Theme.accent).frame(width: 6, height: 6).help("Unread") }

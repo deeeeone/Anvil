@@ -46,6 +46,7 @@ final class ResumedSessionTests: XCTestCase {
         let ctx = ToolContext(root: dir, processes: ProcessManager(), host: TestHost())
         ctx.browser = BrowserController()
         let agent = Agent(ctx: ctx, brain: brain)
+        agent.judgeEnabled = false
         agent.autoVerify = false; agent.selfReview = false; agent.streaming = false; agent.prepareWhilePlanning = false; agent.memory = ProjectMemory()
         // An old briefing that only listed read_file and shell.
         agent.briefing = "You are Anvil...\nACTIONS\n[Files]\n- read_file {\"path\": str}: read\n- shell {\"command\": str}: run\n"

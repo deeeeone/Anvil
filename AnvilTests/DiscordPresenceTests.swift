@@ -12,16 +12,78 @@ final class DiscordPresenceTests: XCTestCase {
 
     func testActivityContent() {
         let start = Date(timeIntervalSince1970: 1_000)
-        let a = DiscordPresence.activity(.init(working: true, model: "glm-5.3", project: "secret-app", taskStart: Date(timeIntervalSince1970: 2_000)), appStart: start)
-        XCTAssertEqual(a["details"] as? String, "Working on a task")
-        XCTAssertEqual(a["state"] as? String, "glm-5.3 · secret-app")
+        let a = DiscordPresence.activity(.init(working: true, model: "glm-5.3", project: "secret-app", taskStart: Date(timeIntervalSince1970: 2_000), tool: "edit_file", summary: "Edit Sources/App.swift", showProject: true), appStart: start)
+        XCTAssertEqual(a["details"] as? String, "Editing App.swift")
+        XCTAssertEqual(a["state"] as? String, "Workspace: secret-app")
         XCTAssertEqual((a["timestamps"] as? [String: Int])?["start"], 2_000)
         let button = (a["buttons"] as? [[String: String]])?.first
         XCTAssertEqual(button?["url"], "https://github.com/deeeeone/Anvil")
-        XCTAssertEqual((a["assets"] as? [String: String])?["large_image"], DiscordPresence.logoURL)
+        let assets = a["assets"] as? [String: String]
+        XCTAssertEqual(assets?["large_image"], DiscordPresence.logoURL)
+        XCTAssertEqual(assets?["small_image"], "https://raw.githubusercontent.com/deeeeone/Anvil/main/design/presence/working.png")
+        XCTAssertEqual(assets?["small_text"], "glm-5.3")
+        XCTAssertTrue(assets?["large_text"]?.hasPrefix("Anvil ") == true)
         let idle = DiscordPresence.activity(.init(working: false, model: "glm-5.3", project: nil, taskStart: nil), appStart: start)
-        XCTAssertEqual(idle["state"] as? String, "glm-5.3", "no project name unless given")
+        XCTAssertEqual(idle["details"] as? String, "Idling")
+        XCTAssertEqual(idle["state"] as? String, "Ready for the next task")
         XCTAssertEqual((idle["timestamps"] as? [String: Int])?["start"], 1_000)
+        XCTAssertEqual((idle["assets"] as? [String: String])?["small_image"], "https://raw.githubusercontent.com/deeeeone/Anvil/main/design/presence/idle.png")
+    }
+
+    func testDetailsPerToolKind() {
+        func d(_ tool: String?, _ summary: String, thinking: Bool = false) -> String {
+            DiscordPresence.details(tool: tool, summary: summary, thinking: thinking)
+        }
+        XCTAssertEqual(d("edit_file", "Edit Sources/Deep/AppState.swift"), "Editing AppState.swift")
+        XCTAssertEqual(d("write_file", "Write notes/new file.md"), "Editing new file.md")
+        XCTAssertEqual(d("multi_edit", "Edit 3 files"), "Editing a file")
+        XCTAssertEqual(d("replace_lines", "replace_lines {\"path\":\"a.swift\"}"), "Editing a file")
+        XCTAssertEqual(d("shell", "$ npm run build --silent"), "Running npm")
+        XCTAssertEqual(d("start_process", "Start dev: npm run dev"), "Running npm")
+        XCTAssertEqual(d("shell", "Verify: swift test"), "Running a command")
+        XCTAssertEqual(d("browser_open", "Open https://docs.example.com/page?x=1"), "Browsing docs.example.com")
+        XCTAssertEqual(d("browser_read", "Read the page"), "Browsing the web")
+        XCTAssertEqual(d("fetch_url", "Fetch https://example.org/a"), "Browsing example.org")
+        XCTAssertEqual(d("read_file", "Read Sources/A.swift"), "Coding")
+        XCTAssertEqual(d("edit_file", "Edit a.swift", thinking: true), "Thinking")
+        XCTAssertEqual(d(nil, ""), "Coding")
+    }
+
+    func testPrivacyOffHidesEverything() {
+        let working = DiscordPresence.State(working: true, model: "m", project: "secret-app", taskStart: nil,
+                                            tool: "shell", summary: "$ curl -H token=abc https://private.example.com", showProject: false)
+        let lines = DiscordPresence.lines(working)
+        XCTAssertEqual(lines.details, "Coding")
+        XCTAssertEqual(lines.state, "Working on a task")
+        let all = [lines.details, lines.state].joined(separator: " ")
+        for secret in ["secret-app", "curl", "private.example.com", "token"] {
+            XCTAssertFalse(all.contains(secret), secret)
+        }
+        let idle = DiscordPresence.lines(.init(working: false, model: "m", project: "secret-app", taskStart: nil, showProject: false))
+        XCTAssertEqual(idle.details, "Idling")
+        XCTAssertEqual(idle.state, "Ready for the next task")
+    }
+
+    func testLinesWithProjectOn() {
+        let edit = DiscordPresence.lines(.init(working: true, model: "m", project: "ad-platform", taskStart: nil, tool: "edit_file", summary: "Edit docs/AGENT_FEATURES.md", showProject: true))
+        XCTAssertEqual(edit.details, "Editing AGENT_FEATURES.md")
+        XCTAssertEqual(edit.state, "Workspace: ad-platform")
+        XCTAssertEqual(edit.badge, "working")
+        let thinking = DiscordPresence.lines(.init(working: true, model: "m", project: "ad-platform", taskStart: nil, thinking: true, showProject: true))
+        XCTAssertEqual(thinking.details, "Thinking")
+        XCTAssertEqual(thinking.badge, "thinking")
+        let idle = DiscordPresence.lines(.init(working: false, model: "m", project: "ad-platform", taskStart: nil, showProject: true))
+        XCTAssertEqual(idle.details, "Idling")
+        XCTAssertEqual(idle.state, "Workspace: ad-platform")
+        XCTAssertEqual(idle.badge, "idle")
+    }
+
+    func testThrottleSpacesUpdates() {
+        let t0 = Date(timeIntervalSince1970: 10_000)
+        XCTAssertEqual(DiscordPresence.throttleWait(now: t0, last: nil), 0, "first update goes out now")
+        XCTAssertEqual(DiscordPresence.throttleWait(now: t0, last: t0.addingTimeInterval(-5)), 0, "5 s after the last one is allowed")
+        XCTAssertEqual(DiscordPresence.throttleWait(now: t0, last: t0.addingTimeInterval(-2)), 3, accuracy: 0.001)
+        XCTAssertEqual(DiscordPresence.throttleWait(now: t0, last: t0.addingTimeInterval(-60)), 0)
     }
 
     /// A fake Discord: accepts the handshake, answers READY, records the activity it's sent, answers again.
@@ -78,7 +140,7 @@ final class DiscordPresenceTests: XCTestCase {
         let second = try XCTUnwrap(JSON.parse(lines[1]))
         XCTAssertEqual(second[0]?.int, 1)
         XCTAssertEqual(second[1]?["cmd"]?.string, "SET_ACTIVITY")
-        XCTAssertEqual(second[1]?["args"]?["activity"]?["details"]?.string, "Working on a task")
+        XCTAssertEqual(second[1]?["args"]?["activity"]?["details"]?.string, "Coding")
         let last = try XCTUnwrap(JSON.parse(lines.last!))
         XCTAssertNil(last[1]?["args"]?["activity"], "shutdown clears the presence")
     }

@@ -168,14 +168,20 @@ final class BrowserController: NSObject, WKNavigationDelegate, AgentBrowser {
     @discardableResult
     func open(_ s: String) async -> String {
         guard let u = Self.normalize(s) else { return "bad url" }
-        url = u.absoluteString
+        let requested = u.absoluteString
+        url = requested
         lastError = nil
         loading = true
+        // Opening the page already on screen reloads it, instead of WebKit treating the same load as a no-op.
         if u.isFileURL { webView.loadFileURL(u, allowingReadAccessTo: u.deletingLastPathComponent()) }
+        else if let shown = webView.url?.absoluteString, BrowserQA.sameURL(shown, requested) { webView.reloadFromOrigin() }
         else { webView.load(URLRequest(url: u)) }
         await waitForLoad(timeout: 20)
-        if let e = lastError { return "couldn't load \(u.absoluteString): \(e)" }
-        return "loaded \(webView.url?.absoluteString ?? u.absoluteString) (\"\(webView.title ?? "")\")"
+        if let e = lastError { return "couldn't load \(requested): \(e)" }
+        if loading { return "still loading \(requested) after 20s; browser_read or browser_console shows where it got to" }
+        let text = (try? await evaluate("document.body ? document.body.innerText.slice(0, 3000) : ''")) ?? ""
+        return BrowserQA.describeLoaded(requested: requested, final: webView.url?.absoluteString ?? requested,
+                                        title: webView.title ?? "", notFound: BrowserQA.looksLikeNotFound(title: webView.title ?? "", text: text))
     }
 
     func reload() { loading = true; webView.reload() }
@@ -207,11 +213,23 @@ final class BrowserController: NSObject, WKNavigationDelegate, AgentBrowser {
     }
 
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        MainActor.assumeIsolated { loading = false; lastError = error.localizedDescription; resumeWaiters() }
+        MainActor.assumeIsolated { failed(webView, error) }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        MainActor.assumeIsolated { loading = false; lastError = error.localizedDescription; resumeWaiters() }
+        MainActor.assumeIsolated { failed(webView, error) }
+    }
+
+    /// A navigation replaced by another one (-999, or "Frame load interrupted") isn't a failure: the replacement's
+    /// didFinish ends the wait. If nothing is loading any more, nothing will finish, so the wait ends here.
+    private func failed(_ webView: WKWebView, _ error: Error) {
+        guard !BrowserQA.isSupersededNavigation(error) else {
+            if !webView.isLoading { loading = false; resumeWaiters() }
+            return
+        }
+        loading = false
+        lastError = error.localizedDescription
+        resumeWaiters()
     }
 
     // MARK: Agent control
@@ -372,7 +390,7 @@ final class BrowserController: NSObject, WKNavigationDelegate, AgentBrowser {
 
 /// The agent's browser tools (only registered when the app provides a browser).
 enum BrowserTools {
-    static func all() -> [ToolSpec] { [open, read, find, click, type, key, select, hover, scroll, wait, nav, console, network, viewport, eval, screenshot] }
+    static func all() -> [ToolSpec] { [open, read, find, click, type, key, select, hover, scroll, wait, nav, console, network, viewport, eval, screenshot, styles, audit] }
 
     /// Runs a small DOM action on element [id] from browser_read.
     static func onElement(_ ctx: ToolContext, _ id: Int, _ body: String) async throws -> String {
@@ -502,5 +520,198 @@ enum BrowserTools {
         var r = ToolResult.ok("screenshot attached (\(data.count / 1024) KB)")
         r.image = (data, "image/jpeg")
         return r
+    }
+    static let styles = ToolSpec(name: "browser_styles", kind: .network, signature: #"{"selector": css, optional "props": [str]}"#,
+                                 summary: "computed styles and bounding box of the first element matching a CSS selector, plus its text contrast (WCAG) against the background", group: .web) { a, ctx in
+        guard let sel = a["selector"]?.string?.trimmingCharacters(in: .whitespaces), !sel.isEmpty else { return .fail("missing selector") }
+        let wanted = a["props"]?.array?.compactMap(\.string) ?? []
+        let raw = try await browser(ctx).evaluate(BrowserQA.styleScript(selector: sel, props: wanted.isEmpty ? BrowserQA.defaultStyleProps : wanted))
+        guard let o = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] else { return .fail("couldn't read the styles of \"\(sel)\"") }
+        if let err = o["error"] as? String { return .fail(err) }
+        guard (o["found"] as? Bool) == true else { return .fail("no element matches \"\(sel)\" on the page (browser_find or browser_read shows what is there)") }
+        var lines = (o["pairs"] as? [[Any]] ?? []).map { "\($0[0]): \($0[1])" }
+        lines.append("box: \((o["box"] as? String) ?? "")")
+        if (o["hasText"] as? Bool) == true, let fg = o["fg"] as? String, let size = BrowserQA.number(o["fontSize"]),
+           let weight = BrowserQA.number(o["weight"]), let c = BrowserQA.textContrast(fg: fg, bg: o["bg"] as? String, fontSize: size, weight: Int(weight)) {
+            let bg = (o["bg"] as? String) ?? "no opaque background found, assumed white"
+            let verdict = c.ratio >= c.required ? "ok" : "low contrast (needs \(BrowserQA.trim(c.required)):1)"
+            lines.append("contrast: \(String(format: "%.2f", c.ratio)):1, text \(fg) on \(bg): \(verdict)")
+        }
+        return .ok(lines.joined(separator: "\n"))
+    }
+    static let audit = ToolSpec(name: "browser_audit", kind: .network, signature: "{}",
+                                summary: "quick UI audit of the open page: low text contrast, overflow past the viewport, images without alt, unnamed buttons and links, font families and sizes, console errors", group: .web) { _, ctx in
+        let raw = try await browser(ctx).evaluate(BrowserQA.auditScript)
+        guard let o = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] else { return .fail("couldn't audit the page (is one open? use browser_open first)") }
+        return .ok(BrowserQA.auditReport(o))
+    }
+}
+
+/// Pure helpers behind browser_open's report, browser_styles and browser_audit, plus the scripts they run in the page.
+enum BrowserQA {
+    /// A navigation that another navigation replaced (WebKit cancels it), not a failure.
+    static func isSupersededNavigation(_ error: Error) -> Bool {
+        let e = error as NSError
+        return (e.domain == NSURLErrorDomain && e.code == NSURLErrorCancelled) || (e.domain == "WebKitErrorDomain" && e.code == 102)
+    }
+
+    /// Heuristic: the title or the start of the visible text says the page is missing.
+    static func looksLikeNotFound(title: String, text: String) -> Bool {
+        // The title, or both "404" and "not found" near the top: an app page saying "Item not found" is not a 404.
+        let t = title.lowercased(), body = String(text.prefix(1500)).lowercased()
+        if t.contains("404") || t.contains("not found") || body.contains("this page could not be found") { return true }
+        return body.contains("404") && body.contains("not found")
+    }
+
+    static func sameURL(_ a: String, _ b: String) -> Bool {
+        func trimmed(_ s: String) -> String { s.hasSuffix("/") ? String(s.dropLast()) : s }
+        return trimmed(a) == trimmed(b)
+    }
+
+    /// browser_open's one-line result: the final address and title, a redirect note, a 404 warning.
+    static func describeLoaded(requested: String, final: String, title: String, notFound: Bool) -> String {
+        var line = "loaded \(final) (\"\(title)\")"
+        if !sameURL(requested, final) { line += "; redirected to \(final) from \(requested)" }
+        if notFound { line += "; looks like a 404 page" }
+        return line
+    }
+
+    static let defaultStyleProps = ["color", "background-color", "font-family", "font-size", "font-weight", "line-height", "padding", "margin",
+                                    "border", "border-radius", "display", "gap", "width", "height"]
+
+    static func number(_ v: Any?) -> Double? { (v as? NSNumber)?.doubleValue }
+
+    static func trim(_ v: Double) -> String { v == v.rounded() ? String(Int(v)) : String(v) }
+
+    struct RGBA: Equatable { var r, g, b, a: Double }
+
+    /// Parses the rgb()/rgba() strings that getComputedStyle returns.
+    static func parseColor(_ css: String) -> RGBA? {
+        guard let open = css.firstIndex(of: "("), let close = css.lastIndex(of: ")"), open < close,
+              css[..<open].lowercased().hasPrefix("rgb") else { return nil }
+        let parts = css[css.index(after: open)..<close].split(whereSeparator: { $0 == "," || $0 == " " || $0 == "/" }).map(String.init)
+        guard parts.count >= 3, let r = Double(parts[0]), let g = Double(parts[1]), let b = Double(parts[2]) else { return nil }
+        var a = 1.0
+        if parts.count > 3 {
+            let t = parts[3]
+            a = t.hasSuffix("%") ? (Double(t.dropLast()) ?? 100) / 100 : (Double(t) ?? 1)
+        }
+        return RGBA(r: r, g: g, b: b, a: a)
+    }
+
+    /// WCAG relative luminance of an opaque colour.
+    static func luminance(_ c: RGBA) -> Double {
+        func lin(_ v: Double) -> Double {
+            let x = v / 255
+            return x <= 0.03928 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+    }
+
+    /// WCAG contrast ratio, 1...21, of two opaque colours.
+    static func contrastRatio(_ a: RGBA, _ b: RGBA) -> Double {
+        let la = luminance(a), lb = luminance(b)
+        return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+    }
+
+    /// WCAG AA: 4.5:1 for text, 3:1 for large text (24px, or 18.66px bold).
+    static func requiredContrast(fontSize: Double, weight: Int) -> Double {
+        fontSize >= 24 || (fontSize >= 18.66 && weight >= 700) ? 3.0 : 4.5
+    }
+
+    /// Contrast of text colour `fg` (blended over `bg` when translucent) against the nearest opaque background; nil bg means white.
+    static func textContrast(fg: String, bg: String?, fontSize: Double, weight: Int) -> (ratio: Double, required: Double)? {
+        guard let text = parseColor(fg) else { return nil }
+        let back = bg.flatMap(parseColor) ?? RGBA(r: 255, g: 255, b: 255, a: 1)
+        let a = text.a
+        let shown = RGBA(r: text.r * a + back.r * (1 - a), g: text.g * a + back.g * (1 - a), b: text.b * a + back.b * (1 - a), a: 1)
+        return (contrastRatio(shown, back), requiredContrast(fontSize: fontSize, weight: weight))
+    }
+
+    /// JS: the nearest ancestor-or-self with an opaque background colour (null when none).
+    private static let bgOfJS = #"""
+    const bgOf = n => { for (let x = n; x && x.nodeType === 1; x = x.parentElement) { const c = getComputedStyle(x).backgroundColor; const m = c.match(/^rgba?\(([^)]+)\)$/); if (!m) continue; const p = m[1].split(/[ ,\/]+/).filter(Boolean); if (p.length < 4 || parseFloat(p[3]) >= 0.99) return c; } return null; };
+    """#
+
+    /// Script for browser_styles: computed styles, box, and the colours needed for contrast.
+    static func styleScript(selector: String, props: [String]) -> String {
+        #"""
+        (() => {
+          \#(bgOfJS)
+          let e;
+          try { e = document.querySelector(\#(JSON.string(selector).compact)) } catch (err) { return JSON.stringify({ error: 'not a valid CSS selector' }) }
+          if (!e) return JSON.stringify({ found: false });
+          const cs = getComputedStyle(e), r = e.getBoundingClientRect();
+          const props = [\#(props.map { JSON.string($0).compact }.joined(separator: ", "))];
+          const value = p => cs.getPropertyValue(p) || (p === 'border' ? [cs.borderTopWidth, cs.borderTopStyle, cs.borderTopColor].join(' ') : '');
+          return JSON.stringify({
+            found: true, pairs: props.map(p => [p, value(p)]),
+            box: 'x=' + Math.round(r.x) + ' y=' + Math.round(r.y) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height),
+            hasText: (e.textContent || '').trim().length > 0,
+            fg: cs.color, bg: bgOf(e), fontSize: parseFloat(cs.fontSize), weight: parseInt(cs.fontWeight) || 400
+          });
+        })()
+        """#
+    }
+
+    /// Script for browser_audit: one pass over the visible page, returning the raw facts that `auditReport` formats.
+    static let auditScript = #"""
+    (() => {
+      \#(bgOfJS)
+      const iw = window.innerWidth;
+      const vis = e => e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden';
+      const label = e => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + (typeof e.className === 'string' && e.className.trim() ? '.' + e.className.trim().split(/\s+/)[0] : '');
+      const all = [...document.querySelectorAll('body *')].filter(vis);
+      const textEls = all.filter(e => [...e.childNodes].some(n => n.nodeType === 3 && n.textContent.trim()));
+      const samples = textEls.slice(0, 400).map(e => { const cs = getComputedStyle(e); return {
+        fg: cs.color, bg: bgOf(e), fontSize: parseFloat(cs.fontSize), weight: parseInt(cs.fontWeight) || 400,
+        font: (cs.fontFamily.split(',')[0] || '').replace(/["']/g, '').trim(), text: e.textContent.trim().slice(0, 40) }; });
+      const over = all.filter(e => e.getBoundingClientRect().right > iw + 1 && !(e.parentElement && e.parentElement.getBoundingClientRect().right > iw + 1));
+      const named = e => { const t = (e.getAttribute('aria-label') || e.getAttribute('aria-labelledby') || e.title || e.value || e.textContent || '').trim(); return t.length > 0 || [...e.querySelectorAll('img')].some(i => i.alt.trim().length > 0); };
+      const imgs = [...document.images];
+      const ctrls = [...document.querySelectorAll('a[href], button, [role=button], [role=link]')].filter(vis);
+      const unnamed = ctrls.filter(e => !named(e));
+      return JSON.stringify({
+        url: location.href, title: document.title, viewportWidth: iw, documentWidth: document.documentElement.scrollWidth,
+        textTotal: textEls.length, samples,
+        overflowCount: over.length, overflowExamples: over.slice(0, 3).map(e => label(e) + ' ends at ' + Math.round(e.getBoundingClientRect().right) + 'px'),
+        imagesTotal: imgs.length, imagesNoAlt: imgs.filter(i => !i.hasAttribute('alt')).length,
+        controlsTotal: ctrls.length, controlsUnnamed: unnamed.length, unnamedExamples: unnamed.slice(0, 3).map(label),
+        consoleErrors: (window.__anvilLogs || []).filter(l => /^(error|uncaught|unhandled|network)/.test(l)).length
+      });
+    })()
+    """#
+
+    /// One compact report (under 3000 characters) from the facts `auditScript` returns.
+    static func auditReport(_ o: [String: Any]) -> String {
+        func n(_ k: String) -> Int { Int(number(o[k]) ?? 0) }
+        func list(_ k: String) -> [String] { (o[k] as? [String] ?? []).prefix(3).map { "    " + $0 } }
+        var out = ["UI audit of \((o["url"] as? String) ?? "") (\"\((o["title"] as? String) ?? "")\")"]
+        var low: [String] = [], checked = 0
+        var families: [String: Int] = [:], sizes = Set<Double>()
+        for s in o["samples"] as? [[String: Any]] ?? [] {
+            if let f = s["font"] as? String, !f.isEmpty { families[f, default: 0] += 1 }
+            guard let size = number(s["fontSize"]) else { continue }
+            sizes.insert(size)
+            guard let fg = s["fg"] as? String, let weight = number(s["weight"]),
+                  let c = textContrast(fg: fg, bg: s["bg"] as? String, fontSize: size, weight: Int(weight)) else { continue }
+            checked += 1
+            if c.ratio < c.required {
+                low.append("    \"\((s["text"] as? String) ?? "")\" \(String(format: "%.2f", c.ratio)):1, needs \(trim(c.required)):1")
+            }
+        }
+        out.append("- low text contrast: \(low.count) of \(checked) sampled text elements (WCAG AA: 4.5:1, 3:1 for large text)")
+        out += low.prefix(3)
+        out.append("- horizontal overflow: \(n("overflowCount")) elements run past the \(n("viewportWidth"))px viewport (document \(n("documentWidth"))px wide)")
+        out += list("overflowExamples")
+        out.append("- images without alt: \(n("imagesNoAlt")) of \(n("imagesTotal"))")
+        out.append("- buttons and links without an accessible name: \(n("controlsUnnamed")) of \(n("controlsTotal"))")
+        out += list("unnamedExamples")
+        let top = families.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.prefix(5).map { "\($0.key) (\($0.value))" }
+        out.append("- font families: " + (top.isEmpty ? "none found" : top.joined(separator: ", ")))
+        let sz = sizes.sorted().map { trim($0) + "px" }
+        out.append("- font sizes, \(sz.count) distinct: " + sz.prefix(12).joined(separator: ", "))
+        out.append("- console errors: \(n("consoleErrors"))" + (n("consoleErrors") > 0 ? " (see browser_console)" : ""))
+        return String(out.joined(separator: "\n").prefix(2900))
     }
 }

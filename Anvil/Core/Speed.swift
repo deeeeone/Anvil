@@ -16,7 +16,8 @@ nonisolated enum RequestSize: String, Sendable {
         let editVerbs = ["add", "fix", "change", "make", "create", "write", "implement", "refactor", "rename", "remove", "delete", "update", "move", "replace", "build"]
         let asksOnly = g.hasSuffix("?") || has(["explain", "what does", "how does", "where is", "where does", "why does", "question only", "don't change", "do not change"])
         if asksOnly && !(has(editVerbs.map { $0 + " " }) && !has(["don't change", "do not change", "question only"])) { return .question }
-        if words <= 25 && has(["rename ", "typo", "spelling", "comment", "bump ", "version to", "change the text", "reword", "capitaliz", "indent", "format "]) { return .simple }
+        // A UI request is never "simple": even a one-word fix on a page needs the browser check.
+        if words <= 25 && !SkillLibrary.isUIRequest(goal) && has(["rename ", "typo", "spelling", "comment", "bump ", "version to", "change the text", "reword", "capitaliz", "indent", "format "]) { return .simple }
         return .feature
     }
 
@@ -40,7 +41,10 @@ nonisolated enum AdaptiveEffort {
     /// `full` is the owner's effort setting (the ceiling).
     static func effort(_ s: State, full: String) -> String {
         if s.lastBatchFailed || s.parseFailures > 0 { return full }                 // something broke: think properly
-        if s.step == 1 { return cap(s.size.effort, full) }                          // first turn: sized by the request
+        if s.step == 1 {
+            // The first turn (and a plan) sets the approach: features and hard requests get the owner's full effort.
+            return s.size == .feature || s.size == .hard ? full : cap(s.size.effort, full)
+        }
         if s.editedThisRequest && s.verifiedSinceEdit { return cap("low", full) }   // tests passed: wrapping up
         if s.size == .simple { return cap("low", full) }
         if s.lastBatchExploratory && !s.editedThisRequest {

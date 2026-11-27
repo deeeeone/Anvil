@@ -193,6 +193,7 @@ nonisolated final class ChatGPTWebClient: @unchecked Sendable {
             onText?(full)
         }
         for try await line in bytes.lines {
+            try Task.checkCancellation()   // the watchdog cancels a silent or runaway turn
             lines += 1
             if lines % 40 == 0, shouldStop?(full) == true { break }
             guard line.hasPrefix("data: ") else { continue }

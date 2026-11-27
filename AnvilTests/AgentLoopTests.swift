@@ -61,6 +61,7 @@ final class AgentLoopTests: XCTestCase {
         a.mode = mode
         a.autoVerify = verify
         a.selfReview = review
+        a.judgeEnabled = false
         a.streaming = false
         a.prepareWhilePlanning = false
         a.memory = ProjectMemory()
@@ -165,7 +166,9 @@ final class AgentLoopTests: XCTestCase {
         _ = await agent.run(goal: "one")
         _ = await agent.run(goal: "two")
         XCTAssertEqual(sent[1].count, 3)
-        XCTAssertTrue(sent[1].last!.text.hasPrefix("NEW REQUEST FROM THE OWNER"))
+        // The follow-up starts with the previous request's timing, then the new request.
+        XCTAssertTrue(sent[1].last!.text.hasPrefix("Previous request: started "))
+        XCTAssertTrue(sent[1].last!.text.contains("NEW REQUEST FROM THE OWNER"))
         XCTAssertEqual(sent[1][0].text, sent[0][0].text, "the briefing prefix stays byte-identical for the cache")
     }
 
@@ -239,7 +242,8 @@ final class AgentLoopTests: XCTestCase {
         let agent = makeAgent(["{broken json", fence(#"{"say": "recovered", "done": true}"#)])
         let out = await agent.run(goal: "x")
         XCTAssertEqual(out.text, "recovered")
-        XCTAssertTrue(sent[1].last!.text.contains("couldn't be used"))
+        // Unbalanced JSON reads as a cut-off reply now: either note sends the model back, and nothing from it runs.
+        XCTAssertTrue(sent[1].last!.text.contains("couldn't be used") || sent[1].last!.text.contains("cut off"), sent[1].last!.text)
     }
 
     func testCompactReplacesHistory() async throws {
@@ -436,12 +440,13 @@ final class AgentLoopTests: XCTestCase {
 
     func testEscalatesAfterRepeatedFailure() async {
         let bad = fence(#"{"actions": [{"tool": "edit_file", "args": {"path": "calc.py", "find": "nope", "replace": "x"}}]}"#)
-        let agent = makeAgent([bad, bad, fence(#"{"say": "ok", "done": true}"#)])
+        // Three failures of the same edit before a switch (two for hard requests).
+        let agent = makeAgent([bad, bad, bad, fence(#"{"say": "ok", "done": true}"#)])
         agent.escalationModel = "deepseek-v4.1-flash-uncensored"
         _ = await agent.run(goal: "x")
-        XCTAssertEqual(models[2], "deepseek-v4.1-flash-uncensored")
-        XCTAssertTrue(sent[2].last!.text.contains("A different model takes the next step"))
-        XCTAssertEqual(models[1], "m")
+        XCTAssertEqual(models[3], "deepseek-v4.1-flash-uncensored")
+        XCTAssertTrue(sent[3].last!.text.contains("A different model takes the next step"))
+        XCTAssertEqual(models[2], "m")
     }
 
     func testExploreHelperReportsBack() async {
@@ -877,7 +882,7 @@ final class AgentLoopTests: XCTestCase {
         }
         let ctx = ToolContext(root: dir, processes: ProcessManager(), host: host)
         let agent = Agent(ctx: ctx, brain: brain)
-        agent.autoVerify = false; agent.selfReview = false; agent.streaming = false; agent.prepareWhilePlanning = false
+        agent.autoVerify = false; agent.selfReview = false; agent.judgeEnabled = false; agent.streaming = false; agent.prepareWhilePlanning = false
         agent.memory = ProjectMemory()
         var switched: [String] = []
         agent.onModelFallback = { switched.append($0) }

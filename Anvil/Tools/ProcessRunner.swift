@@ -171,6 +171,8 @@ final class ProcessManager {
         let command: String
         let cwd: URL
         let started = Date()
+        /// The agent (ToolContext.owner) that started it; nil when the app or the terminal started it.
+        var owner: String?
         let process: Process
         let output = OutputBuffer(limit: 300_000)
         var exitCode: Int32?
@@ -185,7 +187,7 @@ final class ProcessManager {
 
     func entry(_ name: String) -> Entry? { entries.last { $0.name == name } }
 
-    func start(name: String, command: String, cwd: URL) throws -> Entry {
+    func start(name: String, command: String, cwd: URL, owner: String? = nil) throws -> Entry {
         if let old = entry(name), old.running { throw NSError(domain: "Anvil", code: 1, userInfo: [NSLocalizedDescriptionKey: "a process named \(name) is already running; stop it first or pick another name"]) }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -197,6 +199,7 @@ final class ProcessManager {
         p.standardOutput = pipe
         p.standardError = pipe
         let e = Entry(name: name, command: command, cwd: cwd, process: p)
+        e.owner = owner
         pipe.fileHandleForReading.readabilityHandler = { [weak self] h in
             let d = h.availableData
             if d.isEmpty { h.readabilityHandler = nil; return }

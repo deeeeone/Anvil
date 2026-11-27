@@ -76,8 +76,9 @@ nonisolated enum Git {
         await ProcessRunner.run("/usr/bin/git", ["-C", root.path, "-c", "core.pager=cat", "-c", "color.ui=false"] + args, cwd: root, timeout: timeout)
     }
 
-    static func status(_ root: URL) async -> Status {
-        let r = await run(["status", "--porcelain=v1", "-b", "-uall"], in: root)
+    /// `untrackedAll` lists every file inside an untracked folder; off, a folder counts once (what a summary wants).
+    static func status(_ root: URL, untrackedAll: Bool = true) async -> Status {
+        let r = await run(["status", "--porcelain=v1", "-b", untrackedAll ? "-uall" : "-unormal"], in: root)
         if r.status != 0 { var s = Status(); s.isRepo = false; return s }
         return parseStatus(r.stdout)
     }

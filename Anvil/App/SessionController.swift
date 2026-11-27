@@ -42,6 +42,8 @@ final class SessionController: AgentHost {
     /// The placeholder title the first request set, with that request, until its request ends (then an AI title may replace it).
     @ObservationIgnored private var autoTitle: (placeholder: String, goal: String)?
     private(set) var startedAt: Date?
+    /// When the agent last reported anything (the status row's "ago" label). Updated at most once a second.
+    private(set) var lastActivity: Date?
     // Sidebar indicators follow these (AppState.workingChanged), so tell it when one is set or cleared.
     var pendingPermission: PendingPermission? { didSet { if (pendingPermission == nil) != (oldValue == nil) { app?.workingChanged() } } }
     var pendingPlan: PendingPlan? { didSet { if (pendingPlan == nil) != (oldValue == nil) { app?.workingChanged() } } }
@@ -57,8 +59,12 @@ final class SessionController: AgentHost {
     var background = false
     /// /goal: run to completion without asking the owner anything (see runCommand).
     private(set) var goalMode = false
-    @ObservationIgnored private var goalContinues = 0
-    @ObservationIgnored private var goalSaved: (mode: PermissionMode?, steps: Int?)?
+    /// The wait before retrying a goal whose provider failed (cancelled by Esc).
+    @ObservationIgnored private var goalWait: Task<Void, Never>?
+    /// When the current provider outage began, whether the owner has been told it ran past ten minutes, and the timer for that.
+    @ObservationIgnored private var providerDownSince: Date?
+    @ObservationIgnored private var providerWaitNotified = false
+    @ObservationIgnored private var providerWatch: Task<Void, Never>?
 
     @ObservationIgnored private var agent: Agent?
     @ObservationIgnored private var task: Task<Void, Never>?
@@ -94,6 +100,7 @@ final class SessionController: AgentHost {
             self?.session.usage.add(u, cost: cost)
             self?.scheduleSave()
         }
+        brain.onActivity = { [weak self] in self?.noteActivity() }
         let ctx = ToolContext(root: root, processes: processes, host: self)
         ctx.browser = app?.browser
         ctx.shellTimeout = AppSettings.shared.shellTimeout
@@ -152,6 +159,7 @@ final class SessionController: AgentHost {
         a.prepareWhilePlanning = s.prepareWhilePlanning
         a.lspChecks = s.lspChecks
         a.planNudges = !background
+        applyGoal(a)
         a.registerMemoryTool()
     }
 
@@ -174,7 +182,7 @@ final class SessionController: AgentHost {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !images.isEmpty else { return }
         if images.isEmpty, let (name, args) = SlashCommands.split(text) {
-            if running && !["cost", "help", "mode", "queue", "limit", "schedule"].contains(name) { append(ChatItem(kind: .system, text: "Wait for the current request to finish (or Stop it) before running /\(name).")); return }
+            if running && !["cost", "help", "mode", "queue", "limit", "schedule"].contains(name) && !(name == "goal" && ["status", "stop"].contains(args.lowercased())) { append(ChatItem(kind: .system, text: "Wait for the current request to finish (or Stop it) before running /\(name).")); return }
             runCommand(name, args: args, raw: text)
             return
         }
@@ -204,6 +212,8 @@ final class SessionController: AgentHost {
     /// or starts a request when it's idle.
     func deliver(_ text: String, from sender: String) {
         let line = "[Message from \(sender)] \(text)"
+        // A goal waiting to retry its provider: this message becomes the retry, so the timer must not start a second request.
+        if !running, let wait = goalWait { wait.cancel(); goalWait = nil }
         if running {
             steering.append(line)
             append(ChatItem(kind: .user, text: line))
@@ -257,7 +267,8 @@ final class SessionController: AgentHost {
                 self.autoTitle = nil
                 if outcome.ok { self.suggestTitle(from: first.goal, placeholder: first.placeholder) }
             }
-            if NSApp != nil && !NSApp.isActive { self.notifyDone(outcome) }
+            // A goal tells the owner when it ends or waits (see endGoal), not after every round.
+            if NSApp != nil && !NSApp.isActive && !self.goalMode { self.notifyDone(outcome) }
             if self.continueGoal(after: outcome) { return }
             self.afterRequest(goal: goal, outcome: outcome)
             self.onFinish?(outcome)
@@ -279,6 +290,12 @@ final class SessionController: AgentHost {
         pendingPlan = nil
         pendingQuestion = nil
         steering = []
+        // A goal waiting for its provider has no request to cancel: end it here.
+        if goalMode && goalWait != nil {
+            goalWait?.cancel()
+            goalWait = nil
+            endGoal(.stopped, note: "Stopped by the owner while waiting for the model.", missing: session.goal?.unresolved ?? [], notify: false)
+        }
     }
 
     private func notifyDone(_ o: AgentOutcome) {
@@ -346,7 +363,15 @@ final class SessionController: AgentHost {
         case "commit":
             Task { await commitAll() }
         case "goal":
-            guard !args.isEmpty else { append(ChatItem(kind: .system, text: "/goal <task> runs until the task is completely finished and verified, without asking you questions or for plan approval. It switches to Auto-accept edits for the run (dangerous commands still ask) and gets up to 300 steps. Esc stops it.")); return }
+            if args.lowercased() == "status" {
+                append(ChatItem(kind: .system, text: session.goal.map { GoalSummary.statusText($0) } ?? "No goal in this session. Start one with /goal <task>."))
+                return
+            }
+            if args.lowercased() == "stop" {
+                if let g = session.goal, GoalSummary.isLive(g.phase) { stopGoal() } else { append(ChatItem(kind: .system, text: "No goal is running in this session.")) }
+                return
+            }
+            guard !args.isEmpty else { append(ChatItem(kind: .system, text: "/goal <task> is a mission: it runs until the task is completely finished and checked, without asking you questions or for plan approval. It agrees a definition of done first, checks it with commands and a hidden completion judge, and keeps going through errors, within a time limit. Dangerous commands wait for your approval in the background. In a git repo it works on its own branch. Esc stops it.")); return }
             startGoal(args, display: raw)
         case "grill-me":
             let topic = args.isEmpty ? "whatever the owner has been describing in this conversation" : args
@@ -593,47 +618,248 @@ final class SessionController: AgentHost {
         """
         GOAL MODE. Work until this is COMPLETELY finished and verified, without asking the owner anything: \(goal)
 
+        - Your first reply includes a "criteria" list in its json block, next to your first actions: 3 to 8 checkable items for this goal. Prefer {"text": "...", "command": "..."} for a command that must exit 0 (tests, a build, a script), {"text": "...", "path": "..."} for a file that must exist, and {"text": "..."} for anything else.
         - Nobody will answer questions or approve a plan. When something is ambiguous, pick the most reasonable option, note the assumption, and keep going.
         - Don't stop at a first draft or a partial result. Run the build or tests and look at the real output (use the browser for UI work), fix what you find, and check again.
         - Finish with done:true only when the goal is fully met. Your final answer says what was done, how it was verified, and any assumptions you made.
         """
     }
 
+    /// /goal <task>: the goal runs in its own worktree and branch when the setting is on and the project is a git repo.
     func startGoal(_ goal: String, display: String) {
-        enterGoalMode()
+        if AppSettings.shared.goalInWorktree, session.workdir == nil, !running, let app {
+            app.startGoalInWorktree(goal, display: display, from: self)
+            return
+        }
+        startGoalHere(goal, display: display)
+    }
+
+    /// Runs the goal in this session. `branch` is set when the goal has its own worktree.
+    func startGoalHere(_ goal: String, display: String, branch: String? = nil) {
+        var state = GoalState(objective: goal, budget: GoalBudget(maxMinutes: AppSettings.shared.goalMaxMinutes),
+                              costBase: session.usage.cost)
+        state.branch = branch
+        state.savedMode = session.mode
+        state.savedSteps = session.stepLimit
+        session.goal = state
+        activateGoalMode()
         start(goal: Self.goalPrompt(goal), display: display)
     }
 
-    private func enterGoalMode() {
-        goalSaved = (session.mode, session.stepLimit)
+    /// Goal mode: edits auto-accept so nothing waits, and dangerous commands are queued for the owner.
+    private func activateGoalMode() {
         goalMode = true
-        goalContinues = 0
         session.stepLimit = 300
         if mode == .ask || mode == .plan {
             mode = .acceptEdits
-            append(ChatItem(kind: .system, text: "Goal mode: switched to Auto-accept edits so nothing waits for you. Dangerous commands still ask. Esc stops it."))
+            append(ChatItem(kind: .system, text: "Goal mode: switched to Auto-accept edits so nothing waits for you. Dangerous commands are queued for your approval while the goal carries on. Esc stops it."))
         }
     }
 
-    func runCommandStateOnly() { enterGoalMode() }
+    func runCommandStateOnly() { activateGoalMode() }
 
-    /// After a goal-mode request: keep going when it only ran out of steps; otherwise end goal mode.
-    /// Returns true when it started another request (the caller must not treat the goal as over).
+    /// After a restart: a goal that was running picks up where it stopped.
+    func resumeGoal() {
+        guard !goalMode, !running, var goal = session.goal, goal.isActive else { return }
+        goal.phase = .working
+        session.goal = goal
+        activateGoalMode()
+        append(ChatItem(kind: .system, text: "Resumed the goal after a restart."))
+        _ = launchGoalRound(missing: goal.unresolved)
+    }
+
+    /// Judge and goal settings for this session's agent. The judge's model note shows once per session.
+    private func applyGoal(_ a: Agent) {
+        let s = AppSettings.shared
+        a.judgeEnabled = s.judgeEnabled
+        a.judgeSetting = s.judgeModel
+        a.inGoal = goalMode
+        a.goalCriteria = goalMode ? (session.goal?.criteria ?? []) : []
+        a.queueApprovals = goalMode ? { [weak self] req in self?.queueForOwner(req) } : nil
+        if s.judgeEnabled, session.judgeNoteShown != true,
+           let note = CompletionJudge.judgeModel(for: model, setting: s.judgeModel, available: ModelCatalog.shared.choices.map(\.id)).note {
+            session.judgeNoteShown = true
+            append(ChatItem(kind: .system, text: note))
+        }
+    }
+
+    /// A dangerous command in goal mode: the owner decides from a notification. Allow runs it next (through steering);
+    /// Decline tells the goal to find another way.
+    private func queueForOwner(_ req: PermissionRequest) {
+        guard let command = req.command else { return }
+        session.goal?.phase = .waitingForOwner
+        session.goal?.log("Queued for approval: \(Fmt.line(command, 120))")
+        append(ChatItem(kind: .system, text: "Goal mode: \"\(Fmt.line(command, 160))\" needs your approval. It's queued, and the goal carries on with other work."))
+        Notifier.shared.post(id: UUID().uuidString, title: "Goal needs your approval", body: "\(session.title): Run: \(Fmt.line(command, 160))",
+                             category: "approval", session: session.id.uuidString) { [weak self] action, _ in
+            guard let self else { return }
+            if action == "allow" {
+                self.agent?.approvedOnce.insert(command)
+                self.deliver("The owner approved: \(command). Run it now.", from: "the owner")
+            } else {
+                self.deliver("The owner declined: \(command). Find another way to do that step.", from: "the owner")
+            }
+        }
+        scheduleSave()
+    }
+
+    /// What ends a goal's budget, if anything is used up.
+    private func budgetReason(_ g: GoalState) -> String? {
+        if g.spent.minutes >= Double(g.budget.maxMinutes) { return "time limit (\(g.budget.maxMinutes) min) is used up" }
+        if g.budget.maxCost > 0 && g.spent.cost >= g.budget.maxCost { return "cost limit (\(Fmt.dollars(g.budget.maxCost))) is used up" }
+        if g.spent.steps >= g.budget.maxSteps { return "step budget (\(g.budget.maxSteps) steps) is used up" }
+        return nil
+    }
+
+    /// Starts the goal's next round with what's still missing, unless its budget is out. Returns true when a round started.
+    private func launchGoalRound(missing: [String]) -> Bool {
+        guard goalMode, var goal = session.goal else { return false }
+        if let why = budgetReason(goal) {
+            endGoal(.stopped, note: "Stopped: the \(why).", missing: missing)
+            return false
+        }
+        // Stuck for five rounds: the rest of the goal goes to the escalation model, once.
+        if goal.stuckRounds >= 4, !goal.escalated {
+            let esc = AppSettings.shared.escalation(for: model)
+            if !esc.isEmpty, esc != model {
+                goal.escalated = true
+                goal.log("Stuck for five rounds: switched to \(esc).")
+                session.goal = goal
+                append(ChatItem(kind: .system, text: "Goal: stuck for five rounds, switching to \(esc) for the rest of the goal."))
+                model = esc
+                goal = session.goal ?? goal
+            }
+        }
+        goal.phase = missing.isEmpty ? .working : .fixing
+        goal.lastTick = Date()
+        session.goal = goal
+        let stuckOn: String? = goal.stuckRounds >= 2 ? (missing.first ?? "the goal") : nil
+        append(ChatItem(kind: .system, text: "Goal: round \(goal.rounds + 1)." + (missing.isEmpty ? "" : " Still missing: " + missing.joined(separator: "; "))))
+        start(goal: GoalState.continuePrompt(missing: missing, stuckOn: stuckOn), display: "(goal mode: continuing)")
+        return true
+    }
+
+    /// Ends the goal (done, stopped or out of budget): restores the session's mode, posts the summary and a notification.
+    private func endGoal(_ phase: GoalState.Phase, note: String, missing: [String], notify: Bool = true) {
+        guard var goal = session.goal else { goalMode = false; return }
+        goal.phase = phase
+        goal.unresolved = missing
+        session.goal = goal
+        goalMode = false
+        providerWatch?.cancel()
+        providerDownSince = nil
+        providerWaitNotified = false
+        session.stepLimit = goal.savedSteps
+        session.mode = goal.savedMode
+        agent?.mode = mode
+        let done = phase == .done
+        let checks = goal.criteria.filter { $0.kind != .manual }
+        var lines = [note]
+        lines.append("Checks: " + (checks.isEmpty ? "no command or file checks" : "\(checks.filter { $0.met == true }.count) of \(checks.count) command and file checks pass")
+                     + "; judge: " + (missing.isEmpty ? "nothing open" : "open: " + missing.joined(separator: "; ")))
+        lines.append("Rounds: \(goal.rounds), \(Int(goal.spent.minutes)) min, \(Fmt.dollars(goal.spent.cost)).")
+        if !goal.recovery.isEmpty { lines.append("Recovery: \(goal.recovery.count) event(s), latest: " + goal.recovery.suffix(3).joined(separator: "; ")) }
+        if let branch = session.branch ?? goal.branch { lines.append("Branch: \(branch). Merge it from the Git tab when you're happy.") }
+        lines.append(done ? "What was done and the assumptions are in the answer above." : "Not finished. Send a message to pick it up again.")
+        append(ChatItem(kind: .system, text: (done ? "Goal done" : "Goal stopped") + "\n" + lines.joined(separator: "\n")))
+        if notify {
+            if done {
+                let result = (agent?.messages ?? []).last(where: { $0.role == "assistant" }).map { Fmt.line($0.text, 160) } ?? note
+                goalNotify(title: "Goal done: " + session.title, body: result)
+            } else {
+                goalNotify(title: "Goal stopped: " + session.title, body: note)
+            }
+        }
+        scheduleSave()
+    }
+
+    /// Ends a goal the owner stopped from the panel or /goal stop. A waiting goal ends here; a running one is cancelled.
+    func stopGoal() {
+        guard let g = session.goal, GoalSummary.isLive(g.phase) else { return }
+        if running || goalWait != nil { stop(); return }
+        endGoal(.stopped, note: "Stopped by the owner.", missing: g.unresolved, notify: false)
+    }
+
+    /// A goal's end or long wait as a notification, unless this session is on screen in the app the owner is using.
+    private func goalNotify(title: String, body: String) {
+        let looking = (NSApp?.isActive ?? false) && (app?.panes.ids.contains(session.id) ?? false)
+        guard !looking else { return }
+        Notifier.shared.post(id: UUID().uuidString, title: title, body: Fmt.line(body, 180), category: "done", session: session.id.uuidString)
+    }
+
+    /// Tells the owner once, if the provider is still down ten minutes after the outage began.
+    private func scheduleProviderNotice(problem: String) {
+        let elapsed = Date().timeIntervalSince(providerDownSince ?? Date())
+        providerWatch?.cancel()
+        providerWatch = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0, 600 - elapsed)))
+            guard !Task.isCancelled, let self, self.goalMode, self.session.goal?.phase == .waitingForProvider, !self.providerWaitNotified else { return }
+            self.providerWaitNotified = true
+            self.goalNotify(title: "Goal waiting: \(problem), retrying", body: self.session.title)
+        }
+    }
+
+    /// After a request in goal mode: finish the goal, or start its next round. A failed provider is retried with a
+    /// backoff. Returns true when another round is running or waiting (the caller must leave the goal running).
     private func continueGoal(after outcome: AgentOutcome) -> Bool {
         guard goalMode else { return false }
-        if !outcome.ok, outcome.text.contains("step limit"), goalContinues < 3 {
-            goalContinues += 1
-            append(ChatItem(kind: .system, text: "Goal mode: hit the step limit, continuing (\(goalContinues) of 3)."))
-            start(goal: "Continue toward the goal. Don't repeat finished work: check what's already done, then finish the rest.", display: "(goal mode: continuing)")
+        var goal = session.goal ?? GoalState(objective: session.title)
+        goal.rounds += 1
+        goal.spent.steps += outcome.steps
+        goal.spent.minutes += Date().timeIntervalSince(goal.lastTick) / 60
+        goal.spent.cost = max(0, session.usage.cost - goal.costBase)
+        if let a = agent, !a.goalCriteria.isEmpty { goal.criteria = a.goalCriteria }
+        if goal.criteria.isEmpty, let found = GoalState.criteria(in: agent?.messages ?? []) {
+            goal.criteria = found
+            let list = found.map { c -> String in
+                "- " + c.text + (c.command.map { " (`\($0)`)" } ?? c.path.map { " (\($0))" } ?? "")
+            }
+            append(ChatItem(kind: .system, text: "Definition of done\n" + list.joined(separator: "\n")))
+        }
+        var missing = outcome.missing
+        for c in goal.criteria where c.met == false && !missing.contains(c.text) { missing.append(c.text) }
+        goal.unresolved = missing
+        session.goal = goal
+
+        if !outcome.ok && outcome.text == "Stopped." {
+            endGoal(.stopped, note: "Stopped by the owner.", missing: missing, notify: false)
+            return false
+        }
+        if outcome.ok && missing.isEmpty {
+            endGoal(.done, note: "The goal is complete: the checks pass and the judge found nothing open.", missing: [])
+            return false
+        }
+        // Anything else that didn't finish: a failed provider waits and retries, a stalled round carries on.
+        let providerDown = !outcome.ok && !["step limit", "cost limit", "usable reply"].contains { outcome.text.contains($0) }
+        let signature = "\(goal.criteria.filter { $0.met == true }.count)|\(outcome.changedFiles.count)|\(missing.joined(separator: ";"))"
+        if !providerDown {
+            goal.stuckRounds = signature == goal.lastSignature ? goal.stuckRounds + 1 : 0
+            goal.lastSignature = signature
+            goal.providerTries = 0
+            providerDownSince = nil
+            providerWaitNotified = false
+            providerWatch?.cancel()
+        }
+        if providerDown {
+            goal.providerTries += 1
+            let wait = GoalState.backoff(tries: goal.providerTries - 1)
+            goal.phase = .waitingForProvider
+            goal.log("Provider failed (\(Fmt.line(outcome.text, 160))); retry \(goal.providerTries) in \(Int(wait)) s.")
+            session.goal = goal
+            append(ChatItem(kind: .system, text: "Goal: the model didn't answer (\(Fmt.line(outcome.text, 160))). Trying again in \(Int(wait)) s."))
+            if providerDownSince == nil { providerDownSince = Date() }
+            if !providerWaitNotified { scheduleProviderNotice(problem: Fmt.line(outcome.text, 100)) }
+            goalWait?.cancel()
+            goalWait = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(wait))
+                guard !Task.isCancelled, let self, self.goalMode else { return }
+                self.goalWait = nil
+                _ = self.launchGoalRound(missing: missing)
+            }
+            scheduleSave()
             return true
         }
-        goalMode = false
-        if let saved = goalSaved {
-            session.stepLimit = saved.steps
-            if let m = saved.mode { session.mode = m; agent?.mode = m }
-            goalSaved = nil
-        }
-        return false
+        return launchGoalRound(missing: missing)
     }
 
     // MARK: Rewind
@@ -784,9 +1010,16 @@ final class SessionController: AgentHost {
 
     // MARK: AgentHost
 
-    func agentStatus(_ text: String) { status = text }
+    /// Marks the agent as alive now. Throttled: the status row only needs the second.
+    func noteActivity() {
+        let now = Date()
+        if lastActivity.map({ now.timeIntervalSince($0) >= 1 }) ?? true { lastActivity = now }
+    }
+
+    func agentStatus(_ text: String) { noteActivity(); status = text; if running { app?.presenceStatus(text) } }
 
     func agentStream(_ text: String) {
+        noteActivity()
         // Show the reasoning part (before the json block), last line or two.
         let thought = text.components(separatedBy: "```").first ?? ""
         let t = thought.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -804,6 +1037,8 @@ final class SessionController: AgentHost {
     }
 
     func agentStepBegan(_ id: UUID, tool: String, summary: String) {
+        noteActivity()
+        if running { app?.presenceStep(tool: tool, summary: summary) }
         append(ChatItem(id: id, kind: .tool, text: summary, tool: ToolStep(name: tool, summary: summary, status: .running)))
         if tool == "shell" || tool == "start_process" {
             app?.terminals.agentCommand(summary.hasPrefix("$ ") ? String(summary.dropFirst(2)) : summary)
@@ -849,6 +1084,7 @@ final class SessionController: AgentHost {
     }
 
     func agentStepEnded(_ id: UUID, status: ToolStep.Status, output: String, diffs: [FileDiff], duration: Double) {
+        noteActivity()
         update(id) { item in
             guard var t = item.tool else { return }
             t.status = status

@@ -21,12 +21,18 @@ final class AppSettings {
     var shellTimeout: Double { didSet { d.set(shellTimeout, forKey: "shellTimeout") } }
     /// Stop a request once it has cost this much (USD; 0 = no limit). Free models never reach it.
     var maxTaskCost: Double { didSet { d.set(maxTaskCost, forKey: "maxTaskCost") } }
+    /// Seconds a reply may go quiet once it has started before the turn is retried (the idle watchdog).
+    var stallSeconds: Int { didSet { d.set(stallSeconds, forKey: "stallSeconds") } }
+    /// Seconds to wait for a reply's first token before the turn is retried (thinking models are quiet for a long time).
+    var firstTokenSeconds: Int { didSet { d.set(firstTokenSeconds, forKey: "firstTokenSeconds") } }
     /// Keep the Mac from sleeping while a request or queue task runs.
     var keepAwake: Bool { didSet { d.set(keepAwake, forKey: "keepAwake") } }
     /// Show "Working on a task" on your Discord profile (Rich Presence), with a link to the repo.
     var discordPresence: Bool { didSet { d.set(discordPresence, forKey: "discordPresence") } }
     /// Also show the project's folder name there (off by default: project names can be private).
     var discordShowProject: Bool { didSet { d.set(discordShowProject, forKey: "discordShowProject") } }
+    /// The Discord application ID the presence is shown under (its name is what Discord displays).
+    var discordClientID: String { didSet { d.set(discordClientID, forKey: "discordClientID") } }
     /// Permission mode for background queue tasks.
     var queueMode: PermissionMode { didSet { d.set(queueMode.rawValue, forKey: "queueMode") } }
     /// How many queue tasks and sub-sessions run at the same time (each in its own worktree).
@@ -39,6 +45,14 @@ final class AppSettings {
     var autoVerify: Bool { didSet { d.set(autoVerify, forKey: "autoVerify") } }
     /// A second model call reads the final diff and flags real problems before the agent finishes.
     var selfReview: Bool { didSet { d.set(selfReview, forKey: "selfReview") } }
+    /// Before a request is accepted as done, a hidden judge model checks the answer against the request and its changes.
+    var judgeEnabled: Bool { didSet { d.set(judgeEnabled, forKey: "judgeEnabled") } }
+    /// The judge's model: "auto" (the session's model; gemini-4-hydrogen is judged by gemini-neon), or a model id.
+    var judgeModel: String { didSet { d.set(judgeModel, forKey: "judgeModel") } }
+    /// /goal runs in its own git worktree on its own branch (anvil/goal-...), when the project is a git repo.
+    var goalInWorktree: Bool { didSet { d.set(goalInWorktree, forKey: "goalInWorktree") } }
+    /// How long a goal may run before it stops with a summary (minutes).
+    var goalMaxMinutes: Int { didSet { d.set(goalMaxMinutes, forKey: "goalMaxMinutes") } }
     /// After the same action fails twice, the next turn goes to this model ("auto" picks the other family, "" = off).
     var escalationModel: String { didSet { d.set(escalationModel, forKey: "escalationModel") } }
     /// Exploration turns (only reads and searches so far) and explore helpers use this model ("" = the session model).
@@ -109,9 +123,12 @@ final class AppSettings {
         defaultMode = PermissionMode(rawValue: d.string(forKey: "defaultMode") ?? "") ?? .ask
         shellTimeout = d.object(forKey: "shellTimeout") as? Double ?? 300
         maxTaskCost = d.object(forKey: "maxTaskCost") as? Double ?? 0
+        stallSeconds = d.object(forKey: "stallSeconds") as? Int ?? 120
+        firstTokenSeconds = d.object(forKey: "firstTokenSeconds") as? Int ?? 240
         keepAwake = d.object(forKey: "keepAwake") as? Bool ?? true
         discordPresence = d.object(forKey: "discordPresence") as? Bool ?? true
         discordShowProject = d.object(forKey: "discordShowProject") as? Bool ?? false
+        discordClientID = d.string(forKey: "discordClientID") ?? DiscordPresence.clientID
         queueMode = PermissionMode(rawValue: d.string(forKey: "queueMode") ?? "") ?? .acceptEdits
         parallelTasks = min(4, max(1, d.object(forKey: "parallelTasks") as? Int ?? 2))
         lspChecks = d.object(forKey: "lspChecks") as? Bool ?? true
@@ -129,6 +146,10 @@ final class AppSettings {
         projectBrief = d.object(forKey: "projectBrief") as? Bool ?? true
         aiTitles = d.object(forKey: "aiTitles") as? Bool ?? true
         jailbreak = d.object(forKey: "jailbreak") as? Bool ?? false
+        judgeEnabled = d.object(forKey: "judgeEnabled") as? Bool ?? true
+        judgeModel = d.string(forKey: "judgeModel") ?? "auto"
+        goalInWorktree = d.object(forKey: "goalInWorktree") as? Bool ?? true
+        goalMaxMinutes = d.object(forKey: "goalMaxMinutes") as? Int ?? 240
         notebookMemory = d.object(forKey: "notebookMemory") as? Bool ?? true
         notebookScope = d.string(forKey: "notebookScope") ?? "project"
         notebookPlan = d.string(forKey: "notebookPlan") ?? "free"

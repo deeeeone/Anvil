@@ -75,6 +75,7 @@ enum Headless {
         let args = CommandLine.arguments
         agent.autoVerify = !args.contains("--no-verify")
         agent.selfReview = !args.contains("--no-review")
+        agent.judgeEnabled = !args.contains("--no-judge")   // evals keep the same checks on or off
         agent.streaming = !args.contains("--no-stream")
         agent.escalationModel = args.contains("--no-escalate") ? "" : (value("--escalate") ?? AppSettings.shared.escalation(for: brain.model))
         agent.exploreModel = value("--explore-model") ?? ""

@@ -71,7 +71,7 @@ enum ShellTools {
         guard let cmd = a["command"]?.string ?? a["value"]?.string else { return .fail("missing command") }
         let name = a["name"]?.string ?? defaultName(cmd)
         let cwd = a["cwd"]?.string.map(ctx.resolve) ?? ctx.root
-        let e = try ctx.processes.start(name: name, command: cmd, cwd: cwd)
+        let e = try ctx.processes.start(name: name, command: cmd, cwd: cwd, owner: ctx.owner)
         try? await Task.sleep(for: .seconds(2))
         let early = e.output.value
         if let code = e.exitCode {
@@ -94,6 +94,12 @@ enum ShellTools {
         return .ok("\(name): \(state)\n" + Fmt.clip(lines, max: 10000))
     }
 
+    /// Whether stopping a process needs the owner's OK: it was started by another agent or by the app itself.
+    static func stopNeedsApproval(owner: String?, session: String) -> Bool { owner != session }
+
+    /// The permission-check text for stopping a process this session didn't start (see Permissions.dangerReason).
+    static func foreignStopMarker(_ name: String) -> String { "kill-foreign-process \(name)" }
+
     static let stopProcess = ToolSpec(
         name: "stop_process", kind: .meta,
         signature: #"{"name": str}"#,
@@ -110,7 +116,10 @@ enum ShellTools {
         group: .shell
     ) { _, ctx in
         let l = ctx.processes.entries
-        return .ok(l.isEmpty ? "no background processes" : l.map { "- \($0.name): \($0.running ? "running" : "exited \($0.exitCode ?? -1)"): \($0.command)" }.joined(separator: "\n"))
+        return .ok(l.isEmpty ? "no background processes" : l.map { e in
+            let owned = e.owner == ctx.owner ? "(started by this session)" : "(started elsewhere; ask before stopping)"
+            return "- \(e.name): \(e.running ? "running" : "exited \(e.exitCode ?? -1)"): \(e.command) \(owned)"
+        }.joined(separator: "\n"))
     }
 
     static let kinds = ["url", "port", "file", "output", "process_exits", "command"]

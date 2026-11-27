@@ -74,6 +74,45 @@ nonisolated enum SkillLibrary {
         }.filter { $0.1 >= 3 }.sorted { $0.1 > $1.1 }.prefix(limit).map(\.0)
     }
 
+    /// Design skills in priority order: the first one that exists is loaded for a UI request.
+    static let designSkills = ["frontend-design", "impeccable", "anti-slop"]
+
+    /// Whole words that mark a request as UI work ("style" doesn't match "styled").
+    static let uiWords: Set<String> = ["ui", "page", "pages", "site", "website", "landing", "frontend", "front", "component", "components",
+                                       "dashboard", "design", "designs", "polished", "beautiful", "css", "react", "vue", "svelte", "html",
+                                       "layout", "style", "styles", "styling", "interface", "tailwind"]
+
+    static func isUIRequest(_ goal: String) -> Bool {
+        let tokens = Set(goal.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init))
+        return !tokens.isDisjoint(with: uiWords)
+    }
+
+    /// The design skill for a UI request: the first of `designSkills` found. Project skills come before ~/.claude/skills.
+    /// `among` replaces the search (for tests).
+    static func designSkill(project: URL?, among list: [FolderSkill]? = nil) -> FolderSkill? {
+        let skills = list ?? all(project: project)
+        for name in designSkills {
+            // Plugin skills are named "plugin:skill", so the last part of the name counts too.
+            if let s = skills.first(where: { slug($0.name) == name || slug($0.name.split(separator: ":").last.map(String.init) ?? "") == name }) {
+                return s
+            }
+        }
+        return nil
+    }
+
+    /// The skills block for the agent's first message. On the first turn of a UI request the design skill's instructions
+    /// are included in full (clipped to 6000 characters); the other matches are listed for use_skill.
+    static func skillNote(for goal: String, project: URL?, firstTurn: Bool) -> String {
+        var matches = matching(goal, project: project)
+        var design = ""
+        if firstTurn && isUIRequest(goal), let s = designSkill(project: project) {
+            design = "DESIGN SKILL (loaded automatically for this UI task): \(s.name)\n" + Fmt.clip(load(s), max: 6000) + "\n\n"
+            matches.removeAll { $0 == s }
+        }
+        guard !matches.isEmpty else { return design }
+        return design + "SKILLS THAT MAY HELP (load with use_skill before starting)\n" + matches.map { "- \($0.name): \(Fmt.line($0.description, 160))" }.joined(separator: "\n") + "\n\n"
+    }
+
     static func load(_ s: FolderSkill) -> String {
         let body = parse((try? String(contentsOf: s.file, encoding: .utf8)) ?? "").body
         let files = (try? FileManager.default.contentsOfDirectory(atPath: s.folder.path))?.filter { $0 != "SKILL.md" && !$0.hasPrefix(".") }.sorted() ?? []

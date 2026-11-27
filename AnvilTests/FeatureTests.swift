@@ -88,6 +88,7 @@ final class LimitAndRewindTests: XCTestCase {
             return "```json\n{\"actions\": [{\"tool\": \"list_dir\", \"args\": {}}]}\n```"
         }
         let agent = Agent(ctx: ToolContext(root: dir, processes: ProcessManager(), host: TestHost()), brain: brain)
+        agent.judgeEnabled = false
         agent.autoVerify = false; agent.selfReview = false; agent.streaming = false; agent.prepareWhilePlanning = false; agent.memory = ProjectMemory()
         agent.maxCost = 0.025
         let out = await agent.run(goal: "loop")

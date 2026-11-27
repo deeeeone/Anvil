@@ -110,6 +110,10 @@ nonisolated struct Session: Codable, Identifiable, Equatable, Sendable {
     var attachedNotebookTitle: String?
     /// How many messages of the conversation are already in NotebookLM memory (nil = none yet).
     var memoryUploadedCount: Int?
+    /// The /goal mission this session runs or ran (nil = none).
+    var goal: GoalState?
+    /// The "judge runs on a different model" note was shown in this session.
+    var judgeNoteShown: Bool?
 
     /// Where the agent works: the worktree for worktree sessions, else the project.
     var root: URL { URL(fileURLWithPath: workdir ?? projectPath) }
@@ -171,6 +175,8 @@ nonisolated struct SessionSummary: Identifiable, Equatable, Sendable {
     var parentID: UUID? = nil
     var workdir: String? = nil
     var worktreeRemoved = false
+    /// The raw phase of the session's goal (nil = no goal), for the sidebar's scope symbol.
+    var goalPhase: String? = nil
 }
 
 /// Sessions are JSON files under Application Support/Anvil/projects/<project-key>/sessions.
@@ -206,14 +212,21 @@ nonisolated enum SessionStore {
     static func list(root: URL) -> [SessionSummary] {
         let dir = folder(for: root)
         let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        return files.filter { $0.pathExtension == "json" }.compactMap { f in
+            (try? Data(contentsOf: f)).flatMap { summary(from: $0) }
+        }.sorted { $0.updated > $1.updated }
+    }
+
+    /// The list's fields, read from a session file's head (a goal's phase only when the file has a goal).
+    static func summary(from data: Data) -> SessionSummary? {
+        struct GoalHead: Decodable { var phase: String? }
+        struct Head: Decodable { var id: UUID; var title: String; var updated: Date; var usage: SessionUsage?; var branch: String?; var parentID: UUID?; var workdir: String?; var worktreeRemoved: Bool?; var goal: GoalHead? }
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
-        struct Head: Decodable { var id: UUID; var title: String; var updated: Date; var usage: SessionUsage?; var branch: String?; var parentID: UUID?; var workdir: String?; var worktreeRemoved: Bool? }
-        return files.filter { $0.pathExtension == "json" }.compactMap { f in
-            guard let d = try? Data(contentsOf: f), let h = try? dec.decode(Head.self, from: d) else { return nil }
-            return SessionSummary(id: h.id, title: h.title, updated: h.updated, cost: h.usage?.cost ?? 0, branch: h.branch,
-                                  parentID: h.parentID, workdir: h.workdir, worktreeRemoved: h.worktreeRemoved ?? false)
-        }.sorted { $0.updated > $1.updated }
+        guard let h = try? dec.decode(Head.self, from: data) else { return nil }
+        return SessionSummary(id: h.id, title: h.title, updated: h.updated, cost: h.usage?.cost ?? 0, branch: h.branch,
+                              parentID: h.parentID, workdir: h.workdir, worktreeRemoved: h.worktreeRemoved ?? false,
+                              goalPhase: h.goal?.phase)
     }
 
     /// Moves the session file to the Trash (recoverable), falling back to deleting it.
