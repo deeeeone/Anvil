@@ -126,7 +126,7 @@ nonisolated enum Permissions {
             guard var first = words.first else { continue }
             if first == "cd" { continue }
             if first.hasPrefix("./") || first.contains("=") { return false }
-            first = (first as NSString).lastPathComponent
+            first = NSString(string: first).lastPathComponent
             if simple.contains(first) { continue }
             if first == "sed" { if words.contains(where: { $0.hasPrefix("-i") }) { return false }; continue }
             if first == "find" { if words.contains(where: { ["-delete", "-exec", "-execdir", "-ok"].contains($0) }) { return false }; continue }

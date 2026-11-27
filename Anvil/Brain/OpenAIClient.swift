@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Stateless OpenAI-compatible chat client. The caller sends the full history.
 nonisolated final class OpenAIClient: Sendable {

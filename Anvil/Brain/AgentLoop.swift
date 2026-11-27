@@ -112,7 +112,7 @@ final class Agent {
         guard let r = b.range(of: "ACTIONS\n") else { return [] }
         let re = try! NSRegularExpression(pattern: #"(?m)^- ([a-z_][a-z0-9_.]*) "#)
         let tail = String(b[r.upperBound...])
-        let ns = tail as NSString
+        let ns = NSString(string: tail)
         return Set(re.matches(in: tail, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range(at: 1)) })
     }
 
@@ -151,7 +151,9 @@ final class Agent {
         self.isSubagent = subagent
         self.memory = subagent ? ProjectMemory() : ProjectMemory.load(ctx.root)
         var specs = FileTools.all() + ShellTools.all() + WorkTools.all() + [Self.repoMapTool] + extraTools
+#if os(macOS)
         if !subagent { specs += SimulatorTools.all() }
+#endif
         if subagent { specs.removeAll { ["ask_user", "todo_write", "start_process", "stop_process"].contains($0.name) } }
         register(specs)
         if !subagent { register([exploreTool()] + mcpTools() + GitHub.tools()) }
@@ -326,8 +328,10 @@ final class Agent {
     func run(goal: String, images: [(Data, String)] = [], attachmentsNote: String = "") async -> AgentOutcome {
         brain.effortCap = nil
         memoryAsks = 0
+#if canImport(Darwin)
         let activity = ProcessInfo.processInfo.beginActivity(options: [.idleSystemSleepDisabled, .userInitiated], reason: "Anvil is working on a task")
         defer { ProcessInfo.processInfo.endActivity(activity) }
+#endif
         let taskStart = Date()
         requestStart = taskStart
         checkpoint = Checkpoint(label: Fmt.line(goal, 80))
@@ -977,8 +981,12 @@ final class Agent {
         host?.agentStatus("Checking the design")
         let start = Date()
         // Put the owner's emulated size back afterwards.
+#if canImport(WebKit)
         let controller = b as? BrowserController
         let before = (controller?.viewportWidth.map { Int($0) }, controller?.viewportHeight.map { Int($0) })
+#else
+        let before: (Int?, Int?) = (nil, nil)
+#endif
         defer { _ = b.setViewport(width: before.0, height: before.1) }
         var images: [(Data, String)] = [], labels: [String] = []
         var checks: [DesignCritique.Fix] = []

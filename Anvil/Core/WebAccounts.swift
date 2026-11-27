@@ -1,6 +1,11 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Observation
+#if canImport(WebKit)
 import WebKit
+#endif
 
 /// One day of calls made with a web account.
 nonisolated struct WebUsageDay: Codable, Equatable, Sendable {
@@ -80,9 +85,14 @@ nonisolated struct WebAccount: Codable, Identifiable, Equatable, Sendable {
 
     var lastUsedLabel: String? {
         guard let lastUsed else { return nil }
+#if canImport(Darwin)
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .short
         return f.localizedString(for: lastUsed, relativeTo: Date())
+#else
+        // TODO(linux): no RelativeDateTimeFormatter; show no label rather than a wrong one.
+        return nil
+#endif
     }
 
     static let day: DateFormatter = {
@@ -402,6 +412,7 @@ nonisolated final class CookieJar: @unchecked Sendable {
         return out
     }
 
+#if canImport(WebKit)
     static func all(for provider: Provider, from store: WKWebsiteDataStore) async -> [String: String] {
         await withCheckedContinuation { cont in
             store.httpCookieStore.getAllCookies { list in
@@ -414,6 +425,7 @@ nonisolated final class CookieJar: @unchecked Sendable {
             }
         }
     }
+#endif
 }
 
 /// Checks a set of cookies against the site and describes the account, so every way of adding

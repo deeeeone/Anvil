@@ -39,7 +39,7 @@ enum Headless {
             print("usage: Anvil --headless --project DIR --prompt TEXT [--mode bypass|edits|ask|plan] [--model ID] [--resume ID] [--approve]")
             return 2
         }
-        let root = URL(fileURLWithPath: (dir as NSString).expandingTildeInPath).standardizedFileURL
+        let root = URL(fileURLWithPath: NSString(string: dir).expandingTildeInPath).standardizedFileURL
         let modeArg = value("--mode") ?? "edits"
         let mode: PermissionMode = ["bypass": .bypass, "edits": .acceptEdits, "ask": .ask, "plan": .plan][modeArg] ?? .acceptEdits
         var session = value("--resume").flatMap { UUID(uuidString: $0) }.flatMap { SessionStore.load($0, root: root) } ?? Session(projectPath: root.path)

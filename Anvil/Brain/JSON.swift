@@ -13,8 +13,14 @@ nonisolated enum JSON: Sendable, Equatable, CustomStringConvertible {
         switch value {
         case nil, is NSNull: self = .null
         case let n as NSNumber:
+#if canImport(Darwin)
             // NSNumber bridges Bool too; tell them apart by objCType.
             if CFGetTypeID(n) == CFBooleanGetTypeID() { self = .bool(n.boolValue) } else { self = .number(n.doubleValue) }
+#else
+            // No CFBoolean here, and `as? Bool` also matches the numbers 0 and 1. corelibs JSONSerialization makes
+            // booleans with objCType "c" and integers with "i"/"q", so tell them apart by that (checked on Swift 6.2).
+            if String(cString: n.objCType) == "c" { self = .bool(n.boolValue) } else { self = .number(n.doubleValue) }
+#endif
         case let s as String: self = .string(s)
         case let a as [Any]: self = .array(a.map { JSON(any: $0) })
         case let d as [String: Any]: self = .object(d.mapValues { JSON(any: $0) })

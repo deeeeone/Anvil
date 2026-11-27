@@ -73,7 +73,7 @@ nonisolated enum Prefetch {
         var out: [(String, Int)] = []
         for p in patterns {
             guard let re = try? NSRegularExpression(pattern: p, options: [.anchorsMatchLines]) else { continue }
-            let ns = output as NSString
+            let ns = NSString(string: output)
             for m in re.matches(in: output, range: NSRange(location: 0, length: ns.length)) where m.numberOfRanges >= 3 {
                 if let line = Int(ns.substring(with: m.range(at: 2))) { out.append((ns.substring(with: m.range(at: 1)), line)) }
             }

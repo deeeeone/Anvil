@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import Observation
 
@@ -274,3 +275,4 @@ enum SimulatorTools {
         return r.status == 0 ? .ok("appearance: \(a["mode"]?.string ?? "dark")") : .fail(Fmt.line(r.combined, 200))
     }
 }
+#endif

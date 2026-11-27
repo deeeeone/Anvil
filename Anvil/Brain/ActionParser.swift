@@ -135,7 +135,7 @@ nonisolated enum ActionParser {
     /// Returns (jsonText, text before the block, text after the block, count of extra blocks ignored).
     static func extractJSON(_ raw: String) throws -> (String, String, String, Int) {
         let fence = try! NSRegularExpression(pattern: "```(?:json|JSON|javascript)?[ \\t]*\\n?([\\s\\S]*?)```")
-        let ns = raw as NSString
+        let ns = NSString(string: raw)
         let matches = fence.matches(in: raw, range: NSRange(location: 0, length: ns.length))
         var valid: [(String, Int)] = []
         for m in matches {

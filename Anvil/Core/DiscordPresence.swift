@@ -122,7 +122,7 @@ nonisolated final class DiscordPresence: @unchecked Sendable {
             for verb in ["Edit ", "Write "] where summary.hasPrefix(verb) {
                 let rest = summary.dropFirst(verb.count).trimmingCharacters(in: .whitespaces)
                 if !rest.isEmpty, !rest.hasSuffix("files") {
-                    return "Editing \((rest as NSString).lastPathComponent)"
+                    return "Editing \(NSString(string: rest).lastPathComponent)"
                 }
             }
             return "Editing a file"
@@ -210,7 +210,7 @@ nonisolated final class DiscordPresence: @unchecked Sendable {
     private func connect() -> Bool {
         for dir in socketDirectories {
             for i in 0..<10 {
-                let path = (dir as NSString).appendingPathComponent("discord-ipc-\(i)")
+                let path = NSString(string: dir).appendingPathComponent("discord-ipc-\(i)")
                 guard FileManager.default.fileExists(atPath: path), let s = openSocket(path) else { continue }
                 fd = s
                 let hello: [String: Any] = ["v": 1, "client_id": clientID]
@@ -221,6 +221,7 @@ nonisolated final class DiscordPresence: @unchecked Sendable {
         return false
     }
 
+#if canImport(Darwin)
     private func openSocket(_ path: String) -> Int32? {
         let s = socket(AF_UNIX, SOCK_STREAM, 0)
         guard s >= 0 else { return nil }
@@ -279,4 +280,10 @@ nonisolated final class DiscordPresence: @unchecked Sendable {
         if fd >= 0 { Darwin.close(fd) }
         fd = -1
     }
+#else
+    // TODO(linux): the Discord IPC socket is Unix-only here, so presence stays off until a socket layer is ported.
+    private func openSocket(_ path: String) -> Int32? { nil }
+    private func send(opcode: UInt32, json: [String: Any]) -> Bool { false }
+    private func close() { fd = -1 }
+#endif
 }

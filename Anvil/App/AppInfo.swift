@@ -37,7 +37,7 @@ nonisolated enum Paths {
     /// Expands ~ and resolves relative paths against `base`.
     static func resolve(_ p: String, base: URL) -> URL {
         let t = p.trimmingCharacters(in: .whitespacesAndNewlines)
-        if t.hasPrefix("~") { return URL(fileURLWithPath: (t as NSString).expandingTildeInPath).standardizedFileURL }
+        if t.hasPrefix("~") { return URL(fileURLWithPath: NSString(string: t).expandingTildeInPath).standardizedFileURL }
         if t.hasPrefix("/") { return URL(fileURLWithPath: t).standardizedFileURL }
         return base.appendingPathComponent(t).standardizedFileURL
     }

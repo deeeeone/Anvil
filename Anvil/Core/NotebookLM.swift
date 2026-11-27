@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Refuses automatic redirects, so the client follows every hop itself and keeps the cookies each one sets.
 nonisolated final class NotebookRedirectRefuser: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
@@ -367,7 +370,7 @@ nonisolated final class NotebookLMClient: @unchecked Sendable {
         var fields: [String: String] = [:]
         if let inputRe = try? NSRegularExpression(pattern: #"<input\b[^>]*>"#, options: [.caseInsensitive]) {
             for input in inputRe.matches(in: body, range: NSRange(body.startIndex..., in: body)) {
-                let tag = (body as NSString).substring(with: input.range)
+                let tag = NSString(string: body).substring(with: input.range)
                 guard let name = attribute("name", in: tag) else { continue }
                 fields[name] = attribute("value", in: tag) ?? ""
             }

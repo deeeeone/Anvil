@@ -1,4 +1,7 @@
+import Foundation
+#if canImport(AppKit)
 import AppKit
+#endif
 import Observation
 
 // Model Context Protocol client: spawns the stdio servers listed in Application Support/Anvil/mcp.json
@@ -178,7 +181,7 @@ nonisolated final class MCPStdioClient: @unchecked Sendable {
     func start() throws {
         guard let command = config.command, !command.isEmpty else { throw MCPError.badConfig("no command") }
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [command] + config.args.map { ($0 as NSString).expandingTildeInPath }
+        process.arguments = [command] + config.args.map { NSString(string: $0).expandingTildeInPath }
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = ProcessRunner.basePath + ":" + (env["PATH"] ?? "")
         env.removeValue(forKey: "ANVIL_API_KEY"); env.removeValue(forKey: "ANVIL_GEMINI_KEY")
@@ -200,7 +203,9 @@ nonisolated final class MCPStdioClient: @unchecked Sendable {
         }
         process.terminationHandler = { [weak self] _ in self?.failAll(MCPError.closed(self?.lastStderr.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").last ?? "")) }
         // A server that already exited must give us EPIPE on write, not a SIGPIPE that kills the app.
+#if canImport(Darwin)
         _ = fcntl(stdinPipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+#endif
         try process.run()
     }
 
@@ -409,7 +414,11 @@ final class MCPManager {
     func openConfig() {
         let url = MCPServerConfig.fileURL
         if !FileManager.default.fileExists(atPath: url.path) { try? MCPServerConfig.template.write(to: url, atomically: true, encoding: .utf8) }
+#if canImport(AppKit)
         if !NSWorkspace.shared.open(url) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+#else
+        // TODO(linux): no NSWorkspace to open the file in an editor; the template is still written above.
+#endif
     }
 
     var statusLines: [String] {

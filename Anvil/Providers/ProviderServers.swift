@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Observation
 
 /// Runs the local servers provider plugins declare (`"server"` in anvil-provider.json), so a plugin can

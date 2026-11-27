@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Counts bytes against a budget from any thread.
 nonisolated final class ByteBudget: @unchecked Sendable {

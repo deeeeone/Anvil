@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// ChatGPT's own web backend, implemented here instead of through a local proxy.
 /// The account's cookies come from a real sign-in in the embedded browser (or a paste).

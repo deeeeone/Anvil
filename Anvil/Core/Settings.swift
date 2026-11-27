@@ -226,11 +226,15 @@ final class AppSettings {
 
     var peepKeyAvailable: Bool {
         // Existence check without reading the secret.
+#if canImport(Security)
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                 kSecAttrService as String: AppInfo.peepKeychainService,
                                 kSecAttrAccount as String: AppInfo.peepKeychainAccount,
                                 kSecReturnAttributes as String: true]
         var out: AnyObject?
         return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess
+#else
+        return false // TODO(linux): no Keychain, so the peep key is never found here.
+#endif
     }
 }

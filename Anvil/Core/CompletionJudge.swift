@@ -28,7 +28,7 @@ nonisolated enum CompletionJudge {
     /// The first JSON object in a reply: a fenced block, or the text from the first { to the last }.
     static func jsonObject(_ raw: String, depth: Int = 0) -> [String: Any]? {
         var candidates: [String] = []
-        let ns = raw as NSString
+        let ns = NSString(string: raw)
         if let re = try? NSRegularExpression(pattern: "```(?:json|JSON)?[ \\t]*\\n?([\\s\\S]*?)```") {
             for m in re.matches(in: raw, range: NSRange(location: 0, length: ns.length)) { candidates.append(ns.substring(with: m.range(at: 1))) }
         }
@@ -92,7 +92,7 @@ nonisolated enum CompletionJudge {
     static func strippingChecks(_ text: String) -> String {
         guard text.contains("<check>") else { return text }
         let re = try! NSRegularExpression(pattern: "<check>[\\s\\S]*?</check>\\n?")
-        return re.stringByReplacingMatches(in: text, range: NSRange(location: 0, length: (text as NSString).length), withTemplate: "")
+        return re.stringByReplacingMatches(in: text, range: NSRange(location: 0, length: NSString(string: text).length), withTemplate: "")
     }
 
     /// The note put in the next observation when the check finds open items.

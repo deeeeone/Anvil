@@ -43,7 +43,7 @@ final class TerminalStore {
             env.removeAll { $0.hasPrefix("TERM=") || $0.hasPrefix("NO_COLOR=") || $0.hasPrefix("CI=") || $0.hasPrefix("PAGER=") || $0.hasPrefix("GIT_PAGER=") }
             env += ["TERM=xterm-256color", "COLORTERM=truecolor", "LANG=en_US.UTF-8"]
             let sh = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-            shell.startProcess(executable: sh, args: ["-l"], environment: env, execName: "-" + (sh as NSString).lastPathComponent, currentDirectory: cwd.path)
+            shell.startProcess(executable: sh, args: ["-l"], environment: env, execName: "-" + NSString(string: sh).lastPathComponent, currentDirectory: cwd.path)
             v = shell
         default:
             v = TerminalView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))

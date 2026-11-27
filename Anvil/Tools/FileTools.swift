@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(AppKit)
 import AppKit
+#endif
 
 /// Reading, writing, editing and searching files in the project.
 enum FileTools {

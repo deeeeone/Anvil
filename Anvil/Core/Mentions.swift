@@ -20,7 +20,7 @@ nonisolated enum Mentions {
     /// Mentioned tokens in a message, in order.
     static func tokens(in text: String) -> [String] {
         let re = try! NSRegularExpression(pattern: #"(?:^|\s)@([\w./\-]+)"#)
-        let ns = text as NSString
+        let ns = NSString(string: text)
         return re.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range(at: 1)) }
             .map { $0.hasSuffix(".") ? String($0.dropLast()) : $0 }
     }
@@ -37,7 +37,7 @@ nonisolated enum Mentions {
         func score(_ p: String) -> Int? {
             let l = p.lowercased()
             if q.isEmpty { return p.count }
-            if (l as NSString).lastPathComponent.hasPrefix(q) { return p.count }
+            if NSString(string: l).lastPathComponent.hasPrefix(q) { return p.count }
             if l.hasPrefix(q) { return 1000 + p.count }
             if l.contains(q) { return 2000 + p.count }
             return nil

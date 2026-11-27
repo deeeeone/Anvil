@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 nonisolated struct ProcessOutput: Sendable {
     var status: Int32

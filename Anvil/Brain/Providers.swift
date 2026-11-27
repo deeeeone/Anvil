@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Observation
 
 /// Where a model runs. Anvil offers exactly these three.
@@ -170,7 +173,7 @@ final class ChatGPTProxy {
     func ensureRunning() async -> String? {
         if await check() { status = "Running"; return nil }
         let folder = AppSettings.shared.chatgptProxyFolder
-        guard !folder.isEmpty, FileManager.default.fileExists(atPath: (folder as NSString).appendingPathComponent("start.sh")) else {
+        guard !folder.isEmpty, FileManager.default.fileExists(atPath: NSString(string: folder).appendingPathComponent("start.sh")) else {
             status = "Not running"
             return "The ChatGPT proxy isn't running at \(AppSettings.shared.chatgptURL). Start it (./start.sh in its folder), or set its folder in Settings so Anvil can start it."
         }

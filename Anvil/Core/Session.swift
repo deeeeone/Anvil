@@ -232,7 +232,12 @@ nonisolated enum SessionStore {
     /// Moves the session file to the Trash (recoverable), falling back to deleting it.
     static func delete(_ id: UUID, root: URL) {
         let f = file(id, root: root)
+#if canImport(Darwin)
         if (try? FileManager.default.trashItem(at: f, resultingItemURL: nil)) == nil { try? FileManager.default.removeItem(at: f) }
+#else
+        // TODO(linux): no Trash here, so the session file is deleted outright.
+        try? FileManager.default.removeItem(at: f)
+#endif
     }
 }
 

@@ -66,7 +66,7 @@ nonisolated enum EditEngine {
         var out: [String] = []
         var any = false
         for l in lines {
-            let ns = l as NSString
+            let ns = NSString(string: l)
             if let m = re.firstMatch(in: l, range: NSRange(location: 0, length: ns.length)) {
                 out.append(ns.substring(from: m.range.length)); any = true
             } else if l.trimmingCharacters(in: .whitespaces).isEmpty {

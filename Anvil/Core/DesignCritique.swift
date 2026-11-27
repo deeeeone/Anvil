@@ -22,7 +22,7 @@ nonisolated enum DesignCritique {
     /// True when this request is UI work: the wording says so, or a changed file has a UI extension.
     static func isUIWork(uiRequest: Bool, changedPaths: [String]) -> Bool {
         if uiRequest { return true }
-        return changedPaths.contains { uiExtensions.contains(($0 as NSString).pathExtension.lowercased()) }
+        return changedPaths.contains { uiExtensions.contains(NSString(string: $0).pathExtension.lowercased()) }
     }
 
     /// Design rules added to the agent's prompt for UI requests.
@@ -190,7 +190,7 @@ nonisolated enum DesignCritique {
     static func strippingNotes(_ text: String) -> String {
         guard text.contains("<design-check>") else { return text }
         let re = try! NSRegularExpression(pattern: "<design-check>[\\s\\S]*?</design-check>\\n?")
-        return re.stringByReplacingMatches(in: text, range: NSRange(location: 0, length: (text as NSString).length), withTemplate: "")
+        return re.stringByReplacingMatches(in: text, range: NSRange(location: 0, length: NSString(string: text).length), withTemplate: "")
     }
 
     /// One short line for the chat step output.

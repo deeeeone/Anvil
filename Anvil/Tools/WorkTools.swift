@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Web access, the todo list, skills and questions for the owner.
 enum WorkTools {

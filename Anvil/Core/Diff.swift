@@ -101,7 +101,7 @@ nonisolated enum DiffEngine {
         let header = try! NSRegularExpression(pattern: #"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@"#)
         for raw in text.components(separatedBy: "\n") {
             if raw.hasPrefix("@@") {
-                let ns = raw as NSString
+                let ns = NSString(string: raw)
                 if let m = header.firstMatch(in: raw, range: NSRange(location: 0, length: ns.length)) {
                     oldNo = Int(ns.substring(with: m.range(at: 1))) ?? 0
                     newNo = Int(ns.substring(with: m.range(at: 2))) ?? 0

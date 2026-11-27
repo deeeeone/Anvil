@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Talks to one provider plugin: over HTTP for "openai" plugins, through its command for "process" plugins.
 struct ProviderClient {

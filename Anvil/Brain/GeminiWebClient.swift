@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Gemini's own web endpoint (the protocol used by HanaokaYuzu/Gemini-API), implemented here.
 /// One instance belongs to one account; cookies are merged back as Google rotates them.
@@ -311,5 +314,5 @@ nonisolated final class GeminiWebClient: @unchecked Sendable {
 }
 
 extension Array {
-    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
+    nonisolated subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }

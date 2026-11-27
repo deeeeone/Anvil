@@ -192,7 +192,7 @@ nonisolated enum RepoMap {
         guard let pats = rules[language] else { return [] }
         let res = pats.compactMap { try? NSRegularExpression(pattern: $0, options: [.anchorsMatchLines]) }
         var out: [String] = []
-        let ns = text as NSString
+        let ns = NSString(string: text)
         for (i, re) in res.enumerated() {
             for m in re.matches(in: text, range: NSRange(location: 0, length: ns.length)) where m.numberOfRanges > 1 {
                 let name = ns.substring(with: m.range(at: 1))
