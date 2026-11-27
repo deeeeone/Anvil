@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/deeeeone/Anvil/main/docs/anvil-provider.schema.json",
+  "$id": "https://raw.githubusercontent.com/heurica-labs/anvil/main/docs/anvil-provider.schema.json",
   "title": "Anvil provider plugin",
   "description": "anvil-provider.json: describes a model provider for Anvil. See docs/PROVIDERS.md.",
   "type": "object",

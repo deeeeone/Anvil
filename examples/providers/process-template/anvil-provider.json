@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/deeeeone/Anvil/main/docs/anvil-provider.schema.json",
+  "$schema": "https://raw.githubusercontent.com/heurica-labs/anvil/main/docs/anvil-provider.schema.json",
   "spec": 1,
   "id": "echo",
   "name": "Echo (template)",

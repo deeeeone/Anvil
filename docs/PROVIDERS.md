@@ -143,7 +143,7 @@ Users install it by pasting the URL: `https://github.com/you/anvil-zai-web`, or 
 
 ## Reference
 
-The [JSON Schema](anvil-provider.schema.json) validates the file in editors that support it. Add `"$schema": "https://raw.githubusercontent.com/deeeeone/Anvil/main/docs/anvil-provider.schema.json"` at the top.
+The [JSON Schema](anvil-provider.schema.json) validates the file in editors that support it. Add `"$schema": "https://raw.githubusercontent.com/heurica-labs/anvil/main/docs/anvil-provider.schema.json"` at the top.
 
 | Field | Type | Notes |
 |---|---|---|

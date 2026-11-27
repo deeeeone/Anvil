@@ -17,17 +17,17 @@ final class DiscordPresenceTests: XCTestCase {
         XCTAssertEqual(a["state"] as? String, "Workspace: secret-app")
         XCTAssertEqual((a["timestamps"] as? [String: Int])?["start"], 2_000)
         let button = (a["buttons"] as? [[String: String]])?.first
-        XCTAssertEqual(button?["url"], "https://github.com/deeeeone/Anvil")
+        XCTAssertEqual(button?["url"], "https://github.com/heurica-labs/anvil")
         let assets = a["assets"] as? [String: String]
         XCTAssertEqual(assets?["large_image"], DiscordPresence.logoURL)
-        XCTAssertEqual(assets?["small_image"], "https://raw.githubusercontent.com/deeeeone/Anvil/main/design/presence/working.png")
+        XCTAssertEqual(assets?["small_image"], "https://raw.githubusercontent.com/heurica-labs/anvil/main/design/presence/working.png")
         XCTAssertEqual(assets?["small_text"], "glm-5.3")
         XCTAssertTrue(assets?["large_text"]?.hasPrefix("Anvil ") == true)
         let idle = DiscordPresence.activity(.init(working: false, model: "glm-5.3", project: nil, taskStart: nil), appStart: start)
         XCTAssertEqual(idle["details"] as? String, "Idling")
         XCTAssertEqual(idle["state"] as? String, "Ready for the next task")
         XCTAssertEqual((idle["timestamps"] as? [String: Int])?["start"], 1_000)
-        XCTAssertEqual((idle["assets"] as? [String: String])?["small_image"], "https://raw.githubusercontent.com/deeeeone/Anvil/main/design/presence/idle.png")
+        XCTAssertEqual((idle["assets"] as? [String: String])?["small_image"], "https://raw.githubusercontent.com/heurica-labs/anvil/main/design/presence/idle.png")
     }
 
     func testDetailsPerToolKind() {

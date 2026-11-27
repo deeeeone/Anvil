@@ -4,9 +4,9 @@
 
 # Anvil
 
-**A native macOS coding agent that works with almost any model.**
+**The coding agent that gets there first.**
 
-Open a folder, describe a change, review every diff. Anvil reads, edits, runs and tests until the job is done.
+5x faster and 12x cheaper than opencode on the same model.<sup>[1](#benchmark)</sup> A native Mac app that reads, edits, runs and tests until the job is done, with every diff yours to review.
 
 [![macOS 15+](https://img.shields.io/badge/macOS-15%2B-000000?logo=apple&logoColor=white)](#install)
 [![Swift](https://img.shields.io/badge/Swift-SwiftUI-F05138?logo=swift&logoColor=white)](#architecture)
@@ -20,9 +20,26 @@ Open a folder, describe a change, review every diff. Anvil reads, edits, runs an
 
 ---
 
-Anvil is a desktop app in the spirit of Claude Code and Codex, built natively for the Mac with SwiftUI. Its agent speaks a plain-text protocol instead of relying on native tool calling, so it runs on any chat model, including cheap and free ones, and adds checks of its own to keep weaker models on track: tests run before "done", a reviewer reads the diff, and a different model takes over after repeated failures.
+Anvil is a native Mac coding agent in the spirit of Claude Code and Codex, built with SwiftUI. Describe a change and it explores the repo, edits, runs your tests and fixes what breaks, while you watch diffs instead of waiting on a spinner.
 
-On the default model, a typical small coding task costs a fraction of a cent.
+## Built to be fast
+
+<a id="benchmark"></a>
+
+Same task, same model (GLM 5.3 Flash):
+
+| | Anvil | opencode |
+|---|---|---|
+| Time to finish | **3 min** | 15 min |
+| Cost | **$0.14** | $1.70 |
+
+That gap comes from the protocol. Most agents call tools one at a time through the model's native tool-calling API. Anvil's agent speaks a plain-text protocol instead.
+
+- **Fewer round trips.** The model batches several actions in one reply, such as reading three files or making two edits and running the tests, and read-only actions run in parallel. Fewer turns means less waiting.
+- **Less token overhead.** There are no JSON tool schemas to resend on every request, so each call is smaller and cheaper.
+- **Cheap, fast models just work.** Because it doesn't need native tool calling, it runs on any chat model, including small fast ones. Anvil adds its own checks to keep them on track: tests run before "done", a reviewer reads the diff, and a different model takes over after repeated failures.
+
+<sub>1. One task, one run each, on the same model and machine. Results vary with the task and the model.</sub>
 
 ## Why Anvil
 
@@ -113,8 +130,8 @@ There are no signed release builds yet ([roadmap](ROADMAP.md)), so build from so
 **Requirements:** macOS 15 or later, Xcode 26 or later, [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`).
 
 ```bash
-git clone https://github.com/deeeeone/Anvil.git
-cd Anvil
+git clone https://github.com/heurica-labs/anvil.git
+cd anvil
 xcodegen generate
 xcodebuild -project Anvil.xcodeproj -scheme Anvil -derivedDataPath build build \
   CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=

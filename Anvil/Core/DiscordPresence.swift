@@ -10,11 +10,11 @@ nonisolated final class DiscordPresence: @unchecked Sendable {
     static let shared = DiscordPresence()
     /// The default Discord application the presence belongs to (its name comes from the Developer Portal; the owner can change it in Settings).
     static let clientID = "918234595579805776"
-    static let repoURL = "https://github.com/deeeeone/Anvil"
+    static let repoURL = "https://github.com/heurica-labs/anvil"
     /// The large image: a public URL, so no art has to be uploaded to the Developer Portal. It loads once the repo is public.
-    static let logoURL = "https://raw.githubusercontent.com/deeeeone/Anvil/main/design/anvil-icon-1024.png"
+    static let logoURL = "https://raw.githubusercontent.com/heurica-labs/anvil/main/design/anvil-icon-1024.png"
     /// Status badges (small image), one per state, in design/presence/.
-    static func badgeURL(_ name: String) -> String { "https://raw.githubusercontent.com/deeeeone/Anvil/main/design/presence/\(name).png" }
+    static func badgeURL(_ name: String) -> String { "https://raw.githubusercontent.com/heurica-labs/anvil/main/design/presence/\(name).png" }
     /// Discord rate-limits SET_ACTIVITY, so updates are spaced at least this far apart.
     static let minInterval: TimeInterval = 5
 
