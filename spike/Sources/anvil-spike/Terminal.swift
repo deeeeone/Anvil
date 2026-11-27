@@ -38,7 +38,7 @@ final class Terminal {
     var isConsole: Bool {
         #if os(Windows)
         var mode: DWORD = 0
-        return GetConsoleMode(hIn, &mode) != 0
+        return GetConsoleMode(hIn, &mode)
         #else
         return isatty(0) != 0
         #endif
@@ -49,14 +49,14 @@ final class Terminal {
         #if os(Windows)
         var inMode: DWORD = 0
         var outMode: DWORD = 0
-        guard GetConsoleMode(hIn, &inMode) != 0, GetConsoleMode(hOut, &outMode) != 0 else {
+        guard GetConsoleMode(hIn, &inMode), GetConsoleMode(hOut, &outMode) else {
             return false
         }
         savedIn = inMode
         savedOut = outMode
         let newIn = (inMode & ~(kEnableLineInput | kEnableEchoInput)) | kEnableVTInput
         let newOut = outMode | kEnableVTProcessing | kDisableNewlineAutoReturn
-        return SetConsoleMode(hIn, newIn) != 0 && SetConsoleMode(hOut, newOut) != 0
+        return SetConsoleMode(hIn, newIn) && SetConsoleMode(hOut, newOut)
         #else
         var t = termios()
         guard tcgetattr(0, &t) == 0 else { return false }
@@ -72,7 +72,7 @@ final class Terminal {
         #if os(Windows)
         var inMode: DWORD = 0
         var outMode: DWORD = 0
-        guard GetConsoleMode(hIn, &inMode) != 0, GetConsoleMode(hOut, &outMode) != 0 else {
+        guard GetConsoleMode(hIn, &inMode), GetConsoleMode(hOut, &outMode) else {
             return false
         }
         return (inMode & kEnableVTInput) != 0
@@ -101,7 +101,7 @@ final class Terminal {
     func size() -> (cols: Int, rows: Int) {
         #if os(Windows)
         var info = CONSOLE_SCREEN_BUFFER_INFO()
-        if GetConsoleScreenBufferInfo(hOut, &info) != 0 {
+        if GetConsoleScreenBufferInfo(hOut, &info) {
             let cols = Int(info.srWindow.Right - info.srWindow.Left + 1)
             let rows = Int(info.srWindow.Bottom - info.srWindow.Top + 1)
             return (cols, rows)
@@ -121,7 +121,7 @@ final class Terminal {
         var buf = [UInt8](repeating: 0, count: 64)
         #if os(Windows)
         var n: DWORD = 0
-        guard ReadFile(hIn, &buf, DWORD(buf.count), &n, nil) != 0 else { return [] }
+        guard ReadFile(hIn, &buf, DWORD(buf.count), &n, nil) else { return [] }
         return Array(buf[0..<Int(n)])
         #else
         let n = read(0, &buf, buf.count)
