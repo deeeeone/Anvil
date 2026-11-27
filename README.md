@@ -16,6 +16,10 @@
 
 [Features](#features) · [Install](#install) · [Quick start](#quick-start) · [Providers](#providers) · [How it works](#how-it-works) · [Evals](#evals) · [Contributing](#contributing)
 
+<br>
+
+<img src="docs/images/anvil-diff.webp" width="900" alt="Anvil showing a finished task: the prompt, the verified result and the exact diff in the Git pane">
+
 </div>
 
 ---
