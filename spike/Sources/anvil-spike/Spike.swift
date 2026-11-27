@@ -26,6 +26,9 @@ struct Spike {
             } else {
                 skip("sse", "ANVIL_SPIKE_SSE_URL not set")
             }
+            if let s = ProcessInfo.processInfo.environment["ANVIL_SPIKE_HTTPS_URL"], let url = URL(string: s) {
+                results.append(await runDrip(url))
+            }
             results.append(await runProc())
             results.append(await runObserve())
             results.append(runTTY(check: true))
