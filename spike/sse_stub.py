@@ -16,6 +16,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b"%x\r\n" % len(b) + b + b"\r\n")
         self.wfile.flush()
 
+    def do_GET(self):
+        self.do_POST()
+
     def do_POST(self):
         if self.path != "/v1/chat/completions":
             self.send_error(404)

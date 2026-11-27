@@ -41,3 +41,22 @@ func runDrip(_ url: URL) async -> Bool {
     return report(r.stamps.count >= 3 && spread >= 300, "https-drip",
                   "\(r.stamps.count) deliveries, \(r.bytes) bytes, spread \(Int(spread)) ms at \(r.stamps.map { Int($0) })")
 }
+
+/// One plain request through a delegate session, to isolate method vs host problems.
+func runProbe(_ name: String, _ url: URL, post: Bool) async -> Bool {
+    let (stream, cont) = AsyncStream.makeStream(of: Void.self)
+    let d = DripDelegate(done: cont)
+    let session = URLSession(configuration: .default, delegate: d, delegateQueue: nil)
+    var req = URLRequest(url: url)
+    req.timeoutInterval = 15
+    if post {
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data(#"{"stream":true}"#.utf8)
+    }
+    session.dataTask(with: req).resume()
+    for await _ in stream {}
+    session.finishTasksAndInvalidate()
+    let r = d.result()
+    return report(r.bytes > 0, name, "\(post ? "POST" : "GET") \(url.absoluteString): \(r.bytes) bytes in \(r.stamps.count) deliveries")
+}

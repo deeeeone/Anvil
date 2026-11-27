@@ -14,6 +14,18 @@ struct Spike {
                 exit(2)
             }
             results.append(await runSSE(url: url))
+        case "probe":
+            // Diagnostics only: never fail the run.
+            if let s = ProcessInfo.processInfo.environment["ANVIL_SPIKE_SSE_URL"], let u = URL(string: s) {
+                _ = await runProbe("probe-local-get", u, post: false)
+                _ = await runProbe("probe-local-post", u, post: true)
+                if var c = URLComponents(url: u, resolvingAgainstBaseURL: false) {
+                    c.host = "localhost"
+                    if let lu = c.url { _ = await runProbe("probe-localhost-post", lu, post: true) }
+                }
+            }
+            _ = await runProbe("probe-https-post", URL(string: "https://httpbin.org/anything")!, post: true)
+            _ = await runProbe("probe-https-get", URL(string: "https://httpbin.org/get")!, post: false)
         case "proc":
             results.append(await runProc())
         case "observe":
