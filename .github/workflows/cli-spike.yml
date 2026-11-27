@@ -85,8 +85,10 @@ jobs:
         run: swift build -c release
       - name: Start SSE stub
         run: |
-          Start-Process python -ArgumentList 'sse_stub.py','8765'
-          Start-Sleep -Seconds 2
+          Start-Process python -ArgumentList 'sse_stub.py','8765' -WorkingDirectory (Get-Location) -RedirectStandardOutput stub.out.log -RedirectStandardError stub.err.log
+          Start-Sleep -Seconds 3
+          curl.exe -sS -N -X POST -H "Content-Type: application/json" -d "{}" http://127.0.0.1:8765/v1/chat/completions
+          Get-Content stub.err.log -ErrorAction SilentlyContinue
       - name: Run checks
         env:
           ANVIL_SPIKE_SSE_URL: http://127.0.0.1:8765/v1/chat/completions

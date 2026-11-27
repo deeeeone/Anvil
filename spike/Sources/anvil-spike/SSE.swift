@@ -31,7 +31,14 @@ nonisolated final class SSEDelegate: NSObject, URLSessionDataDelegate, @unchecke
         }
     }
 
+    nonisolated func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                                completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
+        print("  sse-delegate response: HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
+        completionHandler(.allow)
+    }
+
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error { print("  sse-delegate error: \(error)") }
         continuation.finish()
         session.finishTasksAndInvalidate()
     }
