@@ -2,7 +2,8 @@ import XCTest
 @testable import AnvilCore
 
 /// Collects what LiveScreen writes.
-private final class Sink {
+private /// The tests are async because Linux test discovery can't wrap synchronous @MainActor methods (it crashes at startup).
+final class Sink {
     var chunks: [String] = []
     var all: String { chunks.joined() }
     func take() -> String {
@@ -24,7 +25,7 @@ final class TUILiveScreenTests: XCTestCase {
     }
 
     @MainActor
-    func testFirstFrameDrawsEveryLine() {
+    func testFirstFrameDrawsEveryLine() async {
         let (screen, sink) = makeScreen()
         screen.setLive(["alpha", "beta"], cursor: nil)
         XCTAssertTrue(sink.all.contains("alpha"))
@@ -32,7 +33,7 @@ final class TUILiveScreenTests: XCTestCase {
     }
 
     @MainActor
-    func testSecondFrameRewritesOnlyChangedLine() {
+    func testSecondFrameRewritesOnlyChangedLine() async {
         let (screen, sink) = makeScreen()
         screen.setLive(["UNCHANGED-ROW", "first"], cursor: nil)
         _ = sink.take()
@@ -44,7 +45,7 @@ final class TUILiveScreenTests: XCTestCase {
     }
 
     @MainActor
-    func testNeverClearsTheScreenOrGoesHome() {
+    func testNeverClearsTheScreenOrGoesHome() async {
         let (screen, sink) = makeScreen()
         screen.setLive(["a", "b", "c"], cursor: (row: 1, col: 0))
         screen.setLive(["a"], cursor: nil)
@@ -59,7 +60,7 @@ final class TUILiveScreenTests: XCTestCase {
     }
 
     @MainActor
-    func testFramesAreSynchronized() {
+    func testFramesAreSynchronized() async {
         let (screen, sink) = makeScreen()
         screen.setLive(["x"], cursor: nil)
         screen.setLive(["y"], cursor: (row: 0, col: 1))
@@ -71,7 +72,7 @@ final class TUILiveScreenTests: XCTestCase {
     }
 
     @MainActor
-    func testCommitPrintsBeforeTheRedrawnRegion() {
+    func testCommitPrintsBeforeTheRedrawnRegion() async {
         let (screen, sink) = makeScreen()
         screen.setLive(["LIVE-A"], cursor: nil)
         _ = sink.take()
@@ -85,7 +86,7 @@ final class TUILiveScreenTests: XCTestCase {
     }
 
     @MainActor
-    func testCommitWrapsToOneColumnLessThanWidth() {
+    func testCommitWrapsToOneColumnLessThanWidth() async {
         let (screen, sink) = makeScreen(cols: 10)
         screen.commit(["abcdefghijklmnop"])
         let out = sink.all
@@ -94,7 +95,7 @@ final class TUILiveScreenTests: XCTestCase {
     }
 
     @MainActor
-    func testCursorShownOnlyWhenGiven() {
+    func testCursorShownOnlyWhenGiven() async {
         let (screen, sink) = makeScreen()
         screen.setLive(["ab"], cursor: (row: 0, col: 2))
         XCTAssertTrue(sink.all.contains("\u{1B}[?25h"))
@@ -104,7 +105,7 @@ final class TUILiveScreenTests: XCTestCase {
     }
 
     @MainActor
-    func testShrinkingRegionClearsLeftovers() {
+    func testShrinkingRegionClearsLeftovers() async {
         let (screen, sink) = makeScreen()
         screen.setLive(["a", "b", "c"], cursor: nil)
         _ = sink.take()
@@ -114,7 +115,7 @@ final class TUILiveScreenTests: XCTestCase {
     }
 
     @MainActor
-    func testThrottledFrameWaitsForFlush() {
+    func testThrottledFrameWaitsForFlush() async {
         let (screen, sink) = makeScreen()
         screen.setLiveThrottled(["queued"], cursor: nil)
         XCTAssertEqual(sink.all, "")
@@ -123,7 +124,7 @@ final class TUILiveScreenTests: XCTestCase {
     }
 
     @MainActor
-    func testResizedRedrawsAtNewWidthWithoutFullClear() {
+    func testResizedRedrawsAtNewWidthWithoutFullClear() async {
         let (screen, sink) = makeScreen(cols: 40)
         screen.setLive(["the live row"], cursor: nil)
         _ = sink.take()
@@ -141,7 +142,7 @@ final class TUILiveScreenTests: XCTestCase {
     }
 
     @MainActor
-    func testWideningMovesUpOverHardBrokenRows() {
+    func testWideningMovesUpOverHardBrokenRows() async {
         // A 100-char line at 40 columns is three hard-broken rows (39 + 39 + 22). After widening to 120 they
         // still occupy three physical rows, so the redraw must move up two rows, not zero.
         let box = SizeBox(cols: 40)
@@ -159,7 +160,7 @@ final class TUILiveScreenTests: XCTestCase {
     }
 
     @MainActor
-    func testClearLiveErasesRegion() {
+    func testClearLiveErasesRegion() async {
         let (screen, sink) = makeScreen()
         screen.setLive(["a", "b"], cursor: nil)
         _ = sink.take()
@@ -168,7 +169,7 @@ final class TUILiveScreenTests: XCTestCase {
     }
 
     @MainActor
-    func testNonInteractiveEmitsNoEscapes() {
+    func testNonInteractiveEmitsNoEscapes() async {
         let (screen, sink) = makeScreen(interactive: false)
         screen.setLive(["live"], cursor: (row: 0, col: 1))
         screen.commit(["plain", Ansi.bold("styled")])
