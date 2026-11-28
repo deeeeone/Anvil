@@ -45,6 +45,11 @@ nonisolated final class OutputBuffer: @unchecked Sendable {
     var droppedChars: Int { lock.withLock { dropped } }
 }
 
+#if os(Windows)
+/// Windows has no SIGKILL; killTree ignores the signal there and always force-ends the tree.
+let SIGKILL: Int32 = 9
+#endif
+
 nonisolated enum ProcessRunner {
     static var basePath: String {
         let h = Paths.home.path
@@ -153,11 +158,22 @@ nonisolated enum ProcessRunner {
 
     /// Terminates a process and all its descendants (dev servers spawn children that outlive their parent).
     static func killTree(_ pid: Int32, signal sig: Int32 = SIGTERM) {
+#if os(Windows)
+        // No signals or pgrep: taskkill /T ends the whole tree, /F forces it (there is no gentle SIGTERM equivalent).
+        let t = Process()
+        t.executableURL = URL(fileURLWithPath: "C:\\Windows\\System32\\taskkill.exe")
+        t.arguments = ["/PID", "\(pid)", "/T", "/F"]
+        t.standardOutput = FileHandle.nullDevice
+        t.standardError = FileHandle.nullDevice
+        try? t.run()
+        t.waitUntilExit()
+#else
         for child in children(of: pid) { killTree(child, signal: sig) }
         kill(pid, sig)
         if sig == SIGTERM {
             DispatchQueue.global().asyncAfter(deadline: .now() + 2) { if kill(pid, 0) == 0 { kill(pid, SIGKILL) } }
         }
+#endif
     }
 
     static func children(of pid: Int32) -> [Int32] {

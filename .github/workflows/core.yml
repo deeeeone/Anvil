@@ -24,20 +24,33 @@ jobs:
     container: swift:6.2
     timeout-minutes: 40
     steps:
-      - run: apt-get update -qq && apt-get install -y -qq python3 git procps nodejs >/dev/null
+      - run: apt-get update -qq && apt-get install -y -qq python3 git procps nodejs gdb >/dev/null
       - uses: actions/checkout@v4
       - run: |
           git config --global --add safe.directory '*'
           git config --global user.email ci@example.com
           git config --global user.name ci
+      - name: Build tests
+        run: swift build --build-tests
+      - name: Hang probe (WorktreeTests hung on Linux; dump stacks if it does again)
+        continue-on-error: true
+        run: |
+          swift test --skip-build --no-parallel --filter WorktreeTests > wt.log 2>&1 &
+          for i in $(seq 1 30); do sleep 5; pgrep -f AnvilPackageTests.xctest >/dev/null || break; done
+          if pid=$(pgrep -f AnvilPackageTests.xctest | head -1); then
+            echo "STILL RUNNING after ~150 s"; ps -eo pid,ppid,stat,etime,args
+            gdb -p "$pid" -batch -ex "thread apply all bt" 2>&1 | grep -E "^Thread|^#[0-9]+ " | head -200
+            kill -9 "$pid"
+          else echo "finished in time"; fi
+          tail -30 wt.log
       - name: Test
-        run: timeout 1500 swift test --no-parallel 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
+        run: timeout 1500 swift test --skip-build --no-parallel --skip WorktreeTests 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
       - name: Summary
         if: always()
         run: grep -E "Executed [0-9]+ tests|Test Case .* failed" test.log | sort -u | tail -30
       - name: Stress tests (fenced on Linux; checking whether the pipe fix cleared the hang)
         continue-on-error: true
-        run: timeout 600 swift test --no-parallel -Xswiftc -DANVIL_LINUX_STRESS --filter HarnessStressTests 2>&1 | tail -40
+        run: timeout 600 swift test --no-parallel -Xswiftc -DANVIL_LINUX_STRESS --filter HarnessStressTests 2>&1 | grep -E "Executed|failed|error:" | tail -40
       - name: Leftover processes
         if: always()
         run: ps -eo pid,etime,args | tail -15

@@ -13,6 +13,8 @@ nonisolated enum Platform {
     static func ignoreSIGPIPE() {
 #if canImport(Darwin)
         // Intentionally empty: Darwin uses F_SETNOSIGPIPE on each pipe.
+#elseif os(Windows)
+        // Windows has no SIGPIPE: a write to a closed pipe fails with an error instead.
 #else
         signal(SIGPIPE, SIG_IGN)
 #endif
