@@ -54,7 +54,7 @@ nonisolated enum Keychain {
         func clear() { lock.withLock { values.removeAll() } }
     }
 
-#if canImport(Security)
+#if canImport(Security) && !SWIFT_PACKAGE
     private enum Store {
         /// The value, and whether the answer is final (found, or refused by the user) rather than a plain miss.
         static func get(_ account: String, service: String) -> (String?, Bool) {
@@ -87,9 +87,18 @@ nonisolated enum Keychain {
         }
     }
 #else
-    // TODO(linux): no Keychain on this platform. Secrets live in credentials.json (mode 0600) under the app support folder.
+    /// The anvil CLI's own secret store: a JSON file readable only by the owner (mode 0600) in the support folder.
+    /// Linux and Windows have no Keychain; on a Mac the unsigned CLI would get a password prompt for every key the
+    /// signed app saved, so it keeps its own keys instead (`anvil config set api-key`). On a Mac the file is
+    /// cli-credentials.json, so it's clearly the CLI's and not something the app reads.
     private enum Store {
-        private static var fileURL: URL { Paths.support.appendingPathComponent("credentials.json") }
+        private static var fileURL: URL {
+#if canImport(Darwin)
+            Paths.support.appendingPathComponent("cli-credentials.json")
+#else
+            Paths.support.appendingPathComponent("credentials.json")
+#endif
+        }
 
         private static func load() -> [String: String] {
             guard let data = try? Data(contentsOf: fileURL) else { return [:] }

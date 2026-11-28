@@ -121,7 +121,8 @@ final class InteractiveSession: AgentHost {
         }
         MCPManager.shared.start(project: root)
         Task { await ModelCatalog.shared.refresh() }
-        let place = (root.path as NSString).abbreviatingWithTildeInPath
+        // abbreviatingWithTildeInPath is Apple-only.
+        let home = Paths.home.path, place = root.path == home ? "~" : root.path.hasPrefix(home + "/") ? "~" + root.path.dropFirst(home.count) : root.path
         let what = resumed ? "resumed: \(session.title)" : "new session"
         commit([Ansi.dim("anvil \(CLIRouter.version) · \(place) · \(model) · \(mode.short.lowercased()) · \(what)")])
         if resumed { replayTail() }
