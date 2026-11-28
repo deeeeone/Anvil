@@ -3,7 +3,7 @@ name: AnvilCore
 on:
   push:
     branches-ignore: [main]
-    paths: ["Anvil/**", "AnvilTests/**", "Package.swift", ".github/workflows/core.yml"]
+    paths: ["Anvil/**", "AnvilTests/**", "CLITests/**", "CLIMain/**", "scripts/**", "Package.swift", ".github/workflows/core.yml"]
   workflow_dispatch:
 
 jobs:
