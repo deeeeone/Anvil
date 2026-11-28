@@ -78,22 +78,9 @@ enum HeadlessRun {
         MCPManager.shared.start(project: root)
 
         let agent = Agent(ctx: ctx, brain: brain)
-        agent.toolProvider = { MCPManager.shared.toolSpecs }
+        AgentSetup.configure(agent, options: options, mode: mode)
         agent.messages = session.messages
         agent.briefing = session.briefing
-        agent.mode = mode
-        agent.maxSteps = options.maxSteps ?? settings.maxSteps
-        agent.maxCost = options.maxCost ?? settings.maxTaskCost
-        agent.autoVerify = settings.autoVerify && !options.noVerify
-        agent.selfReview = settings.selfReview && !options.noReview
-        agent.judgeEnabled = settings.judgeEnabled && !options.noJudge
-        agent.designCheck = false                 // no browser here, so nothing to screenshot
-        agent.streaming = settings.streaming && !options.noStream
-        agent.escalationModel = settings.escalation(for: brain.model)
-        agent.exploreModel = settings.exploreModel
-        agent.quickModel = settings.quickModel
-        agent.adaptiveEffort = settings.adaptiveEffort
-        agent.prefetch = settings.prefetch
 
         // Usage: the session keeps the running total; the summary reports this run only.
         var usage = session.usage
