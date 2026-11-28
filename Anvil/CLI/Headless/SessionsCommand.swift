@@ -38,13 +38,11 @@ enum SessionsCommand {
             print(options.all ? "No sessions yet." : "No sessions in \(root.path) yet. Start one with anvil -p \"...\".")
             return ExitCode.done
         }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
         let now = Date()
         print("ID        UPDATED        MODEL                        TITLE")
         for r in rows {
             let id = String(r.id.uuidString.lowercased().prefix(8))
-            let when = formatter.localizedString(for: r.updated, relativeTo: now)
+            let when = Self.relative(r.updated, now: now)
             print(id.padding(toLength: 10, withPad: " ", startingAt: 0)
                   + when.padding(toLength: 15, withPad: " ", startingAt: 0)
                   + r.model.padding(toLength: 29, withPad: " ", startingAt: 0)
@@ -72,5 +70,20 @@ enum SessionsCommand {
             guard let data = try? Data(contentsOf: f), let h = try? dec.decode(Head.self, from: data) else { return nil }
             return Row(id: h.id, title: h.title, updated: h.updated, model: h.model ?? AppSettings.shared.model, project: h.projectPath)
         }.sorted { $0.updated > $1.updated }
+    }
+
+    /// "just now", "5m ago", "3h ago", "2d ago", "3w ago", else the date. RelativeDateTimeFormatter is Apple-only.
+    static func relative(_ date: Date, now: Date) -> String {
+        let s = Int(now.timeIntervalSince(date))
+        switch s {
+        case ..<60: return "just now"
+        case ..<3600: return "\(s / 60)m ago"
+        case ..<86_400: return "\(s / 3600)h ago"
+        case ..<(86_400 * 14): return "\(s / 86_400)d ago"
+        case ..<(86_400 * 60): return "\(s / (86_400 * 7))w ago"
+        default:
+            let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = Locale(identifier: "en_US_POSIX")
+            return f.string(from: date)
+        }
     }
 }

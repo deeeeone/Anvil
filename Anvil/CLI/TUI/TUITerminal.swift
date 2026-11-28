@@ -257,7 +257,7 @@ nonisolated final class TerminalGuard: @unchecked Sendable {
     private let lock = NSLock()
     private var restoreAction: (() -> Void)?
     private var hooksInstalled = false
-    private var retained: [AnyObject] = []
+    private var retained: [Any] = []   // Any, not AnyObject: on Linux DispatchSourceSignal isn't class-constrained
 
     func arm(_ action: @escaping () -> Void) {
         lock.lock()
@@ -289,7 +289,7 @@ nonisolated final class TerminalGuard: @unchecked Sendable {
         if first { install() }
     }
 
-    func retain(_ object: AnyObject) {
+    func retain(_ object: Any) {
         lock.lock()
         retained.append(object)
         lock.unlock()
@@ -322,6 +322,8 @@ nonisolated fileprivate func writeFD(_ fd: Int32, _ s: String) {
         while offset < raw.count {
             #if canImport(Darwin)
             let n = Darwin.write(fd, raw.baseAddress! + offset, raw.count - offset)
+            #elseif os(Windows)
+            let n = Int(_write(fd, raw.baseAddress! + offset, UInt32(raw.count - offset)))
             #else
             let n = Glibc.write(fd, raw.baseAddress! + offset, raw.count - offset)
             #endif
