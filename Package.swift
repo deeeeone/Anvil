@@ -30,6 +30,7 @@ let testFlags: [SwiftSetting] = [.defaultIsolation(MainActor.self, .when(platfor
 
 let coreSources = [
     // Every non-UI file except the app shell (windows, app state, SwiftTerm, notifications, the AppKit headless runner).
+    "CLI",   // the anvil command-line tool (excluded from the Mac app in project.yml)
     // Mac-only pieces inside these files are fenced with #if os(macOS) / canImport(WebKit).
     // App/Schedule, SubSessions, TaskQueue, WorktreeCleanup extend AppState/SessionController: later, with sub-sessions.
     "App/AppInfo.swift", "Brain/ActionParser.swift", "Brain/AgentLoop.swift", "Brain/Brain.swift",
@@ -75,8 +76,13 @@ let excludes = [
 let package = Package(
     name: "Anvil",
     platforms: [.macOS(.v15)],
-    products: [.library(name: "AnvilCore", targets: ["AnvilCore"])],
+    products: [
+        .library(name: "AnvilCore", targets: ["AnvilCore"]),
+        .executable(name: "anvil", targets: ["anvil"]),
+    ],
     targets: [
+        .testTarget(name: "CLITests", dependencies: ["AnvilCore"], path: "CLITests", swiftSettings: testFlags),
+        .executableTarget(name: "anvil", dependencies: ["AnvilCore"], path: "CLIMain", swiftSettings: appFlags),
         .target(name: "AnvilCore", path: "Anvil", exclude: excludes, sources: coreSources, swiftSettings: appFlags),
         .testTarget(
             name: "AnvilCoreTests",

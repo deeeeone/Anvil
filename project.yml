@@ -27,7 +27,9 @@ targets:
   Anvil:
     type: application
     platform: macOS
-    sources: [Anvil]
+    sources:
+      - path: Anvil
+        excludes: ["CLI/**"]   # the cross-platform anvil CLI, built by Package.swift only
     dependencies:
       - package: SwiftTerm
     info:
