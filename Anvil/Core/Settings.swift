@@ -5,7 +5,13 @@ import Observation
 @Observable
 final class AppSettings {
     static let shared = AppSettings()
+#if SWIFT_PACKAGE && canImport(Darwin)
+    /// The anvil CLI on a Mac shares the app's settings: its own `.standard` domain would be a separate "anvil" one.
+    /// Under XCTest it keeps `.standard` (the test runner's domain) so tests never change the owner's settings.
+    @ObservationIgnored private let d = NSClassFromString("XCTestCase") == nil ? (UserDefaults(suiteName: AppInfo.bundleID) ?? .standard) : .standard
+#else
     @ObservationIgnored private let d = UserDefaults.standard
+#endif
 
     var baseURL: String { didSet { d.set(baseURL, forKey: "baseURL") } }
     var model: String { didSet { d.set(model, forKey: "model") } }
