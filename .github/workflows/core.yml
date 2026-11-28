@@ -66,5 +66,9 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          swift test --no-parallel 2>&1 | Tee-Object wtest.log | Out-Null
-          Select-String -Path wtest.log -Pattern "Executed [0-9]+ tests|Test Case .* failed|error:|Fatal|fatal" | Select-Object -Last 60 | ForEach-Object { $_.Line }
+          swift test --no-parallel *> wtest.log
+          $code = $LASTEXITCODE
+          Get-Content wtest.log | Select-String -Pattern "error:" | Select-Object -First 40 | ForEach-Object { $_.Line }
+          "--- last 60 lines"
+          Get-Content wtest.log -Tail 60
+          exit $code

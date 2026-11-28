@@ -445,13 +445,14 @@ final class HarnessStressTests: XCTestCase {
         HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
         """.write(to: script, atomically: true, encoding: .utf8)
         let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = ["python3", script.path, "\(port)", mode]
+        p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice   // never hold the test runner's stdout
         try p.run()
         return (p, port)
     }
 
     func testAStreamThatGoesSilentIsAbandonedNotWaitedOn() async throws {
         let (server, port) = try startSSEServer(mode: "silent")
-        defer { server.terminate() }
+        defer { ProcessRunner.killTree(server.processIdentifier, signal: SIGKILL) }
         try await Task.sleep(for: .milliseconds(700))
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!); req.httpMethod = "POST"; req.httpBody = Data("{}".utf8)
         let (outcome, secs) = await timed { () -> String in
@@ -465,7 +466,7 @@ final class HarnessStressTests: XCTestCase {
 
     func testASlowButAliveStreamIsNotKilled() async throws {
         let (server, port) = try startSSEServer(mode: "slow")
-        defer { server.terminate() }
+        defer { ProcessRunner.killTree(server.processIdentifier, signal: SIGKILL) }
         try await Task.sleep(for: .milliseconds(700))
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!); req.httpMethod = "POST"; req.httpBody = Data("{}".utf8)
         let r = try await OpenAIClient.consumeSSE(session: .shared, request: req, onText: { _ in }, shouldStop: { _ in false }, stallSeconds: 3)
@@ -474,7 +475,7 @@ final class HarnessStressTests: XCTestCase {
 
     func testEndlessReasoningWithoutAnAnswerIsCutOff() async throws {
         let (server, port) = try startSSEServer(mode: "think")
-        defer { server.terminate() }
+        defer { ProcessRunner.killTree(server.processIdentifier, signal: SIGKILL) }
         try await Task.sleep(for: .milliseconds(700))
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!); req.httpMethod = "POST"; req.httpBody = Data("{}".utf8)
         let (outcome, secs) = await timed { () -> String in
@@ -493,7 +494,7 @@ final class HarnessStressTests: XCTestCase {
 
     func testReasoningFollowedByAnAnswerIsFine() async throws {
         let (server, port) = try startSSEServer(mode: "thinkthenanswer")
-        defer { server.terminate() }
+        defer { ProcessRunner.killTree(server.processIdentifier, signal: SIGKILL) }
         try await Task.sleep(for: .milliseconds(700))
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!); req.httpMethod = "POST"; req.httpBody = Data("{}".utf8)
         let r = try await OpenAIClient.consumeSSE(session: .shared, request: req, onText: { _ in }, shouldStop: { _ in false }, stallSeconds: 30, maxThinkSeconds: 10)

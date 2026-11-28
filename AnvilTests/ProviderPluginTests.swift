@@ -210,13 +210,16 @@ final class ProviderPluginTests: XCTestCase {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         p.arguments = ["python3", script.path, "\(port)", log.path]
+        // Not the test runner's stdout: a server left running would hold that pipe open and `swift test` would never exit.
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
         try p.run()
         return (p, port, log)
     }
 
     func testOpenAIPluginUsesItsEndpointAuthAndCapabilities() async throws {
         let (server, port, log) = try startMockServer()
-        defer { server.terminate() }
+        defer { ProcessRunner.killTree(server.processIdentifier, signal: SIGKILL) }
         try await Task.sleep(for: .milliseconds(600))
         let folder = tmp.appendingPathComponent("src/kimi")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
