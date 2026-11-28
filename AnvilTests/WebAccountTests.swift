@@ -151,7 +151,8 @@ extension WebAccountTests {
 extension WebAccountTests {
     func testGeminiCookieDuplicates() throws {
         guard let f = SafariCookies.file else { throw XCTSkip() }
-        let recs = SafariCookies.parse(try Data(contentsOf: f))
+        guard let data = try? Data(contentsOf: f) else { throw XCTSkip("Safari's cookies aren't readable here (needs Full Disk Access)") }
+        let recs = SafariCookies.parse(data)
         let wanted = recs.filter { $0.name == "__Secure-1PSID" || $0.name == "SAPISID" || $0.name == "__Secure-1PSIDTS" }
         for r in wanted { print("DUP", r.name, r.domain, r.path, r.value.prefix(10), r.expiry) }
     }
@@ -160,7 +161,8 @@ extension WebAccountTests {
 extension WebAccountTests {
     func testGeminiDomains() throws {
         guard let f = SafariCookies.file else { throw XCTSkip() }
-        let recs = SafariCookies.parse(try Data(contentsOf: f))
+        guard let data = try? Data(contentsOf: f) else { throw XCTSkip("Safari's cookies aren't readable here (needs Full Disk Access)") }
+        let recs = SafariCookies.parse(data)
         var counts: [String: Int] = [:]
         for r in recs { counts[r.domain, default: 0] += 1 }
         for (d, n) in counts.sorted(by: { $0.key < $1.key }) where d.contains("google") { print("DOM", d, n) }
@@ -339,7 +341,10 @@ final class JailbreakTests: XCTestCase {
 
 extension WebAccountTests {
     func testQwenSafariCookies() throws {
-        let c = try SafariCookies.cookies(forDomain: "qwen.ai")
+        let c: [String: String]
+        do { c = try SafariCookies.cookies(forDomain: "qwen.ai") } catch SafariCookies.Failure.noFile, SafariCookies.Failure.noAccess {
+            throw XCTSkip("no readable Safari cookies here (no Safari, or no Full Disk Access)")
+        }
         print("QWEN", c.count, c.keys.sorted())
         let h = c.map { "\($0.key)=\($0.value)" }.joined(separator: "; ")
         print("QWHDR", h)
