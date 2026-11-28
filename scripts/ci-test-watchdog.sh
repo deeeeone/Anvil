@@ -27,4 +27,5 @@ while kill -0 "$runner" 2>/dev/null; do
 done
 wait "$runner"; rc=$?
 grep -E "Test Case .* failed|Executed [0-9]+ tests" "$LOG" | sort -u | tail -15
+if [ "$rc" != 0 ]; then echo "=== swift test exited $rc; last 60 lines of its output:"; tail -60 "$LOG"; fi
 exit $rc
